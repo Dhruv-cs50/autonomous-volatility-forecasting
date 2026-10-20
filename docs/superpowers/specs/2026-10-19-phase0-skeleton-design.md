@@ -130,7 +130,12 @@ typed object. Validation rules, each raising `ConfigError` on failure:
    be governed by nothing. Neither endpoint need itself be a session — the default
    `dev_end` of 2023-12-31 is a Sunday, which is fine, because what matters is that no
    *observable* date falls between the two.
-5. `storage.root` resolves to a path inside the repository.
+5. `storage.root` resolves to a path inside the repository. "Resolves" here means
+   *lexically* — the check does not follow symlinks, so a `data` symlink pointing outside
+   the repository passes. That is deliberate: the rule exists to catch a config typo
+   aiming the store at `/etc` or at a sibling project, not to defend against a hostile
+   symlink, and calling `Path.resolve()` would make configuration validation depend on
+   filesystem state and fail before `data/` has been created.
 
 Rule 4 needs a trading calendar. `exchange_calendars` is the dependency; if its API proves
 awkward, the fallback is a weekday-and-fixed-holiday check, with the compromise recorded
