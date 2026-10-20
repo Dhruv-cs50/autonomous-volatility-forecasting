@@ -1,1 +1,9 @@
 .superpowers/
+data/**
+!data/**/
+!data/**/.gitkeep
+.venv/
+__pycache__/
+.mypy_cache/
+.pytest_cache/
+data/holdout_access.jsonl
