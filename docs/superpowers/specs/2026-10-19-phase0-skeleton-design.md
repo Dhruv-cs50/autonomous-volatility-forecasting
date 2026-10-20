@@ -125,9 +125,11 @@ typed object. Validation rules, each raising `ConfigError` on failure:
 1. `universe` is non-empty and contains no duplicates.
 2. `dev_end` and `holdout_start` parse as ISO dates.
 3. `holdout_start > dev_end`.
-4. No trading day exists strictly between `dev_end` and `holdout_start` on `calendar` —
-   the two dates must be adjacent sessions. This closes an orphan gap where rows belong
-   to neither window and so are governed by nothing.
+4. No trading session exists strictly between `dev_end` and `holdout_start` on
+   `calendar`. This closes an orphan gap where rows would belong to neither window and so
+   be governed by nothing. Neither endpoint need itself be a session — the default
+   `dev_end` of 2023-12-31 is a Sunday, which is fine, because what matters is that no
+   *observable* date falls between the two.
 5. `storage.root` resolves to a path inside the repository.
 
 Rule 4 needs a trading calendar. `exchange_calendars` is the dependency; if its API proves
@@ -227,11 +229,19 @@ document's "a single logged holdout check": the holdout is not forbidden, it is
 *expensive and recorded*, and the count of lines in this file is a number the final
 write-up must report.
 
-**e. Post-read assertion.** After the scan, assert `max(as_of) <= end`. Rule (b) validates
-the argument; this validates the data actually returned. It catches a mislabelled
-partition, a bad `as_of` write upstream, or a path bug — failures no amount of
-argument-checking can see. Raises `HoldoutViolation`, because that is what it is,
-regardless of cause.
+**e. Post-read assertion.** Rule (b) validates the argument; this validates the data
+actually returned. It catches a mislabelled partition, a bad `as_of` write upstream, or a
+path bug — failures no amount of argument-checking can see. Two assertions, both raising
+`HoldoutViolation` regardless of cause:
+
+- **e1.** Every row's `as_of` equals the Hive `date` partition value its file sits under.
+  This is the assertion that does the work. A file parked in `date=2023-06-15` whose rows
+  carry `as_of = 2024-03-01` is a fault no window filter can see, because filtering would
+  simply discard the row and report no data — a plausible answer from corrupt storage.
+  Checking consistency instead of plausibility is what makes the fault visible.
+- **e2.** `max(as_of) <= end` on the frame about to be returned. Unreachable while e1 and
+  the window filter are both correct, and kept for exactly that reason: it costs one
+  comparison and is the last thing standing if either is later broken.
 
 **f. Test-suite policing.** A session-scoped autouse fixture fails any test that unlocks
 the holdout unless that test is marked `@pytest.mark.holdout`. Without this, a single
@@ -322,9 +332,11 @@ store derive from it rather than hand-rolling their own.
 - `VOLAB_HOLDOUT_UNLOCK=1` with `allow_holdout=False` raises.
 - Both keys (test marked `holdout`): returns holdout rows **and** appends exactly one
   audit line, whose fields match the request.
-- A fixture file whose `as_of` values exceed its partition date raises `HoldoutViolation`
-  from the post-read assertion, even within the dev window. This is the test that proves
-  rule (e) is live rather than decorative.
+- A fixture file whose `as_of` values disagree with its partition date raises
+  `HoldoutViolation` from assertion e1, even within the dev window. This is the test that
+  proves rule (e) is live rather than decorative. Assertion e2 has no test, because
+  reaching it requires e1 or the filter to be broken first; that is noted rather than
+  worked around with a mock.
 - A file missing `as_of` raises `SchemaError`.
 - Null `as_of` raises `HoldoutViolation`.
 - An empty dataset directory raises `DatasetNotFound`.
