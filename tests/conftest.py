@@ -57,6 +57,8 @@ class SyntheticStore:
         if unknown:
             raise ValueError(f"drop_columns must be mandatory columns, got {unknown}")
         stamp = DEFAULT_INGESTED_AT if ingested_at is None else ingested_at
+        if stamp.tzinfo is None:
+            raise ValueError(f"ingested_at must be timezone-aware, got {stamp!r}")
         choose_as_of = (lambda d: d) if as_of is None else as_of
         schema = pa.schema(
             [
@@ -119,16 +121,9 @@ def _forbid_holdout_unlock(
         return
 
     monkeypatch.delenv(_UNLOCK_ENV, raising=False)
-    try:
-        # Lazy: this must not run at conftest import, and the module may not exist yet.
-        import volab.store as store
-    except ModuleNotFoundError as exc:
-        # Only "volab.store itself is absent" is tolerated (before it is written); a missing
-        # dependency inside it must still surface.
-        if exc.name != "volab.store":
-            raise
-        yield
-        return
+    # Lazy, so importing this conftest does not import the data layer; never guarded, because a
+    # policing fixture that fails open on an import error is worse than no policing at all.
+    import volab.store as store
 
     original = store._unlock_granted
 

@@ -1,0 +1,284 @@
+"""The only sanctioned read path, and the guard that seals the holdout window.
+
+Statistical corrections do not catch leakage: a strategy built on a future-looking feature can
+pass every deflated-Sharpe and PBO check and still be worthless. Only the data layer can refuse,
+so this module refuses. ``load_panel`` is the sole way volab reads data, and the sole place
+permitted to read Parquet.
+
+The checks run in a fixed order, because which error surfaces first is part of the contract:
+
+1. unknown symbols, 2. a reversed window, 3. the holdout boundary -- before any filesystem
+access, 4. no matching files, 5. the read, 6. absent columns, 7. a naive ``ts``, 8. a null
+``as_of``, 9. partition consistency, 10. the point-in-time filter and deduplication, 11. an
+empty result, 12. the post-filter ``as_of`` assertion, 13. the audit line.
+
+Step 9 deliberately precedes step 10. A file parked under the wrong ``date=`` partition would
+otherwise be discarded by the filter and reported as missing data -- a plausible-looking "no
+data" answer derived from corrupt storage. Checking partition consistency first turns a silent
+discard into a loud failure.
+
+Step 12 is unreachable while step 9 and the filter are both correct. It costs one comparison and
+is the last thing standing if either is ever broken.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import glob
+import inspect
+import json
+import os
+import subprocess
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
+import duckdb
+import pandas as pd
+
+import volab
+from volab.config import Settings, load_settings
+from volab.errors import DatasetNotFound, HoldoutViolation, SchemaError, UnknownSymbol
+from volab.paths import MANDATORY_COLUMNS, Tier, dataset_glob
+
+AUDIT_FILENAME: str = "holdout_access.jsonl"
+
+_UNLOCK_ENV = "VOLAB_HOLDOUT_UNLOCK"
+# Supplied by DuckDB's Hive partitioning, not by the file: step 9 compares the two.
+_PARTITION_COLUMN = "date"
+_REQUIRED_COLUMNS: tuple[str, ...] = (*MANDATORY_COLUMNS, _PARTITION_COLUMN)
+_PACKAGE_DIR = Path(volab.__file__).resolve().parent
+_GIT_TIMEOUT_SECONDS = 5.0
+
+
+def _unlock_granted(allow_holdout: bool) -> bool:
+    """Both keys, or nothing: an explicit argument *and* an explicit environment variable.
+
+    Deliberately a plain module-level function, called by name rather than bound or aliased
+    anywhere, so that the test suite's policing fixture can replace it and be sure every
+    unlock attempt goes through its replacement.
+    """
+    return allow_holdout and os.environ.get(_UNLOCK_ENV) == "1"
+
+
+def _matching_files(patterns: list[str]) -> list[str]:
+    """Expand the scan patterns. DuckDB raises on a pattern matching nothing; we'd rather say
+    ``DatasetNotFound``, so the existence question is asked first and separately."""
+    return sorted(path for pattern in patterns for path in glob.glob(pattern))
+
+
+def _scan(patterns: list[str], columns: Sequence[str] | None) -> pd.DataFrame:
+    """Read every row under ``patterns``, with the Hive ``date`` partition value attached.
+
+    ``columns`` is the caller's projection request. It is accepted here and deliberately *not*
+    pushed into the scan: steps 6 to 12 need ``ts``, ``as_of``, ``ingested_at`` and ``date``
+    whatever the caller asked for, and honouring a narrow projection at scan time would quietly
+    disable the very checks the caller is relying on. ``load_panel`` subsets at the end instead.
+
+    Partitions are not pruned on ``end`` either, for the same reason: step 9 must see rows the
+    window would exclude. Correctness never depends on pruning.
+    """
+    relation = duckdb.sql(
+        "SELECT * FROM read_parquet($patterns, hive_partitioning := true)",
+        params={"patterns": patterns},
+    )
+    return relation.df()
+
+
+def _as_dates(column: pd.Series[Any]) -> pd.Series[Any]:
+    """Normalise a date-ish column to ``datetime.date`` objects.
+
+    ``as_of`` arrives from Parquet as ``date32`` while the Hive ``date`` value arrives from
+    DuckDB's own partition-type inference. Both are converted here, in one place, so that a
+    dtype mismatch can never make the step 9 comparison vacuously true.
+    """
+    return pd.to_datetime(column).dt.date
+
+
+def _caller_frame() -> tuple[str, int]:
+    """The first frame outside the volab package: who asked for the holdout, and where."""
+    for frame in inspect.stack():
+        if not Path(frame.filename).resolve().is_relative_to(_PACKAGE_DIR):
+            module = str(frame.frame.f_globals.get("__name__", "unknown"))
+            return module, frame.lineno
+    return "unknown", 0
+
+
+def _git_state() -> tuple[str, bool | None]:
+    """The commit the read happened at and whether the tree was dirty.
+
+    Falls back to ``("unknown", None)``: an audit line that cannot name the commit still beats
+    no audit line.
+    """
+
+    def run(*args: str) -> str | None:
+        try:
+            completed = subprocess.run(
+                ["git", *args],
+                cwd=_PACKAGE_DIR,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_GIT_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return None if completed.returncode != 0 else completed.stdout.strip()
+
+    sha = run("rev-parse", "HEAD")
+    if sha is None:
+        return "unknown", None
+    status = run("status", "--porcelain")
+    return sha, None if status is None else bool(status)
+
+
+def _append_audit(
+    settings: Settings,
+    *,
+    dataset: str,
+    tier: Tier,
+    end: dt.date,
+    start: dt.date | None,
+    symbols: Sequence[str] | None,
+) -> None:
+    """Append one JSON object describing an unlocked read. Append-only, one line per read."""
+    caller_module, caller_lineno = _caller_frame()
+    git_sha, git_dirty = _git_state()
+    record: dict[str, Any] = {
+        "ts": dt.datetime.now(dt.UTC).isoformat(),
+        "dataset": dataset,
+        "tier": tier.value,
+        "end": end.isoformat(),
+        "start": None if start is None else start.isoformat(),
+        "symbols": None if symbols is None else list(symbols),
+        "caller_module": caller_module,
+        "caller_lineno": caller_lineno,
+        "git_sha": git_sha,
+        "git_dirty": git_dirty,
+    }
+    path = settings.storage_root / AUDIT_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+
+def load_panel(
+    dataset: str,
+    *,
+    end: dt.date,
+    symbols: Sequence[str] | None = None,
+    start: dt.date | None = None,
+    columns: Sequence[str] | None = None,
+    tier: Tier = Tier.CURATED,
+    allow_holdout: bool = False,
+    settings: Settings | None = None,
+) -> pd.DataFrame:
+    """Read a point-in-time panel, refusing anything that could leak the future.
+
+    ``end`` is required and keyword-only: there is no "all data" sentinel, because the one
+    request this layer exists to interrogate is "how far forward may I see?". Filtering keys on
+    ``as_of``, never on ``ts``. The window is never silently clipped and an unexpectedly empty
+    result is raised rather than returned.
+
+    Reading past ``settings.splits.dev_end`` needs both ``allow_holdout=True`` and
+    ``VOLAB_HOLDOUT_UNLOCK=1``, and leaves an audit line behind.
+    """
+    resolved = load_settings() if settings is None else settings
+
+    # 1. Symbols must name the configured universe. A bare string would otherwise be iterated
+    #    into single characters here instead of reaching dataset_glob's own refusal.
+    if isinstance(symbols, str):
+        raise ValueError(f"symbols must be a sequence of names, not a bare string: {symbols!r}")
+    if symbols is not None:
+        unknown = sorted(set(symbols) - set(resolved.universe))
+        if unknown:
+            raise UnknownSymbol(
+                f"symbol(s) {unknown} are not in the configured universe {list(resolved.universe)}"
+            )
+
+    # 2. A reversed window is the caller's own mistake, not a data fault: a plain ValueError.
+    if start is not None and end < start:
+        raise ValueError(f"end {end} precedes start {start}")
+
+    # 3. The holdout boundary, before any filesystem access whatsoever.
+    past_dev_end = end > resolved.splits.dev_end
+    if past_dev_end and not _unlock_granted(allow_holdout):
+        raise HoldoutViolation(
+            f"end {end} is past dev_end {resolved.splits.dev_end}; reading the holdout window "
+            f"needs both allow_holdout=True and {_UNLOCK_ENV}=1"
+        )
+
+    # 4. Nothing to read is a missing dataset, not an empty answer.
+    patterns = dataset_glob(resolved.storage_root, tier, dataset, symbols)
+    if not _matching_files(patterns):
+        scope = "any symbol" if symbols is None else f"symbol(s) {list(symbols)}"
+        raise DatasetNotFound(
+            f"no files match {tier.value}/{dataset} for {scope} under {resolved.storage_root}"
+        )
+
+    # 5. The read.
+    frame = _scan(patterns, columns)
+
+    # 6. Every mandatory column, the partition value, and whatever the caller asked for.
+    missing = [name for name in _REQUIRED_COLUMNS if name not in frame.columns]
+    if missing:
+        raise SchemaError(f"{tier.value}/{dataset} is missing mandatory column(s) {missing}")
+    if columns is not None:
+        absent = [name for name in columns if name not in frame.columns]
+        if absent:
+            raise SchemaError(f"{tier.value}/{dataset} has no requested column(s) {absent}")
+
+    # 7. A naive ts cannot be placed on a timeline, so it cannot be trusted on one.
+    if not isinstance(frame["ts"].dtype, pd.DatetimeTZDtype):
+        raise SchemaError(
+            f"{tier.value}/{dataset} column 'ts' must be timezone-aware, "
+            f"got dtype {frame['ts'].dtype}"
+        )
+
+    # 8. as_of is what the guard asserts on; a null one cannot be asserted on at all.
+    null_as_of = int(frame["as_of"].isna().sum())
+    if null_as_of:
+        raise HoldoutViolation(
+            f"{tier.value}/{dataset} has {null_as_of} row(s) with a null as_of; "
+            "point-in-time filtering cannot be verified"
+        )
+
+    # 9. Assertion e1, BEFORE the filter: a row whose as_of contradicts its own partition means
+    #    the store is corrupt. Filtering first would discard the evidence and report no data.
+    as_of = _as_dates(frame["as_of"])
+    partition = _as_dates(frame[_PARTITION_COLUMN])
+    mismatched = as_of != partition
+    if bool(mismatched.any()):
+        first = frame.loc[mismatched, ["as_of", _PARTITION_COLUMN]].iloc[0]
+        raise HoldoutViolation(
+            f"{int(mismatched.sum())} row(s) in {tier.value}/{dataset} carry an as_of that "
+            f"contradicts their date= partition, first as_of {first['as_of']} under "
+            f"date={first[_PARTITION_COLUMN]}"
+        )
+
+    # 10. Point-in-time filter on as_of, then one row per (symbol, ts): the latest ingest wins.
+    window = as_of <= end
+    if start is not None:
+        window &= as_of >= start
+    frame = frame[window]
+    frame = frame.sort_values("ingested_at").drop_duplicates(["symbol", "ts"], keep="last")
+    frame = frame.sort_values(["symbol", "ts"]).reset_index(drop=True)
+
+    # 11. An empty frame is never returned where the caller expected rows.
+    if frame.empty:
+        window_text = f"up to {end}" if start is None else f"{start} to {end}"
+        raise DatasetNotFound(f"no rows in {tier.value}/{dataset} have an as_of {window_text}")
+
+    # 12. Assertion e2: what is about to be returned cannot see past end.
+    maximum = _as_dates(frame["as_of"]).max()
+    if maximum > end:
+        raise HoldoutViolation(
+            f"post-filter assertion failed: max(as_of) {maximum} exceeds end {end}"
+        )
+
+    # 13. An unlocked read is recorded before the rows leave this function.
+    if past_dev_end:
+        _append_audit(resolved, dataset=dataset, tier=tier, end=end, start=start, symbols=symbols)
+
+    # Last operation before returning, so every check above saw the full schema.
+    return frame if columns is None else frame[list(columns)]

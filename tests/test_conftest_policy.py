@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+import volab
 from volab.paths import curated_path
 
 pytest_plugins = ["pytester"]
@@ -21,7 +22,12 @@ def test_synthetic_store_settings_match_repo_defaults(synthetic_store) -> None:
     assert synthetic_store.root == synthetic_store.settings.storage_root
 
 
-def test_unmarked_test_that_unlocks_holdout_fails(pytester: pytest.Pytester) -> None:
+def test_unmarked_test_that_unlocks_holdout_fails(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The nested run gets its own rootdir, so this repo's ``pythonpath = ["src"]`` does not
+    # reach it; hand it the directory the volab under test was imported from.
+    monkeypatch.setenv("PYTHONPATH", str(Path(volab.__file__).resolve().parents[1]))
     pytester.makeconftest((Path(__file__).parent / "conftest.py").read_text())
     pytester.makepyfile(
         """
@@ -32,9 +38,12 @@ def test_unmarked_test_that_unlocks_holdout_fails(pytester: pytest.Pytester) -> 
             assert store._unlock_granted(allow_holdout=True)
         """
     )
-    result = pytester.runpytest()
+    # A subprocess, not runpytest(): in-process the outer autouse fixture has already wrapped
+    # _unlock_granted, which would mask a defect confined to the copied conftest. The pattern
+    # anchors on the failure itself, not on the pytest.fail(...) source line a traceback echoes.
+    result = pytester.runpytest_subprocess()
     result.assert_outcomes(failed=1)
-    result.stdout.fnmatch_lines(["*@pytest.mark.holdout*"])
+    result.stdout.fnmatch_lines(["*Failed: test unlocked the holdout*"])
 
 
 @pytest.mark.holdout
