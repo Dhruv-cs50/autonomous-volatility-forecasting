@@ -14,4 +14,5 @@ uv run pytest
 ## The holdout rule
 
 All reads go through `load_panel()`. Passing an `end` beyond `dev_end` requires both
-keys to be present, and fails with `HoldoutViolation` otherwise.
+keys to be present, and fails with `HoldoutViolation` otherwise. `volab.store` is the only
+module that reads Parquet, enforced by `tests/test_import_discipline.py`.
