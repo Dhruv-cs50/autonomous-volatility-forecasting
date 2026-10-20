@@ -37,6 +37,8 @@ that the test fails, revert, and publish that evidence.
   class of defect, proven by mutation.
 - A faithful raw tier plus a replayable vendor-payload archive, so a rebuild survives Nasdaq's
   trailing window (section 13).
+- A `has_distribution` flag on `curated/bars_daily`, because dividend drops bias one specific
+  feature in one specific direction (section 6a).
 - Moving the dev/holdout boundary (section 5), the one config change this phase makes.
 - One additive config key, `exogenous`, and the matching additive change to `load_panel`'s
   symbol check (section 8).
@@ -294,6 +296,50 @@ section 8's "raw must be the rebuild source" holds for the dev window now and th
 then.
 
 
+### 6a. Distributions are flagged, never silently adjusted
+
+Nasdaq's closes are unadjusted, so every distribution date carries a spurious negative return.
+This is not generic noise to revisit later: it is **systematic, signed, and lands in the one
+feature whose entire purpose is to treat negative returns differently.** SPY distributes four
+times a year at roughly 0.3% of price; squared that is ~7.8e-6 against a typical daily variance
+near 1.2e-4, so each event injects roughly 6% of a normal day's variance — always negative,
+always into `semivar_neg_proxy_d{n}` and `signed_jump_proxy_d{n}`, on about 40 of the dev
+window's 2,513 sessions. Leaving that to "Phase 2 diagnostics" would mean the framework's
+second-ranked input is quietly contaminated on dates that were knowable in advance.
+
+So `curated/bars_daily` carries a boolean **`has_distribution`** column.
+
+**Returns are flagged, not adjusted.** Adjusting would destroy raw fidelity (section 13) and
+would bake a correction into the data before anyone has decided it is the right one. Flagging
+hands Phase 2 the information and lets it choose to adjust, exclude, or dummy the date — which
+is the same philosophy this spec applies everywhere else.
+
+#### What the vendor actually serves, verified 2026-10-19
+
+`api.nasdaq.com/api/quote/{sym}/dividends?assetclass=etf` returns ex-date, amount, record date
+and payment date — **for QQQ only** (58 rows, 2012-06-15 → 2026-09-21). **SPY and IWM return
+zero rows**, under `assetclass` values `etf`, `stocks` and `index` alike. No other keyless
+declared source was found.
+
+The resulting split, which the builder implements as stated rather than papering over:
+
+- **QQQ** — ingest the distribution calendar as `raw/nasdaq_dividends/QQQ/...` and set
+  `has_distribution` from it.
+- **SPY and IWM** — `has_distribution` is written as `False` everywhere, and the column carries
+  a dataset-level note that it is **unverified** for these two symbols. The contamination is
+  recorded in section 15 with its magnitude.
+
+**The builder must not infer distribution dates from the bars.** Detecting a close-to-close drop
+the open does not confirm conflates distributions with genuine overnight news, and a false
+positive here is worse than a missing flag: Phase 2 would exclude or dummy a real volatility
+event, which is a leak of the researcher's hindsight into the sample. A missing flag only leaves
+a known bias known.
+
+A deterministic schedule may exist — SPY ex-dates are widely held to fall on the third Friday of
+each quarter-end month — but that is unverified here and is not asserted. If Phase 2 finds the
+contamination material, verifying that schedule against a declared source is the cheapest fix.
+
+
 ## 7. The write path lives in `store.py`
 
 `store.py` gains three functions:
@@ -397,6 +443,7 @@ nothing else. Let `r_t = log(C_t / C_{t-1})` over consecutive XNYS sessions, fro
 | `iv_var_h{1,5,22}` | `(close/100)² · (h/252)` | the same, as variance over the horizon |
 | `vvix` | VVIX close | vol-of-vol |
 | `baa10y`, `dgs10`, `t10y2y` | FRED levels, lagged per section 6 | credit spread and rate context |
+| `has_distribution` | passed through from `curated/bars_daily` | ex-distribution flag; QQQ only, see section 6a |
 
 Horizon matching follows the research: VIX1D for 1 day, VIX9D (9 calendar days ≈ 6 sessions)
 for the 5-day horizon, VIX (30 calendar days ≈ 21 sessions) for 22 days.
@@ -579,11 +626,29 @@ records both numbers in `phase1-decisions.md`.
 on the development laptop; a single `load_panel` of curated bars finishes in under 30 seconds.
 
 **Revisit trigger.** If either budget is missed, **stop before writing the remaining ~86,000
-files** and escalate. Three levers exist, in order of preference: (a) narrow the ingested
-history further; (b) relax the one-`as_of`-per-partition invariant so a partition may span a
-date range — which makes `load_panel` step 9 reachable again and must be re-justified if so;
-(c) add partition pruning to `load_panel`, which contradicts its own docstring and is a last
-resort. All three are design changes, not tuning, and none is the builder's call alone.
+files** and escalate. Four levers exist, in order of preference:
+
+(a) **Narrow the ingested history further.** Cheapest, loses sample.
+
+(b) **Partition coarser — `date=YYYY-MM` — and weaken step 9 from equality to containment**,
+asserting each row's `as_of` falls inside its partition's month rather than equalling it. This
+cuts the file count by roughly 21x and is the lever to reach for first. Equality is a *stronger*
+assertion than the defect requires: step 9 exists to catch a row parked under a contradicting
+partition, and an `as_of` of 2024-03 under a `date=2023-06` partition still fires on containment.
+What containment gives up is the narrow case of a row misfiled *within* its own month — a
+2024-03-07 row under `date=2024-03` alongside 2024-03-11 rows — which the partition value can no
+longer distinguish. That case is not what the check was written for, and `write_*`'s own
+per-row assertion still covers everything this code writes. State that trade explicitly when
+proposing it.
+
+(c) **Relax one-`as_of`-per-partition entirely**, so a partition may span any date range. Strictly
+weaker than (b) for the same benefit.
+
+(d) **Add partition pruning to `load_panel`**, which contradicts its own docstring and is the last
+resort.
+
+All four are design changes, not tuning, and none is the builder's call alone. If the budget is
+missed, propose (b).
 
 The invariant is not pre-emptively traded away, because one `as_of` per partition is what makes
 step 9 unreachable from data this code wrote, and that is worth more than file count until a
@@ -661,7 +726,7 @@ Phase 1 must not require it, and must not be rearranged to accommodate it later:
 |---|---|---|
 | Nasdaq's 10-year cap is a **trailing** window | the dev window's start drifts forward ~1 session/day; history is lost permanently once it falls off | **Run the full backfill first, before the feature engine exists.** Immutable raw Parquet pins the floor; the store only accumulates. The store's inception is **2016-10-19** and the span cannot be reproduced from scratch later. This is what makes Phase 0's immutability load-bearing rather than decorative. |
 | `api.nasdaq.com` is undocumented and keyless | it may change shape, rate-limit or block without notice | raw archive means a break costs new data, never existing data; the fetcher's injected transport makes a vendor swap local |
-| Nasdaq closes are **unadjusted** | dividend drops (≈4/yr for SPY, ≈0.3% each) inflate squared returns on those days | documented; the contamination is ~9% of a typical day's variance on 4 days a year. Not corrected in Phase 1; revisit if Phase 2 diagnostics show it mattering |
+| Nasdaq closes are **unadjusted**, and distributions are only obtainable for QQQ | every distribution date carries a spurious ~0.3% negative return that flows **systematically and signed** into `semivar_neg_proxy_*` and `signed_jump_proxy_*` — ~6% of a typical day's variance, on ~40 of 2,513 dev sessions, always in the same direction | `has_distribution` is ingested and set for QQQ (section 6a). **For SPY and IWM no keyless declared source exists**, so the flag is `False` everywhere and the bias is present but unflagged. Bar-derived inference is forbidden: a false positive would exclude a real volatility event. Phase 2 must treat SPY/IWM semivariance as carrying this known bias |
 | FRED keyless gives the **latest vintage only** | a revision silently replaces its original, so `as_of` is an assumption for FRED alone | conservative one-session lag; rare for daily rate series; true vintages need ALFRED and a key |
 | No intraday data | the framework's two highest-ranked inputs are unavailable | stated everywhere, proxies named as proxies, section 14 keeps the door open |
 | 200-session holdout | the Phase 6 check is weak at 22 and 66 days | recorded in section 5; Phase 6 must report it |
