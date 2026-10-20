@@ -180,14 +180,20 @@ def load_panel(
     #    into single characters here instead of reaching dataset_glob's own refusal.
     if isinstance(symbols, str):
         raise ValueError(f"symbols must be a sequence of names, not a bare string: {symbols!r}")
-    if columns is not None and not columns:
-        raise ValueError("columns must not be empty; pass None to return every column")
     if symbols is not None:
         unknown = sorted(set(symbols) - set(resolved.universe))
         if unknown:
             raise UnknownSymbol(
                 f"symbol(s) {unknown} are not in the configured universe {list(resolved.universe)}"
             )
+
+    # The same shape rules for columns: a bare string would be iterated into single characters
+    # and an empty selection would return a frame with no columns. ``len`` rather than
+    # truthiness, so a numpy array or ``pd.Index`` is judged by size, not by an ambiguous bool.
+    if isinstance(columns, str):
+        raise ValueError(f"columns must be a sequence of names, not a bare string: {columns!r}")
+    if columns is not None and len(columns) == 0:
+        raise ValueError("columns must not be empty; pass None to return every column")
 
     # 2. A reversed window is the caller's own mistake, not a data fault: a plain ValueError.
     if start is not None and end < start:
