@@ -359,6 +359,7 @@ store derive from it rather than hand-rolling their own.
 | `dev_end` of 2023-12-31 may leave too little holdout once real history arrives | The date is one config value and the audit log is empty until it is used, so it can be moved in Phase 1 before any score exists to be influenced by the choice. |
 | DuckDB partition pruning may not apply to every scan pattern | Correctness never depends on pruning; the post-read assertion filters regardless. Performance is a Phase 1 concern with real data volumes. |
 | The guard protects `load_panel()`, not `pd.read_parquet` | Phase 0 ships a lint rule banning direct Parquet reads outside `volab.store`, which is also what makes the agent's lack of a `read_parquet` tool enforceable later. |
+| On this machine, every entry in `.venv/lib/python3.12/site-packages` acquires the macOS `hidden` flag (`UF_HIDDEN`), and CPython skips a `.pth` file carrying it — so the editable install silently stops working and `import volab` fails | `pythonpath = ["src"]` under `[tool.pytest.ini_options]`, so the suite does not depend on the `.pth` being readable. `chflags nohidden` is the manual escape if an interactive `python` also fails. The cause is likely hardlinks from a flagged `~/.cache/uv`; it does not affect CI, which syncs fresh on Linux. |
 
 ## 12. What Phase 0 earns
 
