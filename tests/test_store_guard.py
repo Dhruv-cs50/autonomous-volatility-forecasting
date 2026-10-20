@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from volab.errors import DatasetNotFound, HoldoutViolation, SchemaError, UnknownSymbol
-from volab.paths import Tier
+from volab.paths import MANDATORY_COLUMNS, Tier
 from volab.store import AUDIT_FILENAME, load_panel
 
 DEV_DAY = dt.date(2023, 6, 15)
@@ -64,6 +64,24 @@ def test_columns_subsets_the_frame(synthetic_store) -> None:
     )
 
     assert list(frame.columns) == ["symbol", "as_of"]
+
+
+def test_columns_none_returns_the_contract_columns_without_the_partition_artefact(
+    synthetic_store,
+) -> None:
+    synthetic_store.write("bars_daily", "SPY", [DEV_DAY])
+
+    frame = load_panel("bars_daily", end=DEV_DAY, settings=synthetic_store.settings)
+
+    assert set(frame.columns) == set(MANDATORY_COLUMNS)
+    assert "date" not in frame.columns
+
+
+def test_empty_columns_raises_value_error(synthetic_store) -> None:
+    synthetic_store.write("bars_daily", "SPY", [DEV_DAY])
+
+    with pytest.raises(ValueError, match="columns must not be empty"):
+        load_panel("bars_daily", end=DEV_DAY, columns=[], settings=synthetic_store.settings)
 
 
 def test_symbol_outside_universe_raises_unknown_symbol(synthetic_store) -> None:

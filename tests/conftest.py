@@ -23,6 +23,8 @@ from volab.paths import MANDATORY_COLUMNS, Tier, curated_path, features_path, ra
 # Fixed so written files are reproducible. Later than any date a test is likely to write.
 DEFAULT_INGESTED_AT = dt.datetime(2025, 1, 1, tzinfo=dt.UTC)
 
+# Duplicated from volab.store._UNLOCK_ENV on purpose: this module must not import volab.store at
+# collection time. Keep the two in step.
 _UNLOCK_ENV = "VOLAB_HOLDOUT_UNLOCK"
 
 

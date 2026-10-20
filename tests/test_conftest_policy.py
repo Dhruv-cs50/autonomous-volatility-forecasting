@@ -1,4 +1,5 @@
 import datetime as dt
+import os
 from pathlib import Path
 
 import pytest
@@ -27,7 +28,9 @@ def test_unmarked_test_that_unlocks_holdout_fails(
 ) -> None:
     # The nested run gets its own rootdir, so this repo's ``pythonpath = ["src"]`` does not
     # reach it; hand it the directory the volab under test was imported from.
-    monkeypatch.setenv("PYTHONPATH", str(Path(volab.__file__).resolve().parents[1]))
+    src_dir = str(Path(volab.__file__).resolve().parents[1])
+    existing = os.environ.get("PYTHONPATH", "")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([src_dir, existing]) if existing else src_dir)
     pytester.makeconftest((Path(__file__).parent / "conftest.py").read_text())
     pytester.makepyfile(
         """

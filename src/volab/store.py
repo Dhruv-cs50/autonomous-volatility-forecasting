@@ -67,17 +67,8 @@ def _matching_files(patterns: list[str]) -> list[str]:
     return sorted(path for pattern in patterns for path in glob.glob(pattern))
 
 
-def _scan(patterns: list[str], columns: Sequence[str] | None) -> pd.DataFrame:
-    """Read every row under ``patterns``, with the Hive ``date`` partition value attached.
-
-    ``columns`` is the caller's projection request. It is accepted here and deliberately *not*
-    pushed into the scan: steps 6 to 12 need ``ts``, ``as_of``, ``ingested_at`` and ``date``
-    whatever the caller asked for, and honouring a narrow projection at scan time would quietly
-    disable the very checks the caller is relying on. ``load_panel`` subsets at the end instead.
-
-    Partitions are not pruned on ``end`` either, for the same reason: step 9 must see rows the
-    window would exclude. Correctness never depends on pruning.
-    """
+def _scan(patterns: list[str]) -> pd.DataFrame:
+    """Read every row under ``patterns``, with the Hive ``date`` partition value attached."""
     relation = duckdb.sql(
         "SELECT * FROM read_parquet($patterns, hive_partitioning := true)",
         params={"patterns": patterns},
@@ -189,6 +180,8 @@ def load_panel(
     #    into single characters here instead of reaching dataset_glob's own refusal.
     if isinstance(symbols, str):
         raise ValueError(f"symbols must be a sequence of names, not a bare string: {symbols!r}")
+    if columns is not None and not columns:
+        raise ValueError("columns must not be empty; pass None to return every column")
     if symbols is not None:
         unknown = sorted(set(symbols) - set(resolved.universe))
         if unknown:
@@ -216,8 +209,12 @@ def load_panel(
             f"no files match {tier.value}/{dataset} for {scope} under {resolved.storage_root}"
         )
 
-    # 5. The read.
-    frame = _scan(patterns, columns)
+    # 5. The read. No projection or partition pushdown, deliberately: steps 6 to 12 need ``ts``,
+    #    ``as_of``, ``ingested_at`` and ``date`` whatever the caller asked for, so honouring a
+    #    narrow projection here would quietly disable the checks the caller relies on, and step 9
+    #    must see rows the window excludes, so partitions are not pruned on ``end`` either.
+    #    ``columns`` is applied at the very end instead. Correctness never depends on pruning.
+    frame = _scan(patterns)
 
     # 6. Every mandatory column, the partition value, and whatever the caller asked for.
     missing = [name for name in _REQUIRED_COLUMNS if name not in frame.columns]
@@ -261,7 +258,9 @@ def load_panel(
     if start is not None:
         window &= as_of >= start
     frame = frame[window]
-    frame = frame.sort_values("ingested_at").drop_duplicates(["symbol", "ts"], keep="last")
+    frame = frame.sort_values("ingested_at", kind="stable").drop_duplicates(
+        ["symbol", "ts"], keep="last"
+    )
     frame = frame.sort_values(["symbol", "ts"]).reset_index(drop=True)
 
     # 11. An empty frame is never returned where the caller expected rows.
@@ -280,5 +279,8 @@ def load_panel(
     if past_dev_end:
         _append_audit(resolved, dataset=dataset, tier=tier, end=end, start=start, symbols=symbols)
 
-    # Last operation before returning, so every check above saw the full schema.
-    return frame if columns is None else frame[list(columns)]
+    # Last operation before returning, so every check above saw the full schema. The Hive
+    # ``date`` column is a partition artefact duplicating ``as_of``; it is not part of the contract.
+    if columns is None:
+        return frame.drop(columns=[_PARTITION_COLUMN])
+    return frame[list(columns)]
