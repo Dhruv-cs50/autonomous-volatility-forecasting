@@ -8,7 +8,17 @@ import volab
 SRC = Path(volab.__file__).parent
 # Paths relative to SRC: only the top-level store.py is exempt, never a store.py in a subpackage.
 ALLOWED = {"store.py"}
-BANNED_CALLS = {"read_parquet", "scan_parquet", "read_table", "ParquetFile", "ParquetDataset"}
+# Includes store's private read helpers: they read Parquet with none of load_panel's guard, and
+# naming them here catches every spelling (absolute or relative import, attribute, bare name).
+BANNED_CALLS = {
+    "read_parquet",
+    "scan_parquet",
+    "read_table",
+    "ParquetFile",
+    "ParquetDataset",
+    "_scan",
+    "_matching_files",
+}
 # Top-level packages, so a submodule nobody anticipated (pyarrow.dataset) cannot slip through.
 BANNED_ROOTS = {"duckdb", "pyarrow"}
 
@@ -42,7 +52,7 @@ def _violations(source: str) -> list[str]:
                 for alias in node.names
                 if alias.name in BANNED_CALLS
             )
-            if module == "volab.store":
+            if module == "volab.store" or (node.level > 0 and module == "store"):
                 # A private store helper reads Parquet with none of load_panel's guard.
                 found.extend(
                     f"imports private {alias.name} from {module}"
@@ -75,6 +85,12 @@ def test_module_does_not_read_parquet_directly(module: Path) -> None:
         ("from duckdb import connect\n", "imports from duckdb"),
         ("x = something.ParquetFile('x')\n", "uses ParquetFile"),
         ("from volab.store import _scan\n", "imports private _scan from volab.store"),
+        ("from volab.store import _scan\n", "imports _scan from volab.store"),
+        ("from ..store import _scan\n", "imports _scan from store"),
+        ("from .store import _private\n", "imports private _private from store"),
+        ("from volab import store\nstore._scan([])\n", "uses _scan"),
+        ("import volab.store as st\nst._matching_files([])\n", "uses _matching_files"),
+        ("frame = _scan([])\n", "uses _scan"),
         (
             "from volab.store import load_panel, _matching_files\n",
             "imports private _matching_files from volab.store",
