@@ -77,7 +77,13 @@ class _UniqueKeyLoader(yaml.SafeLoader):
         seen: set[Any] = set()
         for key_node, _ in node.value:
             key = self.construct_object(key_node, deep=True)
-            if key in seen:
+            try:
+                is_duplicate = key in seen
+            except TypeError:  # an unhashable key, e.g. '? [a, b]'; the base loader rejects it too
+                raise yaml.constructor.ConstructorError(
+                    None, None, f"found unhashable key {key!r}", key_node.start_mark
+                ) from None
+            if is_duplicate:
                 raise yaml.constructor.ConstructorError(
                     None, None, f"duplicate key {key!r}", key_node.start_mark
                 )
@@ -100,6 +106,9 @@ def _read_settings_file(path: Path) -> dict[str, Any]:
 
     flat: dict[str, Any] = {}
     for key, value in raw.items():
+        if "." in str(key):
+            # A dotted top-level key would alias a section entry and silently override it.
+            raise ConfigError(f"config key {str(key)!r} must not contain '.'; use a section")
         if key in _SECTIONS:
             if not isinstance(value, dict):
                 raise ConfigError(f"config section {key!r} must be a mapping")
@@ -117,7 +126,8 @@ def _apply_env_overrides(flat: dict[str, Any]) -> None:
         value = os.environ.get(variable)
         if value is None:
             continue
-        flat[name] = value.split(",") if name == "universe" else value
+        # Whitespace around commas is ordinary syntax in the env form only.
+        flat[name] = [part.strip() for part in value.split(",")] if name == "universe" else value
 
 
 def _parse_date(field: str, value: object) -> dt.date:
@@ -138,17 +148,21 @@ def _parse_date(field: str, value: object) -> dt.date:
 
 
 def _validate_universe(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list | tuple) or not value:
-        raise ConfigError(f"universe must be a non-empty list of symbols, got {value!r}")
+    if not isinstance(value, list | tuple):
+        raise ConfigError(f"universe must be a list of symbols, got {value!r}")
+    if not value:
+        raise ConfigError("universe must not be empty")
     symbols: list[str] = []
     for entry in value:
         if not isinstance(entry, str):
             raise ConfigError(
                 f"universe entries must be strings, got {entry!r} (quote symbols such as 'NO')"
             )
+        if entry != entry.strip():
+            raise ConfigError(f"universe entry {entry!r} has surrounding whitespace")
         # Symbols become directory names, so they must satisfy the layout's own segment rule.
         try:
-            symbols.append(validate_segment("symbol", entry.strip()))
+            symbols.append(validate_segment("symbol", entry))
         except ValueError as exc:
             raise ConfigError(f"universe: {exc}") from None
     if len(set(symbols)) != len(symbols):
@@ -183,7 +197,7 @@ def _validate_splits(
     if gap_start <= gap_end:
         try:
             sessions = calendar.sessions_in_range(gap_start, gap_end)
-        except DateOutOfBounds as exc:
+        except (DateOutOfBounds, OverflowError) as exc:  # OverflowError: year-0001 dates
             raise ConfigError(
                 f"cannot verify the gap {gap_start}..{gap_end} against the calendar: {exc}"
             ) from None

@@ -96,6 +96,29 @@ def test_adjacent_dates_are_accepted(tmp_path: Path) -> None:
     assert load_settings(_write(tmp_path, text)).splits.holdout_start == dt.date(2024, 1, 1)
 
 
+def _with_splits(dev_end: str, holdout_start: str) -> str:
+    # Replace the later date first so a new dev_end of 2024-01-02 is not rewritten again.
+    return VALID.replace("2024-01-02", holdout_start).replace("2023-12-31", dev_end)
+
+
+def test_session_day_dev_end_is_accepted(tmp_path: Path) -> None:
+    # 2024-01-02 is a session; the next session, 2024-01-03, is the first of the holdout.
+    text = _with_splits("2024-01-02", "2024-01-03")
+    assert load_settings(_write(tmp_path, text)).splits.dev_end == dt.date(2024, 1, 2)
+
+
+def test_session_directly_after_dev_end_is_rejected(tmp_path: Path) -> None:
+    # 2024-01-03 (dev_end + 1 day) is a session lying in the gap.
+    with pytest.raises(ConfigError, match="trading session"):
+        load_settings(_write(tmp_path, _with_splits("2024-01-02", "2024-01-04")))
+
+
+def test_session_directly_before_holdout_start_is_rejected(tmp_path: Path) -> None:
+    # 2024-01-02 (holdout_start - 1 day) is a session; dev_end + 1 day is a Saturday.
+    with pytest.raises(ConfigError, match="trading session"):
+        load_settings(_write(tmp_path, _with_splits("2023-12-29", "2024-01-03")))
+
+
 def test_unquoted_yaml_dates_are_accepted(tmp_path: Path) -> None:
     text = VALID.replace('"2023-12-31"', "2023-12-31").replace('"2024-01-02"', "2024-01-02")
     settings = load_settings(_write(tmp_path, text))
@@ -106,7 +129,7 @@ def test_unquoted_yaml_dates_are_accepted(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("bad", "match", "reason"),
     [
-        (VALID.replace("[SPY, QQQ, IWM]", "[]"), "universe", "empty universe"),
+        (VALID.replace("[SPY, QQQ, IWM]", "[]"), "must not be empty", "empty universe"),
         (VALID.replace("[SPY, QQQ, IWM]", "[SPY, SPY]"), "duplicate", "duplicate symbol"),
         (
             VALID.replace('"2024-01-02"', '"2023-12-30"'),
@@ -135,13 +158,17 @@ def test_unquoted_yaml_dates_are_accepted(tmp_path: Path) -> None:
         ),
         (VALID.replace("calendar: XNYS", "calendar: ''"), "calendar", "empty calendar"),
         (VALID.replace("calendar: XNYS", "calendar: 7"), "calendar", "non-string calendar"),
-        (VALID.replace("[SPY, QQQ, IWM]", "SPY"), "universe", "universe not a list"),
+        (VALID.replace("[SPY, QQQ, IWM]", "SPY"), "must be a list", "universe not a list"),
         (VALID.replace("[SPY, QQQ, IWM]", "[SPY, NO]"), "universe", "YAML boolean symbol"),
         (VALID.replace("[SPY, QQQ, IWM]", "[SPY, '']"), "universe", "empty symbol"),
         (VALID.replace("[SPY, QQQ, IWM]", "[SPY, '../QQQ']"), "universe", "traversal symbol"),
         (VALID.replace("[SPY, QQQ, IWM]", "[SPY, 'A/B']"), "universe", "separator in symbol"),
         (VALID.replace("[SPY, QQQ, IWM]", "[SPY, 'Q*']"), "universe", "glob symbol"),
-        (VALID.replace("universe: [SPY, QQQ, IWM]\n", ""), "universe", "missing universe"),
+        (
+            VALID.replace("universe: [SPY, QQQ, IWM]\n", ""),
+            "missing required setting .universe.",
+            "missing universe",
+        ),
         (VALID.replace('  dev_end: "2023-12-31"\n', ""), "splits.dev_end", "missing dev_end"),
         (VALID.replace('storage:\n  root: "data"\n', ""), "storage", "missing storage"),
         (VALID + "extra: 1\n", "extra", "unknown top-level key"),
@@ -153,6 +180,28 @@ def test_unquoted_yaml_dates_are_accepted(tmp_path: Path) -> None:
             ),
             "duplicate key",
             "duplicate nested key",
+        ),
+        ("? [a, b]\n: 1\n", "unhashable key", "unhashable mapping key"),
+        (
+            VALID.replace("[SPY, QQQ, IWM]", "[' SPY', QQQ]"),
+            "surrounding whitespace",
+            "leading space in YAML symbol",
+        ),
+        (
+            VALID.replace("[SPY, QQQ, IWM]", "['SPY ', QQQ]"),
+            "surrounding whitespace",
+            "trailing space in YAML symbol",
+        ),
+        (VALID + 'splits.dev_end: "2099-01-01"\n', "must not contain", "dotted top-level key"),
+        (
+            VALID.replace("splits:", 'splits.dev_end: "2099-01-01"\nsplits:'),
+            "must not contain",
+            "dotted key before its section",
+        ),
+        (
+            VALID.replace('"2023-12-31"', '"0001-01-01"').replace('"2024-01-02"', '"0001-01-05"'),
+            "cannot verify the gap",
+            "year-0001 gap",
         ),
         ("- a\n- b\n", "mapping", "not a mapping"),
         ("", "mapping", "empty file"),
