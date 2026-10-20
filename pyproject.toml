@@ -39,6 +39,11 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 strict = true
 files = ["src"]
 
+[[tool.mypy.overrides]]
+# exchange_calendars ships neither stubs nor a py.typed marker.
+module = ["exchange_calendars", "exchange_calendars.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

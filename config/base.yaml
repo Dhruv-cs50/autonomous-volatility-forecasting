@@ -1,0 +1,7 @@
+universe: [SPY, QQQ, IWM]
+calendar: XNYS
+splits:
+  dev_end: "2023-12-31"
+  holdout_start: "2024-01-02"
+storage:
+  root: "data"

@@ -51,9 +51,10 @@ class PathInfo:
     ingested_at: dt.datetime | None
 
 
-def _segment(kind: str, value: str) -> str:
-    """Validate a dataset or symbol path segment.
+def validate_segment(kind: str, value: str) -> str:
+    """Validate a dataset or symbol path segment, returning it unchanged.
 
+    Public so that configuration can hold its universe to the same rule the builders apply.
     A segment must be a single, literal directory name. Anything else can escape the tier tree,
     change the segment count, or (via glob metacharacters) widen a scan to other symbols.
     """
@@ -77,8 +78,8 @@ def raw_path(root: Path, source: str, symbol: str, date: dt.date, ingested_at: d
     return (
         root
         / Tier.RAW
-        / _segment("source", source)
-        / _segment("symbol", symbol)
+        / validate_segment("source", source)
+        / validate_segment("symbol", symbol)
         / _partition(date)
         / f"part-{stamp}.parquet"
     )
@@ -88,8 +89,8 @@ def curated_path(root: Path, dataset: str, symbol: str, date: dt.date) -> Path:
     return (
         root
         / Tier.CURATED
-        / _segment("dataset", dataset)
-        / _segment("symbol", symbol)
+        / validate_segment("dataset", dataset)
+        / validate_segment("symbol", symbol)
         / _partition(date)
         / _SINGLE_PART_NAME
     )
@@ -99,8 +100,8 @@ def features_path(root: Path, feature_set: str, symbol: str, date: dt.date) -> P
     return (
         root
         / Tier.FEATURES
-        / _segment("feature_set", feature_set)
-        / _segment("symbol", symbol)
+        / validate_segment("feature_set", feature_set)
+        / validate_segment("symbol", symbol)
         / _partition(date)
         / _SINGLE_PART_NAME
     )
@@ -142,8 +143,8 @@ def parse_path(path: Path, root: Path) -> PathInfo:
     except ValueError:
         raise ValueError(f"unknown tier {tier_name!r} in {path}") from None
 
-    _segment("dataset", dataset)
-    _segment("symbol", symbol)
+    validate_segment("dataset", dataset)
+    validate_segment("symbol", symbol)
     date = _parse_date_segment(date_segment)
 
     if tier is not Tier.RAW:
@@ -172,7 +173,7 @@ def dataset_glob(
     than the symbols asked for. A bare ``str`` or an empty sequence is rejected rather than
     iterated into per-character patterns or an empty scan.
     """
-    dataset = _segment("dataset", dataset)
+    dataset = validate_segment("dataset", dataset)
     if symbols is None:
         names = ["*"]
     elif isinstance(symbols, str):
@@ -180,5 +181,5 @@ def dataset_glob(
     elif not symbols:
         raise ValueError("symbols must not be empty; pass None to scan every symbol")
     else:
-        names = [_segment("symbol", symbol) for symbol in symbols]
+        names = [validate_segment("symbol", symbol) for symbol in symbols]
     return [f"{root}/{tier.value}/{dataset}/{name}/{_DATE_PREFIX}*/*.parquet" for name in names]
