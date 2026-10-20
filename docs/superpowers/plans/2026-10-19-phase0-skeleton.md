@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - Python 3.12, pinned in `.python-version`; CI uses the same version.
-- `uv` for all dependency and environment management; `uv sync --frozen` in CI so a stale lockfile fails the build.
+- `uv` for all dependency and environment management; `uv sync --locked` in CI so a stale lockfile fails the build, and `--locked` repeated on every `uv run` step so none of them re-locks.
 - `mypy` runs in strict mode over `src`.
 - Mandatory columns on every Parquet file, in every tier: `symbol` (string), `ts` (timestamp, UTC-aware), `as_of` (date), `ingested_at` (timestamp, UTC-aware).
 - Point-in-time filtering and all guard assertions use `as_of`, never `ts`.
@@ -144,7 +144,9 @@ Expected: PASS, 6 passed
 
 - [ ] **Step 9: Write `.github/workflows/ci.yml`**
 
-Trigger on `push` and `pull_request`. One job on `ubuntu-latest`: `actions/checkout@v4`; `astral-sh/setup-uv@v5` with `enable-cache: true` and `python-version: "3.12"`; then steps running `uv sync --frozen`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy src`, `uv run pytest -q`. Set no environment variables.
+Trigger on `push` and `pull_request`. One job on `ubuntu-latest`: `actions/checkout@v4`; `astral-sh/setup-uv@v5` with `enable-cache: true` and `python-version: "3.12"`; then steps running `uv sync --locked`, `uv run --locked ruff check .`, `uv run --locked ruff format --check .`, `uv run --locked mypy src`, `uv run --locked pytest -q`. Set no environment variables.
+
+`--locked` throughout, not `--frozen`: `--frozen` skips the staleness comparison entirely, and a bare `uv run` re-locks by default. Either one would let a lockfile that no longer matches `pyproject.toml` sail through green.
 
 - [ ] **Step 10: Verify the full CI command set passes locally**
 

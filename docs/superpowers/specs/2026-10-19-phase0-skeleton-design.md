@@ -284,12 +284,18 @@ subclasses so CI can assert on the specific failure rather than on a message str
 
 1. `actions/checkout`
 2. `astral-sh/setup-uv` with the cache enabled
-3. `uv sync --frozen` — fails if `uv.lock` is stale, so a dependency cannot drift in
+3. `uv sync --locked` — fails if `uv.lock` is stale, so a dependency cannot drift in
    unlocked
-4. `uv run ruff check .`
-5. `uv run ruff format --check .`
-6. `uv run mypy src`
-7. `uv run pytest -q`
+4. `uv run --locked ruff check .`
+5. `uv run --locked ruff format --check .`
+6. `uv run --locked mypy src`
+7. `uv run --locked pytest -q`
+
+`--locked`, not `--frozen`: `--frozen` installs from the lockfile *without* comparing it
+against `pyproject.toml`, so a stale lock passes silently — the opposite of what this step
+is for. `--locked` asserts the lock is current and fails otherwise. The flag is repeated on
+each `uv run` because a bare `uv run` re-locks and re-syncs by default, which would quietly
+repair a stale lock inside the runner and report success.
 
 `VOLAB_HOLDOUT_UNLOCK` is never set in this workflow. The future holdout-reveal job is a
 separate, manually dispatched workflow, which is also what makes its runs individually
