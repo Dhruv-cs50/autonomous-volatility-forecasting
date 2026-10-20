@@ -31,6 +31,7 @@ _RAW_NAME = re.compile(r"part-([0-9]{8}T[0-9]{6}Z)\.parquet")
 _DATE_PREFIX = "date="
 _SINGLE_PART_NAME = "part.parquet"
 _SEGMENTS = 5  # tier / dataset / symbol / date=... / filename
+_GLOB_METACHARACTERS = frozenset("*?[]")
 
 
 class Tier(StrEnum):
@@ -50,6 +51,21 @@ class PathInfo:
     ingested_at: dt.datetime | None
 
 
+def _segment(kind: str, value: str) -> str:
+    """Validate a dataset or symbol path segment.
+
+    A segment must be a single, literal directory name. Anything else can escape the tier tree,
+    change the segment count, or (via glob metacharacters) widen a scan to other symbols.
+    """
+    if not value or value in {".", ".."}:
+        raise ValueError(f"{kind} must be a non-empty name, got {value!r}")
+    if "/" in value or os.sep in value:
+        raise ValueError(f"{kind} must not contain a path separator, got {value!r}")
+    if _GLOB_METACHARACTERS.intersection(value):
+        raise ValueError(f"{kind} must not contain glob metacharacters, got {value!r}")
+    return value
+
+
 def _partition(date: dt.date) -> str:
     return f"{_DATE_PREFIX}{date.isoformat()}"
 
@@ -58,15 +74,36 @@ def raw_path(root: Path, source: str, symbol: str, date: dt.date, ingested_at: d
     if ingested_at.tzinfo is None:
         raise ValueError("ingested_at must be timezone-aware")
     stamp = ingested_at.astimezone(dt.UTC).strftime(_STAMP_FORMAT)
-    return root / Tier.RAW / source / symbol / _partition(date) / f"part-{stamp}.parquet"
+    return (
+        root
+        / Tier.RAW
+        / _segment("source", source)
+        / _segment("symbol", symbol)
+        / _partition(date)
+        / f"part-{stamp}.parquet"
+    )
 
 
 def curated_path(root: Path, dataset: str, symbol: str, date: dt.date) -> Path:
-    return root / Tier.CURATED / dataset / symbol / _partition(date) / _SINGLE_PART_NAME
+    return (
+        root
+        / Tier.CURATED
+        / _segment("dataset", dataset)
+        / _segment("symbol", symbol)
+        / _partition(date)
+        / _SINGLE_PART_NAME
+    )
 
 
 def features_path(root: Path, feature_set: str, symbol: str, date: dt.date) -> Path:
-    return root / Tier.FEATURES / feature_set / symbol / _partition(date) / _SINGLE_PART_NAME
+    return (
+        root
+        / Tier.FEATURES
+        / _segment("feature_set", feature_set)
+        / _segment("symbol", symbol)
+        / _partition(date)
+        / _SINGLE_PART_NAME
+    )
 
 
 def _parse_date_segment(segment: str) -> dt.date:
@@ -105,9 +142,15 @@ def parse_path(path: Path, root: Path) -> PathInfo:
     except ValueError:
         raise ValueError(f"unknown tier {tier_name!r} in {path}") from None
 
+    _segment("dataset", dataset)
+    _segment("symbol", symbol)
     date = _parse_date_segment(date_segment)
 
     if tier is not Tier.RAW:
+        if filename != _SINGLE_PART_NAME:
+            raise ValueError(
+                f"{tier.value} filename must be {_SINGLE_PART_NAME!r}, got {filename!r}"
+            )
         return PathInfo(tier=tier, dataset=dataset, symbol=symbol, date=date, ingested_at=None)
 
     match = _RAW_NAME.fullmatch(filename)
@@ -123,8 +166,19 @@ def parse_path(path: Path, root: Path) -> PathInfo:
 def dataset_glob(
     root: Path, tier: Tier, dataset: str, symbols: Sequence[str] | None = None
 ) -> list[str]:
-    """One DuckDB scan pattern per symbol, or a single wildcard-symbol pattern when ``None``."""
-    return [
-        f"{root}/{tier.value}/{dataset}/{symbol}/{_DATE_PREFIX}*/*.parquet"
-        for symbol in (["*"] if symbols is None else symbols)
-    ]
+    """One DuckDB scan pattern per symbol, or a single wildcard-symbol pattern when ``None``.
+
+    Symbols and the dataset are validated as literal names, so a pattern can never match more
+    than the symbols asked for. A bare ``str`` or an empty sequence is rejected rather than
+    iterated into per-character patterns or an empty scan.
+    """
+    dataset = _segment("dataset", dataset)
+    if symbols is None:
+        names = ["*"]
+    elif isinstance(symbols, str):
+        raise ValueError(f"symbols must be a sequence of names, not a bare string: {symbols!r}")
+    elif not symbols:
+        raise ValueError("symbols must not be empty; pass None to scan every symbol")
+    else:
+        names = [_segment("symbol", symbol) for symbol in symbols]
+    return [f"{root}/{tier.value}/{dataset}/{name}/{_DATE_PREFIX}*/*.parquet" for name in names]
