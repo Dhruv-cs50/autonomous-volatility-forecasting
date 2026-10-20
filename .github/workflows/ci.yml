@@ -13,8 +13,8 @@ jobs:
         with:
           enable-cache: true
           python-version: "3.12"
-      - run: uv sync --frozen
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run mypy src
-      - run: uv run pytest -q
+      - run: uv sync --locked
+      - run: uv run --locked ruff check .
+      - run: uv run --locked ruff format --check .
+      - run: uv run --locked mypy src
+      - run: uv run --locked pytest -q
