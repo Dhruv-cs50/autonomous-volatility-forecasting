@@ -8,8 +8,10 @@ import volab
 SRC = Path(volab.__file__).parent
 # Paths relative to SRC: only the top-level store.py is exempt, never a store.py in a subpackage.
 ALLOWED = {"store.py"}
-# Includes store's private read helpers: they read Parquet with none of load_panel's guard, and
-# naming them here catches every spelling (absolute or relative import, attribute, bare name).
+# Includes store's private read helpers: they read Parquet with none of load_panel's guard.
+# For ``_scan`` and ``_matching_files`` -- named here -- every spelling is caught (absolute or
+# relative import, attribute, bare name). A future private helper not in this set is caught only
+# where the rule below catches it by shape: imported by name from the store module.
 BANNED_CALLS = {
     "read_parquet",
     "scan_parquet",

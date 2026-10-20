@@ -89,9 +89,12 @@ vol-lab/
     store.py
   tests/
     conftest.py               # synthetic panel fixture + holdout-unlock policing
+    test_errors.py
     test_config.py
     test_paths.py
     test_store_guard.py
+    test_conftest_policy.py   # the policing fixture polices, and the fixture's own fixtures
+    test_import_discipline.py # store.py is the only module that may read Parquet
   data/                       # contents gitignored
     raw/.gitkeep
     curated/.gitkeep
@@ -141,8 +144,12 @@ Rule 4 needs a trading calendar. `exchange_calendars` is the dependency; if its 
 awkward, the fallback is a weekday-and-fixed-holiday check, with the compromise recorded
 here rather than left implicit.
 
-Environment variables may override single values with a `VOLAB_` prefix, so CI and the
-future holdout-reveal job can vary configuration without editing the YAML.
+Five named environment variables may override single values — `VOLAB_UNIVERSE`,
+`VOLAB_CALENDAR`, `VOLAB_SPLITS_DEV_END`, `VOLAB_SPLITS_HOLDOUT_START` and
+`VOLAB_STORAGE_ROOT` — so CI and the future holdout-reveal job can vary configuration
+without editing the YAML. The mapping is an explicit table, not prefix handling by
+introspection: any other `VOLAB_*` variable is ignored, so a misspelled one cannot look
+like it took effect.
 
 ## 6. Parquet layout
 
@@ -178,17 +185,27 @@ macro series released with a lag has `ts` in the past and `as_of` at release. Fi
 
 Pure functions, no filesystem access:
 
-- `raw_path(source, symbol, date, ingested_at) -> Path`
-- `curated_path(dataset, symbol, date) -> Path`
-- `features_path(feature_set, symbol, date) -> Path`
-- `parse_path(path) -> PathInfo` — recovers tier, dataset, symbol and date.
-- `dataset_glob(tier, dataset, symbols) -> str` — the DuckDB scan pattern.
+Every one of them takes the store `root` explicitly rather than reading configuration, so
+that they stay pure and a test can point them at a `tmp_path`:
+
+- `raw_path(root, source, symbol, date, ingested_at) -> Path`
+- `curated_path(root, dataset, symbol, date) -> Path`
+- `features_path(root, feature_set, symbol, date) -> Path`
+- `parse_path(path, root) -> PathInfo` — recovers tier, dataset, symbol, date and, for the
+  raw tier, `ingested_at`.
+- `dataset_glob(root, tier, dataset, symbols) -> list[str]` — one DuckDB scan pattern per
+  symbol, or a single wildcard-symbol pattern when `symbols is None`. A list, not a string:
+  the per-symbol form is what keeps a scan from matching symbols nobody asked for.
 
 `Tier` is a string enum (`RAW`, `CURATED`, `FEATURES`) defined here, since the tier is a
 property of the layout; `volab.store` imports it rather than defining a parallel one.
 
-`parse_path(build(...)) == inputs` for every builder, property-tested over generated
-symbols and dates.
+`parse_path(build(...)) == inputs` for every builder, checked by table-driven
+`pytest.mark.parametrize` cases over hand-chosen inputs — a round-trip per tier, plus a
+table of rejection reasons (wrong segment count, a non-canonical or invalid partition date,
+a wrong filename, a path outside the root, an unknown tier, a glob metacharacter in a
+segment). There is no property-based testing and no `hypothesis` dependency; the cases are
+enumerated, and each one names the reason it is rejected.
 
 ## 7. `load_panel()` — the holdout guard
 
@@ -227,9 +244,21 @@ failure: a flag flipped while debugging and forgotten cannot open the holdout wi
 environment change, and an environment variable left set in a shell cannot open it without
 a deliberate call-site edit. A single key would make either mistake sufficient.
 
-**d. Audit trail.** Every successful read whose `end` crosses `dev_end` appends one JSON
-line to `data/holdout_access.jsonl`: timestamp, dataset, tier, `end`, `start`, symbols,
+**d. Audit trail.** Every read whose `end` crosses `dev_end` appends one JSON line to
+`data/holdout_access.jsonl`: timestamp, outcome, dataset, tier, `end`, `start`, symbols,
 calling module and line, git SHA, and whether the tree was dirty.
+
+Attempts are recorded, not just successes. `outcome` is `"success"`, or the class name of
+the exception that refused the read (`DatasetNotFound`, `SchemaError`, `HoldoutViolation`
+from the partition assertion). Were only successes recorded, a key-holder could probe the
+sealed window — its existence, its emptiness, its schema — without limit and without
+trace, because every one of those probes fails before the line would be written. The
+count of lines would then understate the number of times the seal was reached for, which
+is precisely the number the write-up has to report. The exception itself is re-raised
+untouched; recording an attempt never changes what the caller sees.
+
+The file is version-controlled evidence, not scratch: an artefact `git clean -xdf` erases
+cannot be the number anything reports, so it is tracked from the moment it exists.
 
 The trigger is crossing `dev_end`, not holding the two keys. A caller with both keys who
 reads *inside* the dev window touches no sealed row and writes no line — the file records
@@ -253,10 +282,42 @@ path bug — failures no amount of argument-checking can see. Two assertions, bo
   the window filter are both correct, and kept for exactly that reason: it costs one
   comparison and is the last thing standing if either is later broken.
 
-**f. Test-suite policing.** A session-scoped autouse fixture fails any test that unlocks
+**f. Test-suite policing.** A function-scoped autouse fixture fails any test that unlocks
 the holdout unless that test is marked `@pytest.mark.holdout`. Without this, a single
 careless fixture could unlock the holdout for the whole suite and every later test would
-inherit it.
+inherit it. Function-scoped, and necessarily so: it depends on `monkeypatch`, which is
+function-scoped, and per-test scope is also what makes the mark meaningful per test.
+
+It polices two routes past the seal, not one. It replaces `_unlock_granted`, which catches
+an unmarked test reaching for the keys; and it wraps `load_panel`, failing an unmarked test
+whose read *returned* rows from past the repository's own `dev_end` — whatever `Settings`
+that call was handed. It judges the return rather than the argument, so the tests whose
+whole purpose is to prove a holdout read is refused stay expressible: those raise, and
+never reach the check.
+
+**g. Threat model: whose boundary is it?** Rules (b) and (c) assume the `Settings` they
+read came from `load_settings()`, i.e. that `splits.dev_end` is the repository's boundary
+and not the caller's. That assumption was undocumented and unenforced, and it is the one
+that matters: a caller who hands `load_panel` a hand-built `Settings` with
+`dev_end = 2099-12-31` is not unlocking the holdout, it is moving it. The two keys are
+never asked for, so `_unlock_granted` is never called, so neither rule (c) nor the
+suite's policing of it sees anything at all — and the read succeeds, silently, with no
+audit line. `Settings` built by hand is a sanctioned pattern (the `synthetic_store`
+fixture must build one, because `load_settings` insists the store root lie inside the
+repository, which a `tmp_path` by design does not), so the pattern cannot simply be
+banned.
+
+Nor is such a `Settings` invalid: `dev_end = 2099-12-31` with
+`holdout_start = 2100-01-02` satisfies every rule in §5. What makes it dangerous is only
+that its boundary differs from the repository's.
+
+It is enforced in two places. In the library: when `settings` is passed explicitly,
+`load_panel` compares its `splits.dev_end` against the configured value from
+`load_settings()` and raises `HoldoutViolation` if the passed one is *later*, before any
+other rule runs. An *earlier* `dev_end` is accepted, being strictly more conservative. In
+the suite: the fixture in (f) fails an unmarked test that read past the repository's
+`dev_end` regardless of the `Settings` it used, so the library check losing its teeth in
+some later refactor does not silently reopen the route.
 
 ### Failure philosophy
 
@@ -320,10 +381,19 @@ Test-driven: each test below is written and seen to fail before the code that sa
 
 ### Fixtures
 
-`conftest.py` provides `synthetic_store`, which writes a small Parquet panel to a
-`tmp_path` and returns `Settings` pointing at it. The panel spans dates on both sides of
-`dev_end` for all three symbols, with correct mandatory columns. Tests needing a broken
-store derive from it rather than hand-rolling their own.
+`conftest.py` provides `synthetic_store`, which writes nothing by itself. It returns a
+`SyntheticStore` — a `tmp_path` root plus a `Settings` pointing at it, with the
+repository's own universe, calendar and splits — whose `write()` each test calls to lay
+down exactly the files that test is about. One Parquet file per date, one row per file by
+default, in the layout `volab.paths` defines.
+
+Writing is per-test rather than shared because most of these tests are about a *broken*
+store: `write()` takes `as_of` to put a row under a contradicting partition or to write a
+null, `drop_columns` to omit a mandatory column, `ts_naive` to write a naive timestamp,
+`ingested_at` to order two vintages, `ts` to give two vintages of one observation the same
+timestamp, and `repeat` to put rows that tie on the whole key into one file. A single
+shared panel could not be all of those things at once, and a test that has to undo a
+fixture's correctness to express its fault is harder to read than one that writes two rows.
 
 ### Cases
 

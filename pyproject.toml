@@ -30,6 +30,8 @@ dev = [
 
 [tool.ruff]
 line-length = 100
+# ``reference`` is pre-existing project material, not ours to reformat; ``docs`` holds Markdown
+# whose fenced Python is illustrative and deliberately left as written.
 extend-exclude = ["reference", "docs"]
 
 [tool.ruff.lint]
@@ -47,6 +49,9 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# The evidence standard this project cites everywhere, enforced rather than remembered: a
+# warning from any run is an error, whether or not someone thought to pass ``-W error``.
+filterwarnings = ["error"]
 markers = [
     "holdout: unlocks the sealed holdout window",
 ]

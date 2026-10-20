@@ -42,7 +42,7 @@ Five input classes the spec implies but does not pin, ordered by how likely each
 |---|---|
 | `pyproject.toml` | Dependencies, ruff/mypy/pytest configuration, package metadata. |
 | `.python-version` | Pins 3.12. |
-| `.gitignore` | Ignores `data/` contents, keeps `.gitkeep`. |
+| `.gitignore` | Ignores `data/` contents, keeps `.gitkeep` and the holdout audit log. |
 | `README.md` | What the repo is, how to run tests, what the holdout rule is. |
 | `.github/workflows/ci.yml` | Lint, format check, type check, test. |
 | `config/base.yaml` | Universe, calendar, splits, storage root. |
@@ -95,7 +95,7 @@ Add: ruff `line-length = 100`, lint rules `["E", "F", "I", "UP", "B", "SIM"]`; `
 
 - [ ] **Step 4: Write `.gitignore` and `README.md`**
 
-`.gitignore` ignores `data/**` with a `!data/**/.gitkeep` exception, plus `.venv/`, `__pycache__/`, `.mypy_cache/`, `.pytest_cache/`, and `data/holdout_access.jsonl`.
+`.gitignore` ignores `data/**` with `!data/**/.gitkeep` and `!data/holdout_access.jsonl` exceptions, plus `.venv/`, `__pycache__/`, `.mypy_cache/` and `.pytest_cache/`. The audit log is deliberately *not* ignored: its line count is a number the write-up must report.
 
 `README.md` states what the project is, `uv sync` then `uv run pytest` to get started, and the holdout rule in two sentences: reads go through `load_panel()`, and passing `end` beyond `dev_end` needs both keys.
 
@@ -551,10 +551,10 @@ git commit -m "test: add synthetic store fixture and holdout-unlock policy"
 7. `ts` is timezone-naive → `SchemaError`
 8. any `as_of` is null → `HoldoutViolation`
 9. any row's `as_of` differs from its Hive `date` partition value → `HoldoutViolation` (assertion e1)
-10. filter to `as_of <= end`, and `>= start` when given; deduplicate on `(symbol, ts)` keeping the greatest `ingested_at`
+10. filter to `as_of <= end`, and `>= start` when given; then deduplicate on `(symbol, ts)` keeping the greatest `(as_of, ingested_at)` — the latest *vintage* in the window wins, with `ingested_at` breaking ties inside one vintage and nothing more. Rows tying on all of `(symbol, ts, as_of, ingested_at)` are irreducible, so they raise `SchemaError` rather than having one of them dropped
 11. the filtered frame is empty → `DatasetNotFound`
 12. `max(as_of) > end` → `HoldoutViolation` (assertion e2)
-13. if the read was unlocked, append one audit line
+13. if `end` crossed `dev_end`, append one audit line — the trigger is crossing the boundary, not holding the two keys, matching the amended spec §7d. The line is written whether the read succeeded or was refused, and its `outcome` field says which: a refused holdout read is still an attempt on the sealed window, and recording only successes would leave unlimited unrecorded probing of it. The exception is re-raised untouched.
 
 Step 9 must precede step 10, and that ordering is the whole substance of spec rule (e). A file parked under the wrong partition date would otherwise be *discarded* by the filter and reported as `DatasetNotFound` — a plausible-looking answer derived from corrupt storage. Checking partition consistency before filtering turns a silent discard into a loud failure.
 
@@ -650,7 +650,7 @@ Expected: FAIL — `ModuleNotFoundError: No module named 'volab.store'`
 
 - [ ] **Step 3: Implement `src/volab/store.py`**
 
-Follow the check order above exactly. Factor the DuckDB read into `_scan(patterns: list[str], columns: Sequence[str] | None) -> pd.DataFrame` so the test at step 1 can monkeypatch it to prove rule (b) precedes any I/O. Keep `_unlock_granted`, `_append_audit` and `_caller_frame` module-level and prefixed with an underscore.
+Follow the check order above exactly. Factor the DuckDB read into `_scan(patterns: list[str]) -> pd.DataFrame` so the test at step 1 can monkeypatch it to prove rule (b) precedes any I/O. It takes no `columns`: the read is always of every column, for the reason two paragraphs down, so there is nothing to pass. Keep `_unlock_granted`, `_append_audit` and `_caller_frame` module-level and prefixed with an underscore.
 
 Query shape: `duckdb.sql("SELECT * FROM read_parquet($patterns, hive_partitioning := true)")` with the pattern list bound as a parameter, then `.df()`. `hive_partitioning := true` supplies the `date` column that step 9 compares against.
 
@@ -691,42 +691,16 @@ Spec §11: the guard protects `load_panel()`, not `pandas.read_parquet`. A test 
 
 - [ ] **Step 1: Write the failing test**
 
-```python
-import ast
-from pathlib import Path
+`tests/test_import_discipline.py` is the source of truth for the ratchet; read it rather than any copy here. An earlier draft of the scan lived in this plan and was superseded during Task 6, which made the plan the most misleading description of it available.
 
-import pytest
+As built, the ratchet parses every `*.py` under the installed `volab` package with `ast` and reports every way a module could reach Parquet other than through `load_panel`:
 
-import volab
+- It recurses (`rglob`) and exempts the top-level `store.py` by its path relative to the package root, never a `store.py` in a subpackage.
+- Banned names cover the third-party readers (`read_parquet`, `scan_parquet`, `read_table`, `ParquetFile`, `ParquetDataset`) *and* store's own private read helpers (`_scan`, `_matching_files`), each caught as an attribute, as a bare name, or as an imported name.
+- Banned imports are matched on the **top-level package** (`duckdb`, `pyarrow`), so a submodule nobody anticipated — `pyarrow.dataset` — cannot slip past a list of exact module names.
+- Importing *any* private name from the store module, by absolute or relative path, is itself a violation: a private store helper reads Parquet with none of `load_panel`'s guard.
 
-SRC = Path(volab.__file__).parent
-ALLOWED = {"store.py"}
-BANNED_CALLS = {"read_parquet", "read_table", "ParquetFile", "ParquetDataset"}
-BANNED_IMPORTS = {"duckdb", "pyarrow", "pyarrow.parquet"}
-
-
-def _modules() -> list[Path]:
-    return sorted(p for p in SRC.glob("*.py") if p.name not in ALLOWED)
-
-
-@pytest.mark.parametrize("module", _modules(), ids=lambda p: p.name)
-def test_module_does_not_read_parquet_directly(module: Path) -> None:
-    tree = ast.parse(module.read_text())
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Attribute) and node.attr in BANNED_CALLS:
-            pytest.fail(f"{module.name} calls {node.attr}; reads belong in store.py")
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                assert alias.name not in BANNED_IMPORTS, f"{module.name} imports {alias.name}"
-        if isinstance(node, ast.ImportFrom) and node.module in BANNED_IMPORTS:
-            pytest.fail(f"{module.name} imports from {node.module}")
-
-
-def test_store_is_actually_exempt() -> None:
-    # Guards against the allowlist silently covering a renamed module.
-    assert (SRC / "store.py").exists()
-    assert "read_parquet" in (SRC / "store.py").read_text()
-```
+Each rule has its own table-driven case asserting the scan reports it, alongside cases asserting that ordinary code is accepted, so the ratchet's blind spots are visible rather than assumed.
 
 - [ ] **Step 2: Run test to verify it passes already**
 
@@ -765,4 +739,4 @@ git commit -m "test: enforce store.py as the only Parquet reader"
 - [ ] `test_end_after_dev_end_raises_without_keys` passes — spec exit criterion 2.
 - [ ] `test_allow_holdout_alone_raises` and `test_env_var_alone_raises` pass — exit criterion 3.
 - [ ] `test_both_keys_return_holdout_rows_and_write_one_audit_line` passes — exit criterion 4.
-- [ ] `data/holdout_access.jsonl` is absent from the repository and gitignored.
+- [ ] `data/holdout_access.jsonl` is absent because no holdout read has occurred, and tracked once one does. It is version-controlled evidence, not scratch: an artefact `git clean -xdf` erases cannot be the line count the write-up has to report (spec §7d).

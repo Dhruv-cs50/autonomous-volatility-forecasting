@@ -37,4 +37,10 @@ class UnknownSymbol(VolabError):
 
 
 class SchemaError(VolabError):
-    """Raised when a file lacks a mandatory column or has the wrong type for one."""
+    """Raised when a file lacks a mandatory column, or a requested one, or holds rows the
+    store cannot tell apart.
+
+    One dtype is checked, and only one: ``ts`` must be timezone-aware, because a naive
+    timestamp cannot be placed on a timeline. ``as_of`` and ``ingested_at`` are not dtype-
+    checked here; a bad ``as_of`` fails closed on the partition-consistency assertion instead.
+    """

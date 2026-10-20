@@ -6,4 +6,8 @@ data/**
 __pycache__/
 .mypy_cache/
 .pytest_cache/
-data/holdout_access.jsonl
+
+# Version-controlled evidence, not scratch: the audit log's line count is a number the
+# write-up must report, and an artefact `git clean -xdf` erases cannot be that number. It is
+# absent while no holdout read has happened, and tracked from the moment one does.
+!data/holdout_access.jsonl
