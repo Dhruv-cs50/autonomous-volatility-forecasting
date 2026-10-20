@@ -1,0 +1,57 @@
+[project]
+name = "volab"
+version = "0.1.0"
+description = "Volatility-forecasting research lab with a sealed holdout window"
+readme = "README.md"
+authors = [
+    { name = "Dhruv Shah", email = "dhruvshah844@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.5.6",
+    "exchange-calendars>=4.13.2",
+    "pandas>=3.0.6",
+    "pyarrow>=26.0.0",
+    "pyyaml>=6.0.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pandas-stubs>=3.0.5.260914",
+    "pytest>=9.1.1",
+    "ruff>=0.17.1",
+    "types-pyyaml>=6.0.12.20260906",
+]
+
+[tool.ruff]
+line-length = 100
+# ``reference`` is pre-existing project material, not ours to reformat; ``docs`` holds Markdown
+# whose fenced Python is illustrative and deliberately left as written.
+extend-exclude = ["reference", "docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+strict = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+# exchange_calendars ships neither stubs nor a py.typed marker.
+module = ["exchange_calendars", "exchange_calendars.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+# The evidence standard this project cites everywhere, enforced rather than remembered: a
+# warning from any run is an error, whether or not someone thought to pass ``-W error``.
+filterwarnings = ["error"]
+markers = [
+    "holdout: unlocks the sealed holdout window",
+]
