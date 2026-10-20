@@ -671,22 +671,75 @@ All parsing, numeric coercion and normalisation happen at the **curated** step. 
 found in Phase 3 is then a curated rebuild rather than destroyed history, which is the whole
 point of having a raw tier at all.
 
-### The payload archive
+### The payload archive is committed, deliberately
 
-Each fetch also writes the untouched response body to
-`data/vendor_payloads/<source>/<symbol>/<fetched_at>.<ext>.gz`, and `build-raw` can replay from
-those instead of the network. That is what makes any rebuild possible once the trailing window
-has moved past the data.
+Each fetch writes the untouched response body to
+`data/vendor_payloads/<source>/<symbol>/<fetched_at>.<ext>.gz`, and `build-raw --replay` rebuilds
+raw from those instead of the network. That is what makes any rebuild possible once Nasdaq's
+trailing window has moved past the data.
 
-**The archive is not committed.** `.gitignore` excludes `data/**` and that stays. Nasdaq's and
-Cboe's data is theirs, this repository is public, and the framework document's own rule is to
-publish code and derived metrics rather than raw vendor data. This is my call, taken on the
-safer side of a licensing question rather than Dhruv's to adjudicate; if he wants the archive
-committed, that is a deliberate licensing decision and a one-line `.gitignore` exception.
+**The archive is committed to this public repository, for all three sources.** `.gitignore` keeps
+ignoring `data/**` and gains one narrow exception for `data/vendor_payloads/**` only — the
+curated, features and targets tiers stay out of git, and `data/holdout_access.jsonl` keeps its
+own existing exception.
 
-The consequence must be stated rather than hidden: **the irreplaceable asset lives on one
-laptop and git will not protect it.** Backing it up is Dhruv's action, outside this phase's
-code, and it appears in section 15 as a risk rather than being quietly solved here.
+This is Dhruv's decision, taken with the trade in front of him and recorded here so a later
+reader can see it was weighed rather than overlooked. What he was shown: that the three sources
+are not equally exposed — Cboe publishes these CSVs openly and FRED's own series are US
+government work in the public domain, so only Nasdaq's undocumented backend is genuinely being
+republished; that git history is effectively permanent, so a committed payload cannot
+meaningfully be withdrawn later; and that the durability goal was reachable without publishing
+anything, by keeping the Nasdaq tree in a private repository. He chose durability and
+self-contained reproducibility over licensing caution for all three.
+
+The framework document's own rule — publish code, download scripts and derived metrics rather
+than raw vendor data — is therefore **knowingly departed from here**, for Nasdaq specifically.
+That is the cost of the decision and it is not hidden.
+
+What it buys is real: the repository reproduces its own dataset from a clean checkout with no
+credentials and no live endpoint, which is a property the trailing window would otherwise have
+made impossible. A `NOTICE` file at the repository root names each payload tree's provenance,
+records that the data remains Nasdaq's, Cboe's and the St. Louis Fed's respectively, and states
+that it is included to make the research reproducible.
+
+### Archive shape and cadence: one immutable file per payload
+
+Committing the archive makes its growth git's problem, so the shape is a design decision rather
+than an implementation detail. Measured payload sizes, fetched 2026-10-19:
+
+| Payload | Raw | gzip -9 |
+|---|---|---|
+| Cboe `VIX_History.csv` (full history, every request) | 474 KB | **106 KB** |
+| FRED `BAA10Y` (full history, every request) | 169 KB | **37 KB** |
+| Nasdaq SPY, 10-year backfill | 273 KB | **57 KB** |
+| Nasdaq SPY, one-session update | 160 B | **155 B** |
+
+Two facts follow. First, the payload count is **~2,500 a year** (10 fetches a day), not the
+~88,900 of section 12 — that figure counts Parquet partitions, which are not archived. Git
+handles a few thousand immutable blobs without difficulty. Second, **Cboe and FRED re-serve
+their entire history on every request**, so archiving each daily fetch would add ~530 KB
+compressed per day, about **194 MB a year**, essentially all of it redundant.
+
+The cadence therefore differs by source, which is what keeps the archive small:
+
+- **Nasdaq bars and dividends — archive every fetch.** The window is trailing, so each payload
+  carries sessions that later payloads will have lost. At 155 bytes a day per symbol this is
+  free.
+- **Cboe and FRED — archive at most one payload per series per calendar month.** A full-history
+  payload subsumes every earlier one, so replay needs only the most recent; keeping one a month
+  still leaves a monthly vintage trail, which is worth having precisely because section 6 notes
+  the keyless FRED endpoint serves latest-vintage only. Skip the write if that month already
+  has one.
+
+That is roughly **160 files and 4–5 MB a year**, against 194 MB for archiving everything.
+
+Files are **immutable and never rewritten**: one payload, one path, named by `fetched_at`. A
+rolling or monthly *archive container* was considered and rejected — a `.tar.gz` cannot be
+appended to, so every fetch would decompress, add and recompress the current period's container,
+and git would store a whole new multi-megabyte blob on each rewrite. That converts a few
+thousand small immutable objects into a few hundred large mutable ones and increases total
+history, which is the opposite of the intent. Immutable per-payload files also keep `build-raw
+--replay` trivially resumable, since a partial run leaves completed payloads untouched.
 
 ### What CI can prove, and what it cannot
 
@@ -732,7 +785,7 @@ Phase 1 must not require it, and must not be rearranged to accommodate it later:
 | 200-session holdout | the Phase 6 check is weak at 22 and 66 days | recorded in section 5; Phase 6 must report it |
 | `load_panel` is modified | a regression here would break the project's central guarantee | the change is additive and confined to the symbol check; the entire Phase 0 suite must pass unmodified apart from two date assertions |
 | ~88,900 single-row Parquet files; ~25,600 paths per feature build | reads may be slow enough to make the suite and the daily pipeline painful | section 12: measure on one symbol first, stated budget, stop-and-escalate trigger before the bulk backfill |
-| The irreplaceable payload archive is **untracked local state on one machine** | `git clean -xdf`, a disk failure or a lost laptop destroys history that cannot be refetched | archive written on every fetch and replayable; **not** committed, for licensing reasons (section 13). **Backing it up is Dhruv's action and this phase does not do it for him.** |
+| The payload archive is **committed to a public repository**, republishing an undocumented vendor's responses | Nasdaq may send a takedown request; Cboe's CSVs are already public and FRED is public domain, so the exposure is Nasdaq's tree alone | Dhruv's informed decision (section 13), taken over the private-repo alternative. Remedy if it happens: make the repository private, or rewrite history to drop `data/vendor_payloads/nasdaq_*`. A `NOTICE` file records provenance. The durability risk this replaces — irreplaceable history on one laptop — is now closed by git |
 
 
 ## 16. Left to the builder

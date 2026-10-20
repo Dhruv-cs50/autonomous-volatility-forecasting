@@ -367,17 +367,25 @@ git commit -m "feat: add session arithmetic for as_of lags and target horizons"
   Each `fetch_*` returns the vendor's fields **as served** — Nasdaq prices stay `"$123.45"`
   strings — plus `symbol`, `ts`, `as_of`, `ingested_at`, `source_url`, `vendor_date_text`.
   ```python
+  ARCHIVE_MONTHLY: frozenset[str]   # {"cboe_vix", "fred"} -- sources serving full history
   def archive_payload(body: bytes, *, source: str, symbol: str, fetched_at: dt.datetime,
-                      extension: str, settings: Settings | None = None) -> Path
+                      extension: str, settings: Settings | None = None) -> Path | None
   def build_raw(source: str, *, symbols: Sequence[str], since: dt.date = INGEST_FLOOR) -> int
   INGEST_FLOOR: dt.date = dt.date(2016, 7, 1)
   ```
-  `fetch_*` only fetches and parses. `archive_payload` writes the untouched response body to
-  `data/vendor_payloads/<source>/<symbol>/<fetched_at>.<ext>.gz`; `build_raw` replays those
-  archived payloads into raw Parquet via `write_raw`, dropping every row with `as_of <
-  INGEST_FLOOR`. The two-step split is what makes a rebuild possible once Nasdaq's trailing
-  window has moved past the data, and it is the only reason `fetch` and `build-raw` are separate
-  CLI verbs.
+  `fetch_*` only fetches and parses. `archive_payload` gzip-writes the untouched response body
+  to `data/vendor_payloads/<source>/<symbol>/<fetched_at>.<ext>.gz`, **one immutable file per
+  payload, never rewritten**, and returns `None` without writing when the source is in
+  `ARCHIVE_MONTHLY` and that series already has a payload for that calendar month. `build_raw`
+  replays archived payloads into raw Parquet via `write_raw`, dropping every row with
+  `as_of < INGEST_FLOOR`. The two-step split is what makes a rebuild possible once Nasdaq's
+  trailing window has moved past the data, and it is the only reason `fetch` and `build-raw` are
+  separate CLI verbs.
+
+  The archive is **committed** (spec section 13). `.gitignore`'s narrow
+  `!data/vendor_payloads/**` exception and the root `NOTICE` file are already in place; verify
+  with `git add -An data/vendor_payloads/...` rather than `git check-ignore`, which exits 0 on a
+  negation match and reads as "ignored" when it is not.
 
 - [ ] **Step 1: Write the fixtures and the failing tests**
 
@@ -416,6 +424,14 @@ def test_build_raw_replays_an_archived_payload_without_the_network(synthetic_sto
 def test_build_raw_drops_rows_before_the_ingest_floor(synthetic_store) -> None:
     # a 2016-06-30 observation is dropped; 2016-07-01 is kept
     assert INGEST_FLOOR == dt.date(2016, 7, 1)
+
+def test_archive_skips_a_full_history_source_twice_in_one_month(tmp_path) -> None:
+    # cboe_vix: the second call in the same calendar month returns None and writes nothing
+    assert ARCHIVE_MONTHLY == frozenset({"cboe_vix", "fred"})
+def test_archive_always_writes_for_nasdaq_bars(tmp_path) -> None:
+    # two fetches the same day both archive: the trailing window makes each payload unique
+def test_archive_never_rewrites_an_existing_payload(tmp_path) -> None:
+    # a second call with the same fetched_at raises rather than clobbering
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**

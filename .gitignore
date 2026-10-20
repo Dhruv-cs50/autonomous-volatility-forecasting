@@ -11,3 +11,10 @@ __pycache__/
 # write-up must report, and an artefact `git clean -xdf` erases cannot be that number. It is
 # absent while no holdout read has happened, and tracked from the moment one does.
 !data/holdout_access.jsonl
+
+# The vendor payload archive is committed deliberately, so the repository can rebuild its own
+# dataset from a clean checkout: Nasdaq serves only a trailing 10-year window, and anything that
+# falls off it cannot be refetched. Narrow on purpose -- the curated, features and targets tiers
+# stay ignored, because they are derivable from these payloads. See the Phase 1 spec, section 13,
+# and NOTICE for provenance.
+!data/vendor_payloads/**
