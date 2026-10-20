@@ -31,7 +31,10 @@ _RAW_NAME = re.compile(r"part-([0-9]{8}T[0-9]{6}Z)\.parquet")
 _DATE_PREFIX = "date="
 _SINGLE_PART_NAME = "part.parquet"
 _SEGMENTS = 5  # tier / dataset / symbol / date=... / filename
-_GLOB_METACHARACTERS = frozenset("*?[]")
+# ``{}`` are in the set because DuckDB's globber expands braces and Python's ``glob`` does not:
+# without them the store's two expansion helpers would be asking the same question in two
+# different languages, and only one of them would see the wider match.
+_GLOB_METACHARACTERS = frozenset("*?[]{}")
 
 
 class Tier(StrEnum):

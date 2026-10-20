@@ -151,6 +151,16 @@ def test_unquoted_yaml_dates_are_accepted(tmp_path: Path) -> None:
         (VALID.replace('root: "data"', 'root: "/etc"'), "storage.root", "root outside repo"),
         (VALID.replace('root: "data"', 'root: "../data"'), "storage.root", "root escapes repo"),
         (VALID.replace('root: "data"', 'root: "."'), "storage.root", "root is the repo itself"),
+        # The layout refuses metacharacters in every dataset and symbol segment so a pattern can
+        # never match more than what was asked for; the root is interpolated into the very same
+        # pattern, so it is held to the very same rule.
+        (VALID.replace('root: "data"', 'root: "data*"'), "glob metacharacters", "root wildcard"),
+        (
+            VALID.replace('root: "data"', 'root: "store/{a,b}"'),
+            "glob metacharacters",
+            "root brace expansion",
+        ),
+        (VALID.replace('root: "data"', 'root: "sub/da?a"'), "glob metacharacters", "root in depth"),
         (
             VALID.replace("calendar: XNYS", "calendar: NOT_A_CALENDAR"),
             "calendar",

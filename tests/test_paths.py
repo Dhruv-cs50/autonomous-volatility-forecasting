@@ -100,6 +100,9 @@ def test_dataset_glob_wildcards_symbols_when_none() -> None:
             "invalid timestamp",
         ),
         (ROOT / "curated/bars_daily/SP*/date=2023-06-15/part.parquet", "glob metacharacters"),
+        # DuckDB's globber expands braces and Python's glob does not, so a brace segment would
+        # have the two helpers asking the same question in different languages.
+        (ROOT / "curated/bars_daily/{SPY,QQQ}/date=2023-06-15/part.parquet", "glob metacharac"),
         (ROOT / "../store2/curated/bars_daily/SPY/date=2023-06-15/part.parquet", "not under"),
         (ROOT / "nosuchtier/bars_daily/SPY/date=2023-06-15/part.parquet", "unknown tier"),
     ],

@@ -215,12 +215,23 @@ def _validate_storage_root(value: object) -> Path:
 
     Lexical, like ``paths``: symlinks are not followed, so a ``data`` symlink to another disk
     still works.
+
+    The root is interpolated straight into the scan patterns ``paths.dataset_glob`` builds, so
+    its own components are held to the rule every dataset and symbol segment is held to: no glob
+    metacharacters, or a pattern could match more than what was asked for. ``storage.root:
+    "data*"`` would otherwise scan every sibling directory whose name starts with ``data``.
+    Refused here, in the configuration layer, because that is where the value is accepted.
     """
     if not isinstance(value, str) or not value:
         raise ConfigError(f"storage.root must be a non-empty path string, got {value!r}")
     root = Path(os.path.normpath(_REPO_ROOT / value))  # an absolute value wins the join
     if root == _REPO_ROOT or not root.is_relative_to(_REPO_ROOT):
         raise ConfigError(f"storage.root {value!r} must be inside the repository {_REPO_ROOT}")
+    for component in root.relative_to(_REPO_ROOT).parts:
+        try:
+            validate_segment("storage.root component", component)
+        except ValueError as exc:
+            raise ConfigError(f"storage.root {value!r}: {exc}") from None
     return root
 
 
