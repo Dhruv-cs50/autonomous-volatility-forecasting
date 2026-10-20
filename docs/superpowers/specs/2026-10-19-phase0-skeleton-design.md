@@ -227,9 +227,14 @@ failure: a flag flipped while debugging and forgotten cannot open the holdout wi
 environment change, and an environment variable left set in a shell cannot open it without
 a deliberate call-site edit. A single key would make either mistake sufficient.
 
-**d. Audit trail.** Every *successful* unlocked read appends one JSON line to
-`data/holdout_access.jsonl`: timestamp, dataset, tier, `end`, symbols, calling module and
-line, git SHA, and whether the tree was dirty. This is the mechanism behind the parent
+**d. Audit trail.** Every successful read whose `end` crosses `dev_end` appends one JSON
+line to `data/holdout_access.jsonl`: timestamp, dataset, tier, `end`, `start`, symbols,
+calling module and line, git SHA, and whether the tree was dirty.
+
+The trigger is crossing `dev_end`, not holding the two keys. A caller with both keys who
+reads *inside* the dev window touches no sealed row and writes no line — the file records
+holdout accesses, and padding it with reads that saw nothing would make its line count,
+the number the write-up must report, mean less. This is the mechanism behind the parent
 document's "a single logged holdout check": the holdout is not forbidden, it is
 *expensive and recorded*, and the count of lines in this file is a number the final
 write-up must report.
@@ -365,7 +370,7 @@ store derive from it rather than hand-rolling their own.
 | `dev_end` of 2023-12-31 may leave too little holdout once real history arrives | The date is one config value and the audit log is empty until it is used, so it can be moved in Phase 1 before any score exists to be influenced by the choice. |
 | DuckDB partition pruning may not apply to every scan pattern | Correctness never depends on pruning; the post-read assertion filters regardless. Performance is a Phase 1 concern with real data volumes. |
 | The guard protects `load_panel()`, not `pd.read_parquet` | Phase 0 ships a lint rule banning direct Parquet reads outside `volab.store`, which is also what makes the agent's lack of a `read_parquet` tool enforceable later. |
-| On this machine, every entry in `.venv/lib/python3.12/site-packages` acquires the macOS `hidden` flag (`UF_HIDDEN`), and CPython skips a `.pth` file carrying it — so the editable install silently stops working and `import volab` fails | `pythonpath = ["src"]` under `[tool.pytest.ini_options]`, so the suite does not depend on the `.pth` being readable. `chflags nohidden` is the manual escape if an interactive `python` also fails. The cause is likely hardlinks from a flagged `~/.cache/uv`; it does not affect CI, which syncs fresh on Linux. |
+| On this machine, every entry in `.venv/lib/python3.12/site-packages` acquires the macOS `hidden` flag (`UF_HIDDEN`), and CPython skips a `.pth` file carrying it — so the editable install silently stops working and `import volab` fails | `pythonpath = ["src"]` under `[tool.pytest.ini_options]`, so the suite does not depend on the `.pth` being readable. The cause is **iCloud**: `~/Desktop` is synced, so the repository and its `.venv` sit inside a managed tree and the flag is re-applied within seconds. `chflags nohidden` is therefore not a durable escape — the real fix is to move the repository out of the synced tree, which also stops iCloud churning thousands of `.venv` files. CI is unaffected, syncing fresh on Linux. |
 
 ## 12. What Phase 0 earns
 
