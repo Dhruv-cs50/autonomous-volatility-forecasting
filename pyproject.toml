@@ -41,6 +41,7 @@ files = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
 markers = [
     "holdout: unlocks the sealed holdout window",
 ]
