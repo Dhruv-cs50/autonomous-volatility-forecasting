@@ -7,10 +7,19 @@ permitted to read Parquet.
 
 The checks run in a fixed order, because which error surfaces first is part of the contract:
 
-1. unknown symbols, 2. a reversed window, 3. the holdout boundary -- before any filesystem
-access, 4. no matching files, 5. the read, 6. absent columns, 7. a naive ``ts``, 8. a null
-``as_of``, 9. partition consistency, 10. the point-in-time filter and deduplication, 11. an
-empty result, 12. the post-filter ``as_of`` assertion, 13. the audit line.
+0. a passed ``Settings`` whose ``dev_end`` is later than the repository's, 1. unknown symbols,
+2. a reversed window, 3. the holdout boundary -- before any filesystem access, 4. no matching
+files, 5. the read, 6. absent columns, 7. a naive ``ts``, 8. a null ``as_of``, 9. partition
+consistency, 10. the point-in-time filter, the irreducible-duplicate check and deduplication,
+11. an empty result, 12. the post-filter ``as_of`` assertion, 13. the audit line.
+
+Step 0 exists because every rule below it reads ``dev_end`` from the settings it was handed. A
+caller who hands over a later boundary is not unlocking the holdout, it is moving it, and the
+two keys are never asked for -- so nothing downstream would ever see it.
+
+Steps 4 to 12 run inside the audit's scope, so a holdout read that is refused leaves a line
+behind too, with its ``outcome`` naming the refusal. Recording only successes would leave the
+sealed window open to unlimited unrecorded probing.
 
 Step 9 deliberately precedes step 10. A file parked under the wrong ``date=`` partition would
 otherwise be discarded by the filter and reported as missing data -- a plausible-looking "no
@@ -47,6 +56,9 @@ _UNLOCK_ENV = "VOLAB_HOLDOUT_UNLOCK"
 # Supplied by DuckDB's Hive partitioning, not by the file: step 9 compares the two.
 _PARTITION_COLUMN = "date"
 _REQUIRED_COLUMNS: tuple[str, ...] = (*MANDATORY_COLUMNS, _PARTITION_COLUMN)
+# The finest key the store can tell rows apart by. Two rows tying on all of it are
+# indistinguishable, so neither can be called the current one.
+_FULL_KEY: tuple[str, ...] = ("symbol", "ts", "as_of", "ingested_at")
 _PACKAGE_DIR = Path(volab.__file__).resolve().parent
 _GIT_TIMEOUT_SECONDS = 5.0
 
@@ -62,8 +74,13 @@ def _unlock_granted(allow_holdout: bool) -> bool:
 
 
 def _matching_files(patterns: list[str]) -> list[str]:
-    """Expand the scan patterns. DuckDB raises on a pattern matching nothing; we'd rather say
-    ``DatasetNotFound``, so the existence question is asked first and separately."""
+    """Expand the scan patterns into the files to read.
+
+    DuckDB raises on a pattern matching nothing; we'd rather say ``DatasetNotFound``, so the
+    existence question is asked first and separately. The expansion is then what gets scanned,
+    which also keeps one scope spanning several per-symbol patterns from aborting on the symbols
+    that happen to have no files.
+    """
     return sorted(path for pattern in patterns for path in glob.glob(pattern))
 
 
@@ -131,12 +148,20 @@ def _append_audit(
     end: dt.date,
     start: dt.date | None,
     symbols: Sequence[str] | None,
+    outcome: str,
 ) -> None:
-    """Append one JSON object describing an unlocked read. Append-only, one line per read."""
+    """Append one JSON object describing an unlocked read. Append-only, one line per attempt.
+
+    ``outcome`` is ``"success"`` or the class name of the exception that refused the read. A
+    refusal is still an attempt on the sealed window: recording only successes would let a
+    key-holder probe the existence, emptiness and schema of post-``dev_end`` data without end
+    while the log's line count stayed clean.
+    """
     caller_module, caller_lineno = _caller_frame()
     git_sha, git_dirty = _git_state()
     record: dict[str, Any] = {
         "ts": dt.datetime.now(dt.UTC).isoformat(),
+        "outcome": outcome,
         "dataset": dataset,
         "tier": tier.value,
         "end": end.isoformat(),
@@ -173,8 +198,28 @@ def load_panel(
 
     Reading past ``settings.splits.dev_end`` needs both ``allow_holdout=True`` and
     ``VOLAB_HOLDOUT_UNLOCK=1``, and leaves an audit line behind.
+
+    A ``settings`` argument may be more conservative than the repository's configuration but
+    never less: a ``dev_end`` later than the configured one is refused outright.
     """
-    resolved = load_settings() if settings is None else settings
+    # 0. The guard's premise is that ``dev_end`` is the repository's own boundary. A hand-built
+    #    Settings that moves it forward would walk straight past the seal without asking for a
+    #    key, so ``_unlock_granted`` would never be called and nothing -- not this module, not
+    #    the suite's policing fixture -- would intercept it. Checked before every other rule,
+    #    so no path can reach the boundary test with a boundary the caller chose. An earlier
+    #    ``dev_end`` is more conservative, and allowed.
+    if settings is None:
+        resolved = load_settings()
+    else:
+        resolved = settings
+        configured = load_settings().splits.dev_end
+        if resolved.splits.dev_end > configured:
+            raise HoldoutViolation(
+                f"the settings passed to load_panel carry splits.dev_end "
+                f"{resolved.splits.dev_end}, later than the repository's configured dev_end "
+                f"{configured}: moving the holdout boundary is not a way to read past it. "
+                f"Unlock the window with allow_holdout=True and {_UNLOCK_ENV}=1 instead."
+            )
 
     # 1. Symbols must name the configured universe. A bare string would otherwise be iterated
     #    into single characters here instead of reaching dataset_glob's own refusal.
@@ -207,83 +252,141 @@ def load_panel(
             f"needs both allow_holdout=True and {_UNLOCK_ENV}=1"
         )
 
-    # 4. Nothing to read is a missing dataset, not an empty answer.
-    patterns = dataset_glob(resolved.storage_root, tier, dataset, symbols)
-    if not _matching_files(patterns):
-        scope = "any symbol" if symbols is None else f"symbol(s) {list(symbols)}"
-        raise DatasetNotFound(
-            f"no files match {tier.value}/{dataset} for {scope} under {resolved.storage_root}"
+    # Steps 4 to 12 run inside the audit's scope: once the two keys have opened the sealed
+    # window, the attempt is recorded whether it succeeds or fails. The exception is re-raised
+    # untouched; nothing here swallows or rewrites a refusal.
+    try:
+        # 4. Nothing to read is a missing dataset, not an empty answer. ``symbols=None`` means
+        #    the configured universe, not every directory on disk: a typo'd or decommissioned
+        #    ticker directory must not silently join the panel. Finding files for only some of
+        #    the universe is not an error; finding them for none of it is.
+        scope_symbols = resolved.universe if symbols is None else symbols
+        patterns = dataset_glob(resolved.storage_root, tier, dataset, scope_symbols)
+        matched = _matching_files(patterns)
+        if not matched:
+            scope = (
+                f"universe {list(resolved.universe)}"
+                if symbols is None
+                else f"symbol(s) {list(symbols)}"
+            )
+            raise DatasetNotFound(
+                f"no files match {tier.value}/{dataset} for {scope} under {resolved.storage_root}"
+            )
+
+        # 5. The read. No projection or partition pushdown, deliberately: steps 6 to 12 need
+        #    ``ts``, ``as_of``, ``ingested_at`` and ``date`` whatever the caller asked for, so
+        #    honouring a narrow projection here would quietly disable the checks the caller
+        #    relies on, and step 9 must see rows the window excludes, so partitions are not
+        #    pruned on ``end`` either. ``columns`` is applied at the very end instead.
+        #    Correctness never depends on pruning.
+        #    The matched files are handed over rather than the patterns: one scope now spans
+        #    several per-symbol patterns, and DuckDB raises on any single pattern that matches
+        #    nothing, so a universe symbol with no files would abort a scan the union answered.
+        frame = _scan(matched)
+
+        # 6. Every mandatory column, the partition value, and whatever the caller asked for.
+        missing = [name for name in _REQUIRED_COLUMNS if name not in frame.columns]
+        if missing:
+            raise SchemaError(f"{tier.value}/{dataset} is missing mandatory column(s) {missing}")
+        if columns is not None:
+            absent = [name for name in columns if name not in frame.columns]
+            if absent:
+                raise SchemaError(f"{tier.value}/{dataset} has no requested column(s) {absent}")
+
+        # 7. A naive ts cannot be placed on a timeline, so it cannot be trusted on one.
+        if not isinstance(frame["ts"].dtype, pd.DatetimeTZDtype):
+            raise SchemaError(
+                f"{tier.value}/{dataset} column 'ts' must be timezone-aware, "
+                f"got dtype {frame['ts'].dtype}"
+            )
+
+        # 8. as_of is what the guard asserts on; a null one cannot be asserted on at all.
+        null_as_of = int(frame["as_of"].isna().sum())
+        if null_as_of:
+            raise HoldoutViolation(
+                f"{tier.value}/{dataset} has {null_as_of} row(s) with a null as_of; "
+                "point-in-time filtering cannot be verified"
+            )
+
+        # 9. Assertion e1, BEFORE the filter: a row whose as_of contradicts its own partition
+        #    means the store is corrupt. Filtering first would discard the evidence and report
+        #    no data.
+        as_of = _as_dates(frame["as_of"])
+        partition = _as_dates(frame[_PARTITION_COLUMN])
+        mismatched = as_of != partition
+        if bool(mismatched.any()):
+            first = frame.loc[mismatched, ["as_of", _PARTITION_COLUMN]].iloc[0]
+            raise HoldoutViolation(
+                f"{int(mismatched.sum())} row(s) in {tier.value}/{dataset} carry an as_of that "
+                f"contradicts their date= partition, first as_of {first['as_of']} under "
+                f"date={first[_PARTITION_COLUMN]}"
+            )
+
+        # 10. Point-in-time filter on as_of, then one row per (symbol, ts): the latest vintage
+        #     at or before ``end`` wins. ``as_of`` leads the sort because it, not
+        #     ``ingested_at``, is the point-in-time axis -- two rows sharing (symbol, ts) with
+        #     different as_of are a designed-for case, one file per vintage in its own date=
+        #     partition, and a revision backfilled after a later vintage was ingested must not
+        #     supersede it. ``ingested_at`` breaks ties within one vintage, and nothing else.
+        window = as_of <= end
+        if start is not None:
+            window &= as_of >= start
+        frame = frame[window]
+
+        # Rows tying on the whole key are indistinguishable, so no rule can name the current
+        # one. Dropping one silently would be truncation for a dataset whose true grain is
+        # finer than (symbol, ts) -- a silently wrong number, which this layer refuses to
+        # produce. The store is declared corrupt instead.
+        tied = frame.duplicated(list(_FULL_KEY), keep=False)
+        if bool(tied.any()):
+            first = frame.loc[tied, list(_FULL_KEY)].iloc[0]
+            raise SchemaError(
+                f"{int(tied.sum())} row(s) in {tier.value}/{dataset} tie on all of "
+                f"{list(_FULL_KEY)}, first symbol {first['symbol']!r} ts {first['ts']} "
+                f"as_of {first['as_of']} ingested_at {first['ingested_at']}: the store cannot "
+                "say which of them is current"
+            )
+
+        frame = frame.sort_values(["as_of", "ingested_at"], kind="stable").drop_duplicates(
+            ["symbol", "ts"], keep="last"
         )
+        frame = frame.sort_values(["symbol", "ts"]).reset_index(drop=True)
 
-    # 5. The read. No projection or partition pushdown, deliberately: steps 6 to 12 need ``ts``,
-    #    ``as_of``, ``ingested_at`` and ``date`` whatever the caller asked for, so honouring a
-    #    narrow projection here would quietly disable the checks the caller relies on, and step 9
-    #    must see rows the window excludes, so partitions are not pruned on ``end`` either.
-    #    ``columns`` is applied at the very end instead. Correctness never depends on pruning.
-    frame = _scan(patterns)
+        # 11. An empty frame is never returned where the caller expected rows.
+        if frame.empty:
+            window_text = f"up to {end}" if start is None else f"{start} to {end}"
+            raise DatasetNotFound(f"no rows in {tier.value}/{dataset} have an as_of {window_text}")
 
-    # 6. Every mandatory column, the partition value, and whatever the caller asked for.
-    missing = [name for name in _REQUIRED_COLUMNS if name not in frame.columns]
-    if missing:
-        raise SchemaError(f"{tier.value}/{dataset} is missing mandatory column(s) {missing}")
-    if columns is not None:
-        absent = [name for name in columns if name not in frame.columns]
-        if absent:
-            raise SchemaError(f"{tier.value}/{dataset} has no requested column(s) {absent}")
-
-    # 7. A naive ts cannot be placed on a timeline, so it cannot be trusted on one.
-    if not isinstance(frame["ts"].dtype, pd.DatetimeTZDtype):
-        raise SchemaError(
-            f"{tier.value}/{dataset} column 'ts' must be timezone-aware, "
-            f"got dtype {frame['ts'].dtype}"
-        )
-
-    # 8. as_of is what the guard asserts on; a null one cannot be asserted on at all.
-    null_as_of = int(frame["as_of"].isna().sum())
-    if null_as_of:
-        raise HoldoutViolation(
-            f"{tier.value}/{dataset} has {null_as_of} row(s) with a null as_of; "
-            "point-in-time filtering cannot be verified"
-        )
-
-    # 9. Assertion e1, BEFORE the filter: a row whose as_of contradicts its own partition means
-    #    the store is corrupt. Filtering first would discard the evidence and report no data.
-    as_of = _as_dates(frame["as_of"])
-    partition = _as_dates(frame[_PARTITION_COLUMN])
-    mismatched = as_of != partition
-    if bool(mismatched.any()):
-        first = frame.loc[mismatched, ["as_of", _PARTITION_COLUMN]].iloc[0]
-        raise HoldoutViolation(
-            f"{int(mismatched.sum())} row(s) in {tier.value}/{dataset} carry an as_of that "
-            f"contradicts their date= partition, first as_of {first['as_of']} under "
-            f"date={first[_PARTITION_COLUMN]}"
-        )
-
-    # 10. Point-in-time filter on as_of, then one row per (symbol, ts): the latest ingest wins.
-    window = as_of <= end
-    if start is not None:
-        window &= as_of >= start
-    frame = frame[window]
-    frame = frame.sort_values("ingested_at", kind="stable").drop_duplicates(
-        ["symbol", "ts"], keep="last"
-    )
-    frame = frame.sort_values(["symbol", "ts"]).reset_index(drop=True)
-
-    # 11. An empty frame is never returned where the caller expected rows.
-    if frame.empty:
-        window_text = f"up to {end}" if start is None else f"{start} to {end}"
-        raise DatasetNotFound(f"no rows in {tier.value}/{dataset} have an as_of {window_text}")
-
-    # 12. Assertion e2: what is about to be returned cannot see past end.
-    maximum = _as_dates(frame["as_of"]).max()
-    if maximum > end:
-        raise HoldoutViolation(
-            f"post-filter assertion failed: max(as_of) {maximum} exceeds end {end}"
-        )
+        # 12. Assertion e2: what is about to be returned cannot see past end.
+        maximum = _as_dates(frame["as_of"]).max()
+        if maximum > end:
+            raise HoldoutViolation(
+                f"post-filter assertion failed: max(as_of) {maximum} exceeds end {end}"
+            )
+    except Exception as exc:
+        if past_dev_end:
+            _append_audit(
+                resolved,
+                dataset=dataset,
+                tier=tier,
+                end=end,
+                start=start,
+                symbols=symbols,
+                outcome=type(exc).__name__,
+            )
+        raise
 
     # 13. An unlocked read is recorded before the rows leave this function.
     if past_dev_end:
-        _append_audit(resolved, dataset=dataset, tier=tier, end=end, start=start, symbols=symbols)
+        _append_audit(
+            resolved,
+            dataset=dataset,
+            tier=tier,
+            end=end,
+            start=start,
+            symbols=symbols,
+            outcome="success",
+        )
 
     # Last operation before returning, so every check above saw the full schema. The Hive
     # ``date`` column is a partition artefact duplicating ``as_of``; it is not part of the contract.

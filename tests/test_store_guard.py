@@ -7,15 +7,19 @@ data, and the holdout boundary must be refused before anything is read off disk.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
+from volab.config import Splits
 from volab.errors import DatasetNotFound, HoldoutViolation, SchemaError, UnknownSymbol
-from volab.paths import MANDATORY_COLUMNS, Tier
+from volab.paths import MANDATORY_COLUMNS, Tier, curated_path
 from volab.store import AUDIT_FILENAME, load_panel
 
 DEV_DAY = dt.date(2023, 6, 15)
@@ -24,10 +28,16 @@ DAY = dt.timedelta(days=1)
 UNLOCK_ENV = "VOLAB_HOLDOUT_UNLOCK"
 
 
-def test_dev_window_read_returns_rows(synthetic_store) -> None:
-    synthetic_store.write("bars_daily", "SPY", [DEV_DAY - DAY, DEV_DAY])
+@pytest.mark.parametrize("tier", list(Tier), ids=lambda t: t.value)
+def test_dev_window_read_returns_rows(synthetic_store, tier: Tier) -> None:
+    """Every tier is readable, not just the curated default.
 
-    frame = load_panel("bars_daily", end=DEV_DAY, settings=synthetic_store.settings)
+    Each raw part file carries its own ``ingested_at`` stamp in its name; the two dates land in
+    separate ``date=`` partitions, so the default stamp is enough for both.
+    """
+    synthetic_store.write("bars_daily", "SPY", [DEV_DAY - DAY, DEV_DAY], tier=tier)
+
+    frame = load_panel("bars_daily", end=DEV_DAY, tier=tier, settings=synthetic_store.settings)
 
     assert len(frame) == 2
     assert set(frame["symbol"]) == {"SPY"}
@@ -260,8 +270,10 @@ def test_both_keys_return_holdout_rows_and_write_one_audit_line(
     assert record["start"] is None
     assert record["tier"] == Tier.CURATED.value
     assert record["caller_module"].endswith("test_store_guard")
+    assert record["outcome"] == "success"
     assert set(record) == {
         "ts",
+        "outcome",
         "dataset",
         "tier",
         "end",
@@ -281,3 +293,155 @@ def test_dev_window_read_writes_no_audit_line(synthetic_store) -> None:
     load_panel("bars_daily", end=DEV_DAY, settings=synthetic_store.settings)
 
     assert not (synthetic_store.settings.storage_root / AUDIT_FILENAME).exists()
+
+
+def test_dedup_keeps_the_latest_as_of_vintage(synthetic_store) -> None:
+    """``as_of`` is the vintage axis, so the latest vintage at or before ``end`` must win.
+
+    The superseded vintage is ingested *later* than the revision here, which is what a backfill
+    looks like: ordering on ``ingested_at`` alone would keep the wrong row.
+    """
+    revision = DEV_DAY
+    superseded = DEV_DAY - DAY
+    point = dt.datetime(2023, 6, 1, tzinfo=dt.UTC)
+    synthetic_store.write(
+        "vendor_bars",
+        "SPY",
+        [superseded],
+        tier=Tier.RAW,
+        ts=point,
+        ingested_at=dt.datetime(2025, 1, 2, tzinfo=dt.UTC),
+    )
+    synthetic_store.write(
+        "vendor_bars",
+        "SPY",
+        [revision],
+        tier=Tier.RAW,
+        ts=point,
+        ingested_at=dt.datetime(2025, 1, 1, tzinfo=dt.UTC),
+    )
+
+    frame = load_panel("vendor_bars", end=DEV_DAY, tier=Tier.RAW, settings=synthetic_store.settings)
+
+    assert len(frame) == 1
+    assert frame["as_of"].iloc[0].date() == revision
+
+
+def test_rows_tying_on_every_key_raise_schema_error(synthetic_store) -> None:
+    """A store that cannot say which of two identical-keyed rows is current is corrupt.
+
+    Keeping one silently would be truncation for a dataset whose true grain is finer than
+    ``(symbol, ts)``, which is exactly the silently-wrong number this layer exists to refuse.
+    """
+    synthetic_store.write("bars_daily", "SPY", [DEV_DAY], repeat=2)
+
+    with pytest.raises(SchemaError, match="SPY"):
+        load_panel("bars_daily", end=DEV_DAY, settings=synthetic_store.settings)
+
+
+def test_implicit_symbols_read_only_the_configured_universe(synthetic_store) -> None:
+    """``symbols=None`` means the universe, not whatever directories happen to exist.
+
+    A typo'd or decommissioned ticker directory must not silently join the panel. Only one of
+    the three universe symbols has files, which is not an error.
+    """
+    synthetic_store.write("bars_daily", "SPY", [DEV_DAY])
+    synthetic_store.write("bars_daily", "TSLA", [DEV_DAY])
+
+    frame = load_panel("bars_daily", end=DEV_DAY, settings=synthetic_store.settings)
+
+    assert set(frame["symbol"]) == {"SPY"}
+
+
+def test_no_universe_symbol_on_disk_raises_dataset_not_found(synthetic_store) -> None:
+    synthetic_store.write("bars_daily", "TSLA", [DEV_DAY])
+
+    with pytest.raises(DatasetNotFound, match="no files match"):
+        load_panel("bars_daily", end=DEV_DAY, settings=synthetic_store.settings)
+
+
+def test_passed_settings_may_not_move_dev_end_later(synthetic_store) -> None:
+    """The guard assumes ``Settings`` came from ``load_settings``; here it enforces that.
+
+    Deliberately unmarked: moving the boundary is not unlocking it, so no key is held and
+    nothing may be read past the repository's own ``dev_end``.
+    """
+    synthetic_store.write("bars_daily", "SPY", [HOLDOUT_DAY])
+    moved = dataclasses.replace(
+        synthetic_store.settings,
+        splits=Splits(dev_end=dt.date(2099, 12, 31), holdout_start=dt.date(2100, 1, 2)),
+    )
+
+    with pytest.raises(HoldoutViolation, match="later than the repository"):
+        load_panel("bars_daily", end=HOLDOUT_DAY, settings=moved)
+
+
+def test_passed_settings_may_move_dev_end_earlier(synthetic_store) -> None:
+    """An earlier ``dev_end`` is more conservative, so it is allowed."""
+    earlier = dataclasses.replace(
+        synthetic_store.settings,
+        splits=Splits(dev_end=dt.date(2023, 6, 30), holdout_start=dt.date(2023, 7, 3)),
+    )
+    synthetic_store.write("bars_daily", "SPY", [DEV_DAY])
+
+    assert len(load_panel("bars_daily", end=DEV_DAY, settings=earlier)) == 1
+
+
+@pytest.mark.holdout
+def test_refused_unlocked_read_still_writes_one_audit_line(
+    synthetic_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed holdout read is still an attempt on the sealed window, so it is recorded.
+
+    Without this, a key-holder could probe the existence, emptiness and schema of post-
+    ``dev_end`` data without end while the log's line count -- the number the write-up must
+    report -- stayed clean.
+    """
+    synthetic_store.write("bars_daily", "SPY", [DEV_DAY])
+    monkeypatch.setenv(UNLOCK_ENV, "1")
+
+    with pytest.raises(DatasetNotFound, match="no rows"):
+        load_panel(
+            "bars_daily",
+            start=HOLDOUT_DAY,
+            end=HOLDOUT_DAY,
+            allow_holdout=True,
+            settings=synthetic_store.settings,
+        )
+
+    audit = synthetic_store.settings.storage_root / AUDIT_FILENAME
+    lines = audit.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["outcome"] == "DatasetNotFound"
+    assert record["end"] == HOLDOUT_DAY.isoformat()
+
+
+def test_hive_partition_value_wins_over_a_same_named_file_column(synthetic_store) -> None:
+    """Step 9 rests on DuckDB preferring the Hive ``date`` value to a file column of that name.
+
+    The file claims ``date == as_of``, which would make the comparison vacuously true; its
+    ``date=`` partition says otherwise. The third-party precedence rule is what makes the
+    mismatch visible, so it is pinned here against future DuckDB upgrades.
+    """
+    path = curated_path(synthetic_store.root, "bars_daily", "SPY", DEV_DAY)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.table(
+            {
+                "symbol": pa.array(["SPY"], pa.string()),
+                "ts": pa.array(
+                    [dt.datetime(2024, 3, 1, tzinfo=dt.UTC)], pa.timestamp("us", tz="UTC")
+                ),
+                "as_of": pa.array([HOLDOUT_DAY], pa.date32()),
+                "ingested_at": pa.array(
+                    [dt.datetime(2025, 1, 1, tzinfo=dt.UTC)], pa.timestamp("us", tz="UTC")
+                ),
+                "date": pa.array([HOLDOUT_DAY], pa.date32()),
+            }
+        ),
+        path,
+    )
+
+    with pytest.raises(HoldoutViolation, match="partition"):
+        load_panel("bars_daily", end=DEV_DAY, settings=synthetic_store.settings)
