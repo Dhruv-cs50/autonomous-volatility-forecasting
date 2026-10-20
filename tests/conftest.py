@@ -175,8 +175,14 @@ def _forbid_holdout_unlock(
 
     # Every binding of the function, not only ``volab.store``'s: a test module that did
     # ``from volab.store import load_panel`` holds its own reference, taken at collection time,
-    # which an attribute patch on the module alone would not reach.
+    # which an attribute patch on the module alone would not reach. The probe is guarded because
+    # a module-level ``__getattr__`` (PEP 562) may raise anything it likes, and one unlucky
+    # third-party module would otherwise break every test at fixture setup.
     for module in list(sys.modules.values()):
-        if getattr(module, "load_panel", None) is original_load_panel:
+        try:
+            bound = getattr(module, "load_panel", None)
+        except Exception:
+            continue
+        if bound is original_load_panel:
             monkeypatch.setattr(module, "load_panel", police_holdout_read)
     yield

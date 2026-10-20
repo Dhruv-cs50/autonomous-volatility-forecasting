@@ -445,3 +445,21 @@ def test_hive_partition_value_wins_over_a_same_named_file_column(synthetic_store
 
     with pytest.raises(HoldoutViolation, match="partition"):
         load_panel("bars_daily", end=DEV_DAY, settings=synthetic_store.settings)
+
+
+def test_repeated_symbol_reads_the_same_rows_as_a_single_one(synthetic_store) -> None:
+    """A symbol named twice is a caller's slip, not a corrupt store.
+
+    ``dataset_glob`` emits one pattern per symbol, so a repeated symbol yields two identical
+    patterns; were the expansion not a set, DuckDB would read every file twice and every row
+    would tie on the whole key, accusing the store of a corruption that is not there.
+    """
+    synthetic_store.write("bars_daily", "SPY", [DEV_DAY - DAY, DEV_DAY])
+
+    once = load_panel("bars_daily", end=DEV_DAY, symbols=["SPY"], settings=synthetic_store.settings)
+    twice = load_panel(
+        "bars_daily", end=DEV_DAY, symbols=["SPY", "SPY"], settings=synthetic_store.settings
+    )
+
+    assert len(twice) == 2
+    pd.testing.assert_frame_equal(once, twice)

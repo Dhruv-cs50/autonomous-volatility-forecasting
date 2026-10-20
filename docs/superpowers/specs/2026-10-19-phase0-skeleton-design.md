@@ -319,6 +319,13 @@ the suite: the fixture in (f) fails an unmarked test that read past the reposito
 `dev_end` regardless of the `Settings` it used, so the library check losing its teeth in
 some later refactor does not silently reopen the route.
 
+One consequence, recorded here rather than left to be discovered: every call that passes
+`settings` explicitly now reads the repository's `config/base.yaml`, because that is where
+the boundary it is checked against comes from. Using the library against a store outside a
+checkout therefore raises `ConfigError` where it previously worked. That is the enforcement
+doing its job — there is no repository boundary to measure against, so there is no basis on
+which to permit the read — and not a case to be relaxed with an escape hatch.
+
 ### Failure philosophy
 
 Violations raise. `load_panel()` never silently clips the requested window to `dev_end`,

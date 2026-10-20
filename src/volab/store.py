@@ -32,6 +32,7 @@ is the last thing standing if either is ever broken.
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import glob
 import inspect
@@ -80,8 +81,14 @@ def _matching_files(patterns: list[str]) -> list[str]:
     existence question is asked first and separately. The expansion is then what gets scanned,
     which also keeps one scope spanning several per-symbol patterns from aborting on the symbols
     that happen to have no files.
+
+    A set, because overlapping patterns must not read a file twice. ``symbols=["SPY", "SPY"]``
+    yields two identical patterns from ``dataset_glob``, DuckDB does not collapse a repeated
+    path, and every row would then tie on the whole key -- accusing the store of a corruption
+    that is really a slip in the caller's list. De-duplicated here rather than at the symbol
+    check, so no other route to overlapping patterns can get around it.
     """
-    return sorted(path for pattern in patterns for path in glob.glob(pattern))
+    return sorted({path for pattern in patterns for path in glob.glob(pattern)})
 
 
 def _scan(patterns: list[str]) -> pd.DataFrame:
@@ -364,16 +371,20 @@ def load_panel(
                 f"post-filter assertion failed: max(as_of) {maximum} exceeds end {end}"
             )
     except Exception as exc:
+        # An unwritable audit log must not displace the refusal it was recording: the caller
+        # has to see why the read was refused. On the success path below there is no exception
+        # to protect, so a failure to record surfaces there instead of being swallowed.
         if past_dev_end:
-            _append_audit(
-                resolved,
-                dataset=dataset,
-                tier=tier,
-                end=end,
-                start=start,
-                symbols=symbols,
-                outcome=type(exc).__name__,
-            )
+            with contextlib.suppress(Exception):
+                _append_audit(
+                    resolved,
+                    dataset=dataset,
+                    tier=tier,
+                    end=end,
+                    start=start,
+                    symbols=symbols,
+                    outcome=type(exc).__name__,
+                )
         raise
 
     # 13. An unlocked read is recorded before the rows leave this function.
