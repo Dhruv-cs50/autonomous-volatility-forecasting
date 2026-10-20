@@ -355,7 +355,8 @@ store derive from it rather than hand-rolling their own.
 
 | Risk | Mitigation |
 |---|---|
-| `exchange_calendars` API friction on the adjacency rule | Fall back to a weekday-plus-holidays check and record the compromise in this document. |
+| `exchange_calendars` API friction on the adjacency rule | Not needed — `sessions_in_range` works as expected on 4.13.2, so the weekday-plus-holidays fallback was never taken. |
+| `exchange_calendars` exposes a rolling session window (about 2006 to 2027 as of this writing), and a split gap outside it raises `ConfigError` rather than passing | Harmless for any realistic split, since the window covers every date this project has data for. It would bite a `dev_end` set decades back, where the right answer is a clearer error rather than a silent pass. |
 | `dev_end` of 2023-12-31 may leave too little holdout once real history arrives | The date is one config value and the audit log is empty until it is used, so it can be moved in Phase 1 before any score exists to be influenced by the choice. |
 | DuckDB partition pruning may not apply to every scan pattern | Correctness never depends on pruning; the post-read assertion filters regardless. Performance is a Phase 1 concern with real data volumes. |
 | The guard protects `load_panel()`, not `pd.read_parquet` | Phase 0 ships a lint rule banning direct Parquet reads outside `volab.store`, which is also what makes the agent's lack of a `read_parquet` tool enforceable later. |
