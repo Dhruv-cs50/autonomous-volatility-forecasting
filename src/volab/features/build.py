@@ -53,6 +53,12 @@ from volab.features.realized import (
     semivariance_proxy,
     signed_jump_proxy,
 )
+
+# The one convention for "when a session's value became knowable", shared with the bars this
+# engine reads, so a gap row's stamp cannot drift from a real row's. It costs an import of
+# ``volab.ingest``, whose package body imports the store, which is why the import-graph test
+# asserts that nothing of the store is *bound* here rather than that it is never imported.
+from volab.ingest._frames import session_close_utc
 from volab.paths import MANDATORY_COLUMNS
 from volab.sessions import sessions_between
 
@@ -124,10 +130,20 @@ def log_returns(close: pd.Series) -> pd.Series:
     whose own or whose predecessor's close is null -- which is how a session with no bar poisons
     the two returns spanning it rather than being bridged by a return over two sessions.
 
+    ``shift(1)`` looks one *row* back, so the caller must have reindexed onto the calendar's
+    sessions first: only then is the previous row the previous session. Unlike the pure
+    functions in ``realized`` and ``har`` this one is handed a date index, so it can check that
+    for itself, and does.
+
     Curated bars keep raw OHLCV and carry no return column, so this is the one place in the
     project a return is derived. It is public so the CLI can reuse it for the panel the targets
     are built from, rather than deriving returns a second way.
     """
+    if not (close.index.is_monotonic_increasing and close.index.is_unique):
+        raise SchemaError(
+            "cannot derive log returns: the close series must be indexed by ascending, unique "
+            "sessions, because the previous row is the previous session only when it is"
+        )
     nonpositive = close[close <= 0]
     if not nonpositive.empty:
         raise SchemaError(
@@ -175,12 +191,18 @@ def _subject(panel: pd.DataFrame) -> str:
 
 
 def _require_ascending_sessions(panel: pd.DataFrame) -> None:
-    """Refuse a panel that is not in ascending time order, one symbol at a time.
+    """Refuse a panel that is not in ascending session order, one symbol at a time.
 
     This is the guard the pure functions deliberately do not carry. Their windows are
     positional, they never see a date, and they are hot; the one place to assert ordering is
     where their input is assembled. Per symbol, because a panel read from the store is sorted by
     ``(symbol, ts)`` and so is only ever ascending *within* a symbol.
+
+    Both ``ts`` and ``as_of`` are checked, and ``as_of`` is the load-bearing one: it is the
+    session every window and every join below is keyed on, so a panel whose ``as_of`` order
+    disagrees with its ``ts`` order would otherwise be silently reordered by the reindex. A
+    repeated session is refused here too, where it can say what is wrong, rather than reaching
+    the reindex and surfacing as a bare pandas "axis with duplicate labels".
     """
     if not isinstance(panel["ts"].dtype, pd.DatetimeTZDtype):
         raise SchemaError(
@@ -198,6 +220,18 @@ def _require_ascending_sessions(panel: pd.DataFrame) -> None:
             raise SchemaError(
                 f"cannot build features: {symbol} has more than one row for a ts, so no window "
                 "can say which of them the session's value is"
+            )
+        days = _sessions_of(rows)
+        if days != sorted(days):
+            raise SchemaError(
+                f"cannot build features: {symbol}'s rows are not in ascending as_of order; "
+                "as_of is the session every window and every join is keyed on, so an ascending "
+                "ts is not enough to establish the order the panel is in"
+            )
+        if len(set(days)) != len(days):
+            raise SchemaError(
+                f"cannot build features: {symbol} has more than one row for a session, so no "
+                "window can say which of them the session's value is"
             )
 
 
@@ -227,6 +261,9 @@ def _exogenous_column(
     if rows.empty or column not in panel.columns:
         return pd.Series(float("nan"), index=sessions, dtype="float64")
     days = _sessions_of(rows)
+    # Already proved by the ordering guard, which runs over every symbol. Kept because it costs
+    # one comparison, and the alternative if the two ever drift is a bare pandas ValueError from
+    # the reindex below instead of a sentence naming the series.
     if len(set(days)) != len(days):
         raise SchemaError(
             f"cannot build features: {series} has more than one row for a session, so the "
@@ -246,9 +283,9 @@ def build_features(
     does; that is the property the phase exists to prove.
 
     One row per session from the subject's first to its last, up to ``through``, with null
-    features wherever a window is incomplete. A session with no bar is still a row: ``as_of``
-    carries its identity, while ``ts`` and ``ingested_at`` stay null, because there was no bar
-    and inventing a timestamp for one would be exactly the silent repair this layer refuses.
+    features wherever a window is incomplete. A session with no bar is still a row: its ``ts``
+    is the calendar's close for that session, and its ``ingested_at`` is null, because nothing
+    was ingested for a bar that was never served.
     """
     missing = [name for name in MANDATORY_COLUMNS if name not in panel.columns]
     if missing:
@@ -280,9 +317,22 @@ def build_features(
     close = _on_sessions(bars[CLOSE_COLUMN].astype("float64"), days, sessions)
     returns = log_returns(close)
 
+    # A gap session's row needs a ts of its own, and a null one will not do: the store's read
+    # path dedupes on ``(symbol, ts)``, pandas treats NaT as equal to NaT, so two or more gap
+    # rows would collapse into a single row and then sort after every real one -- losing both
+    # "one row per session" and ascending order exactly when a vendor omits sessions, which is
+    # the case the session index exists for. The fallback is the calendar's own 16:00 ET close
+    # for that session: a function of the calendar, not an invented bar timestamp, and the same
+    # convention the bars themselves carry. ``ingested_at`` stays null, because nothing was
+    # ingested; the dedupe sorts on ``as_of``, and the full-key tie check does not collapse rows
+    # that differ in it.
+    canonical = pd.Series(
+        pd.to_datetime([session_close_utc(session) for session in sessions], utc=True),
+        index=sessions,
+    )
     data: dict[str, pd.Series] = {
         "symbol": pd.Series([symbol] * len(sessions), index=sessions),
-        "ts": _on_sessions(bars["ts"], days, sessions),
+        "ts": _on_sessions(bars["ts"], days, sessions).fillna(canonical),
         "as_of": pd.Series(sessions, index=sessions),
         "ingested_at": _on_sessions(bars["ingested_at"], days, sessions),
     }

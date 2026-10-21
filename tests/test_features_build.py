@@ -17,6 +17,9 @@ from __future__ import annotations
 import ast
 import datetime as dt
 import math
+import os
+import subprocess
+import sys
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 
@@ -24,9 +27,12 @@ import exchange_calendars as xcals
 import pandas as pd
 import pytest
 
+import volab
 import volab.features.build as build_module
+from volab.config import load_settings
 from volab.errors import SchemaError
-from volab.features.build import COLUMNS, build_features, log_returns
+from volab.features.build import COLUMNS, EXOGENOUS_SERIES, build_features, log_returns
+from volab.ingest._frames import session_close_utc
 from volab.sessions import sessions_between
 
 # Built once: constructing XNYS is slow enough that per-test construction shows up in the suite.
@@ -38,6 +44,8 @@ SESSIONS = sessions_between(CAL, dt.date(2023, 1, 3), dt.date(2023, 12, 29))
 RETURNS = [0.001 * (k + 1) * (-1 if k % 3 == 2 else 1) for k in range(len(SESSIONS) - 1)]
 
 # VIX1D's first publication. Before it the column is legitimately null, not broken.
+VIX_FAMILY: tuple[str, ...] = ("VIX", "VIX1D", "VIX9D", "VVIX")
+
 INCEPTION = dt.date(2022, 5, 13)
 MAY_2022 = sessions_between(CAL, dt.date(2022, 5, 2), dt.date(2022, 5, 20))
 
@@ -244,8 +252,8 @@ def test_a_missing_session_does_not_shorten_a_window() -> None:
     # The gap is a session of the table, with null features rather than no row.
     assert list(frame["as_of"]) == SESSIONS[:31]
     assert pd.isna(_at(frame, "rv_proxy_d5", gap))
-    # No bar means no timestamp of our own to invent: ``as_of`` carries the session identity.
-    assert pd.isna(frame.loc[frame["as_of"] == gap, "ts"].iloc[0])
+    # Not a null ts: see test_gap_sessions_carry_a_distinct_ascending_timestamp.
+    assert frame.loc[frame["as_of"] == gap, "ts"].iloc[0] == pd.Timestamp(session_close_utc(gap))
 
     # A 5-session window ending at session 14 spans the gap. Counting *rows* there are still
     # five of them to reach back over (sessions 9, 11, 12, 13, 14), which is exactly the silent
@@ -328,27 +336,63 @@ def test_growing_the_panel_does_not_change_the_features() -> None:
     pd.testing.assert_frame_equal(narrow, wide)
 
 
-def test_perturbing_rows_after_the_cutoff_leaves_features_unchanged() -> None:
+# Every group of values the engine reads. One test per group, because a perturbation that
+# misses an input entirely misses every forward peek in it -- the same reasoning that showed a
+# scale-only perturbation cannot catch a peek in a sign-sensitive column.
+INPUT_GROUPS: tuple[str, ...] = ("close", "vix", "value", "has_distribution")
+
+
+def _perturb(panel: pd.DataFrame, group: str, through: dt.date) -> pd.DataFrame:
+    """Rewrite one group of the panel's values, after ``through`` and nowhere else."""
+    future = panel["as_of"] > through
+    assert int(future.sum()) > 100, "the perturbation must have rows to act on"
+    perturbed = panel.copy()
+    if group == "close":
+        subject = future & (panel["symbol"] == "SPY")
+        # A decaying path, so every future return is large and **negative**. Scaling the closes
+        # is not enough on its own: the sign-sensitive columns would survive it unchanged, and a
+        # forward peek into one of those is exactly the defect these tests exist to catch.
+        perturbed.loc[subject, "close"] = [0.5**k for k in range(int(subject.sum()))]
+    elif group == "vix":
+        family = future & panel["symbol"].isin(VIX_FAMILY)
+        perturbed.loc[family, "close"] = 999.0
+    elif group == "value":
+        perturbed.loc[future, "value"] = 99.0
+    elif group == "has_distribution":
+        perturbed.loc[future, "has_distribution"] = True
+    else:
+        raise AssertionError(f"unknown input group {group!r}")
+    # A perturbation that silently no-ops would make its test pass for the wrong reason.
+    changed = [
+        column
+        for column in ("close", "value", "has_distribution")
+        if not perturbed[column].equals(panel[column])
+    ]
+    assert changed, f"perturbing {group} changed nothing"
+    return perturbed
+
+
+@pytest.mark.parametrize("group", INPUT_GROUPS)
+def test_perturbing_one_input_group_after_the_cutoff_leaves_features_unchanged(group: str) -> None:
     through = SESSIONS[100]
     panel = _full_panel()
     before = build_features(panel, through=through, calendar=CAL)
 
-    future = panel["as_of"] > through
-    subject = future & (panel["symbol"] == "SPY")
-    assert int(subject.sum()) > 100, "the perturbation must have rows to act on"
-    perturbed = panel.copy()
-    # A decaying path, so every future return is large and **negative**. Scaling the closes is
-    # not enough on its own: the sign-sensitive columns would survive it unchanged, and a
-    # forward peek into one of those is exactly the defect this test exists to catch.
-    perturbed.loc[subject, "close"] = [0.5**k for k in range(int(subject.sum()))]
-    perturbed.loc[future, "value"] = 99.0
-    # A perturbation that silently no-ops would make this test pass for the wrong reason.
-    assert not perturbed["close"].equals(panel["close"])
-    assert not perturbed["value"].equals(panel["value"])
-
-    after = build_features(perturbed, through=through, calendar=CAL)
+    after = build_features(_perturb(panel, group, through), through=through, calendar=CAL)
 
     pd.testing.assert_frame_equal(before, after)
+
+
+def test_perturbing_every_input_group_at_once_leaves_features_unchanged() -> None:
+    through = SESSIONS[100]
+    panel = _full_panel()
+    before = build_features(panel, through=through, calendar=CAL)
+
+    perturbed = panel
+    for group in INPUT_GROUPS:
+        perturbed = _perturb(perturbed, group, through)
+
+    pd.testing.assert_frame_equal(before, build_features(perturbed, through=through, calendar=CAL))
 
 
 def test_deleting_and_appending_sessions_after_the_cutoff_leaves_features_unchanged() -> None:
@@ -469,6 +513,68 @@ def test_has_distribution_is_passed_through() -> None:
     assert sum(1 for value in flags.values() if bool(value)) == 1
 
 
+def test_gap_sessions_carry_a_distinct_ascending_timestamp() -> None:
+    """A null ``ts`` would not survive a read back through the store.
+
+    ``load_panel`` dedupes on ``(symbol, ts)`` with ``keep="last"`` and pandas treats NaT as
+    equal to NaT, so two gap rows carrying a null ``ts`` would collapse into one row and then
+    sort after every real one -- losing both "one row per session" and ascending order in
+    exactly the case the session index exists for. The stamp is the calendar's own session
+    close, which is what the bars carry too.
+    """
+    gaps = [SESSIONS[10], SESSIONS[20]]
+    kept = [day for day in SESSIONS if day not in gaps]
+    closes = [CLOSES[k] for k, day in enumerate(SESSIONS) if day not in gaps]
+    frame = build_features(_panel(_bars(kept, closes)), through=SESSIONS[30], calendar=CAL)
+
+    assert frame["ts"].notna().all()
+    assert frame["ts"].is_monotonic_increasing
+    assert frame["ts"].is_unique
+    for gap in gaps:
+        row = frame[frame["as_of"] == gap]
+        assert row["ts"].iloc[0] == pd.Timestamp(session_close_utc(gap))
+        # Nothing was ingested for a bar that was never served.
+        assert pd.isna(row["ingested_at"].iloc[0])
+
+
+def test_importing_the_build_module_binds_nothing_from_the_store() -> None:
+    """The AST scan cannot see a helper that *binds* the store's reader at import time.
+
+    Run in a subprocess, so the suite's own imports cannot mask what this module pulls in. The
+    stronger assertion -- that ``volab.store`` never reaches ``sys.modules`` -- is not available
+    to this story: the canonical session close lives in ``volab.ingest._frames``, and importing
+    it executes ``volab/ingest/__init__.py``, which imports ``write_raw`` from the store.
+    """
+    script = (
+        "import volab.features.build as build, volab.store as store\n"
+        "bound = sorted(\n"
+        "    name\n"
+        "    for name, value in vars(build).items()\n"
+        "    if getattr(value, '__module__', None) == 'volab.store' or value is store\n"
+        ")\n"
+        "print(bound)\n"
+    )
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(Path(volab.__file__).resolve().parent.parent),
+    }
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        env=environment,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]", f"build.py binds {result.stdout.strip()} from the store"
+
+
+def test_the_exogenous_series_match_the_configured_ones() -> None:
+    """A hand-kept copy of a configured list has to be pinned, or it drifts silently."""
+    assert set(EXOGENOUS_SERIES) == set(load_settings().exogenous)
+
+
 def test_log_returns_are_the_log_ratio_of_consecutive_closes() -> None:
     close = pd.Series([100.0, 101.0, 99.0], index=SESSIONS[:3])
     out = log_returns(close)
@@ -486,6 +592,15 @@ def test_log_returns_refuse_a_non_positive_close() -> None:
         log_returns(close)
 
 
+def test_log_returns_refuse_an_index_that_is_not_ascending_sessions() -> None:
+    descending = pd.Series([100.0, 101.0], index=list(reversed(SESSIONS[:2])))
+    repeated = pd.Series([100.0, 101.0], index=[SESSIONS[0]] * 2)
+
+    for close in (descending, repeated):
+        with pytest.raises(SchemaError, match="ascending, unique"):
+            log_returns(close)
+
+
 def test_a_descending_panel_is_refused() -> None:
     panel = _full_panel().sort_values(["symbol", "ts"], ascending=[True, False])
 
@@ -498,6 +613,31 @@ def test_a_repeated_session_is_refused() -> None:
 
     with pytest.raises(SchemaError, match="more than one row"):
         build_features(doubled, through=SESSIONS[100], calendar=CAL)
+
+
+def test_a_panel_whose_as_of_order_disagrees_with_its_ts_order_is_refused() -> None:
+    """``as_of`` is what every window and join is keyed on, so an ascending ``ts`` is not enough."""
+    panel = _full_panel()
+    rows = list(panel.index[panel["symbol"] == "SPY"][:2])
+    swapped = panel.copy()
+    swapped.loc[rows[0], "as_of"] = panel.loc[rows[1], "as_of"]
+    swapped.loc[rows[1], "as_of"] = panel.loc[rows[0], "as_of"]
+    assert swapped["ts"].equals(panel["ts"])
+
+    with pytest.raises(SchemaError, match="ascending as_of"):
+        build_features(swapped, through=SESSIONS[100], calendar=CAL)
+
+
+def test_two_rows_for_one_session_are_refused_even_with_distinct_timestamps() -> None:
+    panel = _full_panel()
+    rows = list(panel.index[panel["symbol"] == "SPY"][:2])
+    collided = panel.copy()
+    collided.loc[rows[1], "as_of"] = panel.loc[rows[0], "as_of"]
+    # Per symbol: the whole panel repeats each session's ts once per series.
+    assert collided.loc[collided["symbol"] == "SPY", "ts"].is_unique
+
+    with pytest.raises(SchemaError, match="more than one row for a session"):
+        build_features(collided, through=SESSIONS[100], calendar=CAL)
 
 
 def test_a_naive_ts_is_refused() -> None:
