@@ -71,9 +71,23 @@ rather than `git add`, because the git index is shared state two agents can othe
 
 | Story | Goal | Role | Depends on | Acceptance | State |
 |---|---|---|---|---|---|
-| US-4.1 | `build_features(panel, *, through)` — cutoff separate from panel extent | implementer + code-reviewer | 3.1, 3.2 | columns match spec §9; a missing session does not shorten a window; **asserts `ts` is monotonic ascending**; derives `log_return`; HAR columns carry `_proxy` | done `acc181a`, in review |
+| US-4.1 | `build_features(panel, *, through)` — cutoff separate from panel extent | implementer + code-reviewer | 3.1, 3.2 | columns match spec §9; a missing session does not shorten a window; **asserts `ts` is monotonic ascending**; derives `log_return`; HAR columns carry `_proxy` | done `acc181a` + `dbf7ebf` + `aacb10f`, reviewed |
 
-**US-4.1 found the sharpest thing in the phase so far, and it corrects the spec.** Its mutation
+Reviewed: spec ✅, nothing Critical, two Important findings — both fixed and each verified by
+mutation. A gap session's `NaT` timestamp collapsed on read, because `load_panel` dedupes on
+`(symbol, ts)` and pandas treats `NaT` as equal, so every gap row merged into one and sorted
+after every real row; gap rows now take a deterministic timestamp from the calendar. And the
+perturbation covered 1 of 5 input groups, which let a `has_distribution` forward peek pass both
+leakage tests — now one parametrised perturbation per input group, plus a combined one.
+
+That fix forced a layering decision (`aacb10f`): `session_close_utc` lived in
+`ingest/_frames.py`, so importing it dragged in `volab.store`, `duckdb` and `pyarrow` — the whole
+Parquet stack loaded to compute a feature, and the feature engine depended on the ingestion
+layer it has no business knowing about. Moved to `sessions.py`, where a pure calendar function
+belongs. `volab.store`, `duckdb` and `volab.ingest` are now all absent from the feature engine's
+import graph.
+
+**US-4.1 also found the sharpest thing in the phase so far, and it corrects the spec.** Its mutation
 check showed that spec §11's own mutation 1 — making `semivar_neg_proxy` peek forward —
 *escaped* the perturbation test, because scaling future closes leaves the **sign** of every
 future return unchanged, and semivariance keys on sign. The test only bit once the perturbation
