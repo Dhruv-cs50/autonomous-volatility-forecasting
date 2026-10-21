@@ -267,6 +267,12 @@ absent from `_ENV_OVERRIDES`, so a `fred_lags:` section would need a second addi
 and section 8's single key is worth keeping. "Configurable" here means editing that dict, stated
 rather than quietly assumed.
 
+`fredgraph.csv` also **omits** missing observations rather than marking them: neither `BAA10Y`
+(10,642 rows) nor `DGS10` (16,904 rows) holds a single `.` placeholder, which is the marker
+FRED's other interfaces use. Parsing still refuses to coerce an unrecognised value, so a `.`
+arriving from a series not sampled here fails loudly rather than becoming `0.0` — but that
+handling is defensive, not a response to anything this endpoint was observed to do.
+
 FRED's keyless `fredgraph.csv` endpoint serves the **latest vintage only**, so revisions are
 not captured and a revised value silently replaces its original. For daily rate and spread
 series revisions are rare, so this is accepted as a known limitation; capturing true vintages
@@ -663,9 +669,20 @@ simple invariant gets spent for nothing.
 Once a session falls off Nasdaq's trailing window, whatever was written is the only copy that
 will ever exist. "Immutable" and "faithful" are different properties and only the first one
 follows from section 7, so the second is stated here: **the raw tier keeps every field the
-vendor served, as served.** Nasdaq's prices stay the `"$123.45"` strings they arrive as. Raw
-rows carry the four mandatory columns, every vendor field unmodified, and provenance —
-`source_url`, `vendor_date_text`, `fetched_at`.
+vendor served, as served.** Raw rows carry the four mandatory columns, every vendor field
+unmodified, and provenance — `source_url`, `vendor_date_text`, `fetched_at`.
+
+What "as served" means here, verified against live payloads on 2026-10-19 rather than assumed:
+
+- **Nasdaq bars** send prices as bare numeric strings (`"766.48"`) with **no** currency symbol,
+  and volume with thousands separators (`"38,680,060"`). An earlier draft of this spec claimed
+  the prices carried a `$`; on this endpoint they do not.
+- **Nasdaq dividends** do use a currency symbol, on the amount (`"$0.75143"`), and send `"N/A"`
+  for an absent declaration date.
+- **Cboe** sends `MM/DD/YYYY` dates and plain decimals; `VVIX_History.csv` has two columns where
+  the other three have five.
+- **FRED** sends `observation_date,<SERIES_ID>` as its header, so the value column is named after
+  the series rather than `value`.
 
 All parsing, numeric coercion and normalisation happen at the **curated** step. A parse bug
 found in Phase 3 is then a curated rebuild rather than destroyed history, which is the whole

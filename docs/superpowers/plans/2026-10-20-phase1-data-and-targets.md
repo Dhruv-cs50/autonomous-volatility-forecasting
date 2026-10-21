@@ -45,12 +45,17 @@ only), stdlib `urllib`, pytest, ruff, mypy, uv.
 Five input classes the spec implies that no task's own happy path exercises. Each has a test
 added to the task that owns the code.
 
-1. **FRED serves `.` as its missing-value marker**, not an empty field. Parsed naively it
-   becomes a crash or a silent string column. A reader expects the row to be absent or null,
-   never a zero. → Task 4.
-2. **Nasdaq serves prices as `"$123.45"` strings**, and will also serve `"N/A"` and
-   thousands separators (`"$1,234.56"`). Curation must parse the separators and **fail loudly**
-   on anything it does not recognise, never coerce to NaN and continue. → Task 5.
+1. **An unparseable FRED value must fail loudly, never become `0.0`.** Verified 2026-10-19:
+   `fredgraph.csv` *omits* missing observations rather than sending the `.` marker FRED's other
+   interfaces use — zero `.` rows across `BAA10Y` (10,642) and `DGS10` (16,904). The guard is
+   defensive rather than observed, and it stays, because a silent zero in a credit spread is a
+   real hazard. The header is `observation_date,<SERIES_ID>`, so the value column is named after
+   the series. → Task 4.
+2. **Number formats differ by field, and not as an earlier draft claimed.** Nasdaq bars send
+   bare numeric strings (`"766.48"`) with **no** currency symbol, but thousands separators in
+   volume (`"38,680,060"`); Nasdaq dividends send `"$0.75143"` amounts and `"N/A"` dates.
+   Curation strips separators and symbols where each actually occurs and **fails loudly** on
+   anything unrecognised, never coercing to NaN. → Task 5.
 3. **Missing sessions inside the panel.** A halt or an outage leaves a session with no bar. A
    row-indexed `.rolling(22)` would then span 23+ sessions and quietly mislabel the window. A
    reader expects a 22-session window to mean 22 sessions. → Task 8.
@@ -364,8 +369,10 @@ git commit -m "feat: add session arithmetic for as_of lags and target horizons"
   def fetch_fred(series: str, *, transport: Transport) -> pd.DataFrame
   FRED_LAG_SESSIONS: dict[str, int]                   # fred.py; default 1
   ```
-  Each `fetch_*` returns the vendor's fields **as served** — Nasdaq prices stay `"$123.45"`
-  strings — plus `symbol`, `ts`, `as_of`, `ingested_at`, `source_url`, `vendor_date_text`.
+  Each `fetch_*` returns the vendor's fields **as served** — Nasdaq bar prices stay the bare
+  `"766.48"` strings they arrive as, volume keeps its `"38,680,060"` separators, dividend
+  amounts keep their `"$0.75143"` symbol — plus `symbol`, `ts`, `as_of`, `ingested_at`,
+  `source_url`, `vendor_date_text`.
   ```python
   ARCHIVE_MONTHLY: frozenset[str]   # {"cboe_vix", "fred"} -- sources serving full history
   def archive_payload(body: bytes, *, source: str, symbol: str, fetched_at: dt.datetime,
@@ -397,7 +404,7 @@ three), `fred_baa10y.csv`.
 def test_fetch_bars_parses_the_fixture() -> None:
     frame = fetch_bars("SPY", start=..., end=..., transport=fixture_transport)
     assert list(frame.columns) >= ["symbol", "ts", "as_of", "ingested_at", "close"]
-    assert frame["close"].iloc[0] == "$123.45"          # as served, unparsed
+    assert frame["close"].iloc[0] == "766.48"           # as served, unparsed
 
 def test_fetch_bars_sets_as_of_to_the_session_date() -> None: ...
 def test_fetch_bars_ts_is_timezone_aware() -> None: ...
@@ -514,7 +521,8 @@ git commit -m "feat: add keyless fetchers for bars, the VIX family and FRED"
 
 ```python
 def test_curate_bars_parses_dollar_strings(synthetic_store) -> None:
-    # "$123.45" -> 123.45 ; "$1,234.56" -> 1234.56
+    # bars: "766.48" -> 766.48 and volume "38,680,060" -> 38680060
+    # dividends: "$0.75143" -> 0.75143
 
 # Review Focus 2
 @pytest.mark.parametrize("bad", ["N/A", "", "--", "1.2.3"])
