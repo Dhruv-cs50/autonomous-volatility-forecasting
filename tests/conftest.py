@@ -118,6 +118,7 @@ def synthetic_store(tmp_path: Path) -> SyntheticStore:
     # the repository, which a temporary directory by design does not.
     settings = Settings(
         universe=("SPY", "QQQ", "IWM"),
+        exogenous=("VIX", "VIX9D", "VIX1D", "VVIX", "BAA10Y", "DGS10", "T10Y2Y"),
         calendar="XNYS",
         splits=Splits(dev_end=dt.date(2023, 12, 31), holdout_start=dt.date(2024, 1, 2)),
         storage_root=tmp_path,

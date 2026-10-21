@@ -6,10 +6,12 @@ import pytest
 
 import volab
 from volab.config import DEFAULT_CONFIG_PATH, Settings, load_settings
-from volab.errors import ConfigError
+from volab.errors import ConfigError, DatasetNotFound, UnknownSymbol
+from volab.store import load_panel
 
 VALID = """
 universe: [SPY, QQQ, IWM]
+exogenous: [VIX]
 calendar: XNYS
 splits:
   dev_end: "2023-12-31"
@@ -20,6 +22,7 @@ storage:
 
 _OVERRIDE_VARS = (
     "VOLAB_UNIVERSE",
+    "VOLAB_EXOGENOUS",
     "VOLAB_CALENDAR",
     "VOLAB_SPLITS_DEV_END",
     "VOLAB_SPLITS_HOLDOUT_START",
@@ -48,9 +51,44 @@ def test_repo_default_config_loads() -> None:
     settings = load_settings()
     assert settings.universe == ("SPY", "QQQ", "IWM")
     assert settings.calendar == "XNYS"
-    assert settings.splits.dev_end == dt.date(2023, 12, 31)
-    assert settings.splits.holdout_start == dt.date(2024, 1, 2)
+    assert settings.splits.dev_end == dt.date(2025, 12, 31)
+    assert settings.splits.holdout_start == dt.date(2026, 1, 2)
     assert isinstance(settings, Settings)
+
+
+def test_repo_default_exogenous() -> None:
+    assert load_settings().exogenous == (
+        "VIX",
+        "VIX9D",
+        "VIX1D",
+        "VVIX",
+        "BAA10Y",
+        "DGS10",
+        "T10Y2Y",
+    )
+
+
+def test_exogenous_may_not_overlap_universe(tmp_path: Path) -> None:
+    text = VALID.replace("exogenous: [VIX]", "exogenous: [SPY]")
+    with pytest.raises(ConfigError, match="both universe and exogenous"):
+        load_settings(_write(tmp_path, text))
+
+
+@pytest.mark.parametrize("value", ["[]", "[VIX, VIX]", '[" VIX"]', "[1]", "VIX"])
+def test_exogenous_is_validated_like_universe(tmp_path: Path, value: str) -> None:
+    text = VALID.replace("exogenous: [VIX]", f"exogenous: {value}")
+    with pytest.raises(ConfigError, match="exogenous"):
+        load_settings(_write(tmp_path, text))
+
+
+def test_exogenous_env_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VOLAB_EXOGENOUS", "VIX, VVIX")
+    assert load_settings(_write(tmp_path, VALID)).exogenous == ("VIX", "VVIX")
+
+
+def test_exogenous_is_required(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="missing required setting 'exogenous'"):
+        load_settings(_write(tmp_path, VALID.replace("exogenous: [VIX]\n", "")))
 
 
 def test_default_config_path_does_not_depend_on_cwd(
@@ -288,3 +326,30 @@ def test_unknown_volab_env_var_is_ignored(tmp_path: Path, monkeypatch: pytest.Mo
     settings = load_settings(_write(tmp_path, VALID))
     assert settings.calendar == "XNYS"
     assert settings.splits.dev_end == dt.date(2023, 12, 31)
+
+
+def test_load_panel_accepts_an_exogenous_symbol(synthetic_store) -> None:
+    synthetic_store.write("vix_family", "VIX", [dt.date(2023, 6, 15)])
+    frame = load_panel(
+        "vix_family",
+        symbols=["VIX"],
+        end=dt.date(2023, 6, 15),
+        settings=synthetic_store.settings,
+    )
+    assert list(frame["symbol"]) == ["VIX"]
+
+
+def test_load_panel_none_symbols_still_scopes_to_universe(synthetic_store) -> None:
+    synthetic_store.write("vix_family", "VIX", [dt.date(2023, 6, 15)])
+    with pytest.raises(DatasetNotFound):
+        load_panel("vix_family", end=dt.date(2023, 6, 15), settings=synthetic_store.settings)
+
+
+def test_load_panel_still_rejects_an_unknown_symbol(synthetic_store) -> None:
+    with pytest.raises(UnknownSymbol, match="TLT"):
+        load_panel(
+            "bars_daily",
+            symbols=["TLT"],
+            end=dt.date(2023, 6, 15),
+            settings=synthetic_store.settings,
+        )

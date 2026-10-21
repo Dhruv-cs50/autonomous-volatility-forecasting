@@ -48,12 +48,15 @@ _REPO_ROOT: Path = DEFAULT_CONFIG_PATH.parent.parent
 # Dotted setting name -> environment variable. Explicit on purpose: no introspection.
 _ENV_OVERRIDES: dict[str, str] = {
     "universe": "VOLAB_UNIVERSE",
+    "exogenous": "VOLAB_EXOGENOUS",
     "calendar": "VOLAB_CALENDAR",
     "splits.dev_end": "VOLAB_SPLITS_DEV_END",
     "splits.holdout_start": "VOLAB_SPLITS_HOLDOUT_START",
     "storage.root": "VOLAB_STORAGE_ROOT",
 }
 _SECTIONS = frozenset({"splits", "storage"})
+# Settings that are comma-separated lists in the environment and symbol lists in the file.
+_SYMBOL_LISTS = frozenset({"universe", "exogenous"})
 
 
 @dataclass(frozen=True)
@@ -65,6 +68,7 @@ class Splits:
 @dataclass(frozen=True)
 class Settings:
     universe: tuple[str, ...]
+    exogenous: tuple[str, ...]
     calendar: str
     splits: Splits
     storage_root: Path
@@ -127,7 +131,8 @@ def _apply_env_overrides(flat: dict[str, Any]) -> None:
         if value is None:
             continue
         # Whitespace around commas is ordinary syntax in the env form only.
-        flat[name] = [part.strip() for part in value.split(",")] if name == "universe" else value
+        is_symbol_list = name in _SYMBOL_LISTS
+        flat[name] = [part.strip() for part in value.split(",")] if is_symbol_list else value
 
 
 def _parse_date(field: str, value: object) -> dt.date:
@@ -147,27 +152,28 @@ def _parse_date(field: str, value: object) -> dt.date:
     return parsed
 
 
-def _validate_universe(value: object) -> tuple[str, ...]:
+def _validate_symbol_list(field: str, value: object) -> tuple[str, ...]:
+    """Validate a list of symbols; ``field`` names the setting in every message."""
     if not isinstance(value, list | tuple):
-        raise ConfigError(f"universe must be a list of symbols, got {value!r}")
+        raise ConfigError(f"{field} must be a list of symbols, got {value!r}")
     if not value:
-        raise ConfigError("universe must not be empty")
+        raise ConfigError(f"{field} must not be empty")
     symbols: list[str] = []
     for entry in value:
         if not isinstance(entry, str):
             raise ConfigError(
-                f"universe entries must be strings, got {entry!r} (quote symbols such as 'NO')"
+                f"{field} entries must be strings, got {entry!r} (quote symbols such as 'NO')"
             )
         if entry != entry.strip():
-            raise ConfigError(f"universe entry {entry!r} has surrounding whitespace")
+            raise ConfigError(f"{field} entry {entry!r} has surrounding whitespace")
         # Symbols become directory names, so they must satisfy the layout's own segment rule.
         try:
             symbols.append(validate_segment("symbol", entry))
         except ValueError as exc:
-            raise ConfigError(f"universe: {exc}") from None
+            raise ConfigError(f"{field}: {exc}") from None
     if len(set(symbols)) != len(symbols):
         duplicates = sorted({s for s in symbols if symbols.count(s) > 1})
-        raise ConfigError(f"universe has duplicate symbols: {duplicates}")
+        raise ConfigError(f"{field} has duplicate symbols: {duplicates}")
     return tuple(symbols)
 
 
@@ -244,12 +250,23 @@ def load_settings(path: Path | None = None) -> Settings:
         if name not in flat:
             raise ConfigError(f"missing required setting {name!r} in {config_path}")
 
-    universe = _validate_universe(flat["universe"])
+    universe = _validate_symbol_list("universe", flat["universe"])
+    exogenous = _validate_symbol_list("exogenous", flat["exogenous"])
+    overlap = sorted(set(universe) & set(exogenous))
+    if overlap:
+        raise ConfigError(
+            f"symbol(s) {overlap} are in both universe and exogenous: a series is either a "
+            "forecast target or a market-wide input, never both"
+        )
     calendar_name, calendar = _load_calendar(flat["calendar"])
     dev_end = _parse_date("splits.dev_end", flat["splits.dev_end"])
     holdout_start = _parse_date("splits.holdout_start", flat["splits.holdout_start"])
     splits = _validate_splits(calendar, dev_end, holdout_start)
     storage_root = _validate_storage_root(flat["storage.root"])
     return Settings(
-        universe=universe, calendar=calendar_name, splits=splits, storage_root=storage_root
+        universe=universe,
+        exogenous=exogenous,
+        calendar=calendar_name,
+        splits=splits,
+        storage_root=storage_root,
     )

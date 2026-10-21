@@ -228,15 +228,17 @@ def load_panel(
                 f"Unlock the window with allow_holdout=True and {_UNLOCK_ENV}=1 instead."
             )
 
-    # 1. Symbols must name the configured universe. A bare string would otherwise be iterated
-    #    into single characters here instead of reaching dataset_glob's own refusal.
+    # 1. Symbols must name the configured universe or the exogenous series. A bare string would
+    #    otherwise be iterated into single characters here instead of reaching dataset_glob's own
+    #    refusal.
     if isinstance(symbols, str):
         raise ValueError(f"symbols must be a sequence of names, not a bare string: {symbols!r}")
     if symbols is not None:
-        unknown = sorted(set(symbols) - set(resolved.universe))
+        unknown = sorted(set(symbols) - set(resolved.universe) - set(resolved.exogenous))
         if unknown:
             raise UnknownSymbol(
-                f"symbol(s) {unknown} are not in the configured universe {list(resolved.universe)}"
+                f"symbol(s) {unknown} are in neither the configured universe "
+                f"{list(resolved.universe)} nor the exogenous series {list(resolved.exogenous)}"
             )
 
     # The same shape rules for columns: a bare string would be iterated into single characters

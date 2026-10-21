@@ -80,7 +80,8 @@ def test_unmarked_test_that_moves_the_boundary_fails(
         from volab.config import Splits
         from volab.store import load_panel
 
-        HOLDOUT_DAY = dt.date(2024, 3, 1)
+        # After the repository's own dev_end (2025-12-31), which is what the fixture polices.
+        HOLDOUT_DAY = dt.date(2026, 3, 2)
 
         def test_moves_the_boundary_instead_of_unlocking_it(synthetic_store, monkeypatch):
             synthetic_store.write("bars_daily", "SPY", [HOLDOUT_DAY])
