@@ -582,6 +582,18 @@ perturbation that silently no-ops would make its test pass for the wrong reason.
 
    Use a decaying or sign-alternating future path, plus the rest: inject NaN, delete rows,
    append new sessions.
+
+   **And the perturbation must touch every input group, not only the ones under suspicion.**
+   This was found the same way, one story later, and it is the same mistake in a different
+   dress. US-4.1's perturbation rewrote the bars' `close` and FRED's `value` and left the
+   VIX-family closes and `has_distribution` alone — so a forward peek planted in
+   `has_distribution` (`flag | flag.shift(-3)`) passed **both** leakage tests, caught only
+   incidentally by a value test. Verified by mutation, not inferred.
+
+   A perturbation that misses an input misses every forward peek that input could host, however
+   strong it is on the inputs it does touch. So the test perturbs the bars' closes, every
+   exogenous series' values, and the pass-through flags — all of them, every time. A reviewer
+   should check the perturbation's *coverage* before examining its strength.
 2. **`test_panel_extent_does_not_change_features`** — `build_features(panel_to_T₀,
    through=T₀)` equals `build_features(panel_to_T, through=T₀)`. Catches a feature that depends
    on the panel's extent — a mean over the whole frame, a `max()`, a normalisation by a
