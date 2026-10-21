@@ -9,6 +9,12 @@ drift apart.
 
 Like everything in this package the inputs are daily returns, so these are variance *proxies*,
 trailing-only, and null wherever the window is incomplete.
+
+**Caller contract: ascending time order.** The windows are positional, so "trailing" means the
+preceding rows of the series as handed in, and these functions never see a date. Callers must
+pass the series in ascending time order; a descending one would silently produce forward-looking
+components that no syntactic scan can detect. The functions do not verify the order, deliberately:
+they are hot and pure, and monotonicity is asserted once, where the series is assembled.
 """
 
 from __future__ import annotations

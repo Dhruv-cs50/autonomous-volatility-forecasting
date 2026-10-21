@@ -10,9 +10,18 @@ All of them are pure functions of a return series: a ``pd.Series`` in, a same-le
 ``pd.Series`` out, no dates, no I/O. Two properties hold for every output row ``i``:
 
 * **Trailing only.** Row ``i`` is computed from rows ``..i`` and nothing after. ``rolling(n)``
-  is right-closed, which is exactly that, so no offset or centring appears anywhere.
+  is right-closed, which is exactly that, so no *forward* offset or centring appears anywhere.
+  The one offset used, ``shift(1)`` in ``bipower_proxy``, looks a row back.
 * **Incomplete is null.** A window that is not yet full, or that contains a null return, yields
   ``NaN`` -- never the sum of the rows that happen to be present. Nothing is filled or imputed.
+
+**Caller contract: ascending time order.** Every window here is *positional*: "trailing" means
+the preceding rows of the series as handed in. The functions never see a date, so they cannot
+check that those rows are the preceding *sessions*. A series in descending date order would
+silently yield forward-looking values, and no syntactic scan can catch that because it is a
+property of the data. Callers must pass the series in ascending time order; these functions do
+not verify it, and deliberately so -- they are hot, pure, per-symbol, and the one place to
+assert monotonicity is where the series is assembled.
 """
 
 from __future__ import annotations
