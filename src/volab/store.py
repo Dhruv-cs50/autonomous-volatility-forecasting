@@ -423,6 +423,22 @@ def load_panel(
             outcome="success",
         )
 
+    # Timestamps come back in UTC whatever the host's timezone is. DuckDB renders a TIMESTAMP
+    # WITH TIME ZONE in its session timezone, which defaults to the system's, so the same read on
+    # a laptop in America/Los_Angeles and on CI in UTC would otherwise return identical instants
+    # under different dtypes -- ``datetime64[us, America/Los_Angeles]`` against
+    # ``datetime64[us, UTC]``. The instants were always right; the dtype was not reproducible,
+    # and for a project whose claim rests on reproducibility that is the same kind of defect. A
+    # naive column is left alone rather than localised, because assuming a naive timestamp is UTC
+    # is exactly the silent repair this layer refuses to make.
+    aware = {
+        name: frame[name].dt.tz_convert("UTC")
+        for name in ("ts", "ingested_at")
+        if isinstance(frame[name].dtype, pd.DatetimeTZDtype)
+    }
+    if aware:
+        frame = frame.assign(**aware)
+
     # Last operation before returning, so every check above saw the full schema. The Hive
     # ``date`` column is a partition artefact duplicating ``as_of``; it is not part of the contract.
     if columns is None:

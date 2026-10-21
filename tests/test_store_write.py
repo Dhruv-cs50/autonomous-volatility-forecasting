@@ -230,3 +230,21 @@ def test_write_rejects_a_datetime_as_of(synthetic_store) -> None:
             as_of=dt.datetime(2023, 6, 15, 12, 0),  # type: ignore[arg-type]
             settings=synthetic_store.settings,
         )
+
+
+def test_load_panel_returns_timestamps_in_utc_whatever_the_host_timezone(
+    synthetic_store,
+) -> None:
+    """DuckDB renders TIMESTAMP WITH TIME ZONE in the host's timezone, so without normalising,
+    this laptop and CI would return identical instants under different dtypes. The instants were
+    always right; the dtype was not reproducible, which in this project is the same defect."""
+    write_curated(
+        _frame(), dataset="bars_daily", symbol="SPY", as_of=DAY, settings=synthetic_store.settings
+    )
+
+    frame = load_panel("bars_daily", symbols=["SPY"], end=DAY, settings=synthetic_store.settings)
+
+    assert str(frame["ts"].dtype) == "datetime64[us, UTC]"
+    assert str(frame["ingested_at"].dtype) == "datetime64[us, UTC]"
+    # The instant is unchanged by the conversion, only its rendering.
+    assert frame["ts"].iloc[0] == pd.Timestamp("2023-06-15 00:00", tz="UTC")

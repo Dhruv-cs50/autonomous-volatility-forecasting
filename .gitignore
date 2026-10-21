@@ -18,3 +18,9 @@ __pycache__/
 # stay ignored, because they are derivable from these payloads. See the Phase 1 spec, section 13,
 # and NOTICE for provenance.
 !data/vendor_payloads/**
+
+# Editor and OS droppings. Listed because the archive exception above means `git add -A` in this
+# repo is no longer harmless -- data/vendor_payloads is tracked, so a stray .DS_Store alongside it
+# would be committed too.
+.DS_Store
+.Rhistory
