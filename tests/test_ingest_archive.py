@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from fixture_transport import FIXTURES, exploding_transport
+from fixture_transport import FIXTURES, fixture_transport
 
 from volab.errors import RawOverwrite
 from volab.ingest import (
@@ -14,6 +14,7 @@ from volab.ingest import (
     INGEST_FLOOR,
     archive_payload,
     build_raw,
+    fetch_source,
 )
 from volab.paths import Tier
 from volab.store import load_panel
@@ -30,6 +31,7 @@ def _archive(store, body: bytes, *, source: str, symbol: str, at: dt.datetime) -
         symbol=symbol,
         fetched_at=at,
         extension="json",
+        source_url=f"https://example.invalid/{source}/{symbol}",
         settings=store.settings,
     )
 
@@ -57,7 +59,9 @@ def test_archive_records_provenance_in_a_sidecar(synthetic_store) -> None:
     assert meta["source"] == "nasdaq_bars"
     assert meta["symbol"] == "SPY"
     assert meta["fetched_at"] == JAN.isoformat()
-    assert "source_url" in meta
+    # Recorded from the caller, not rebuilt here: a bars URL carries the date range it asked
+    # for, which cannot be recovered afterwards.
+    assert meta["source_url"] == "https://example.invalid/nasdaq_bars/SPY"
 
 
 def test_archive_always_writes_for_a_trailing_window_source(synthetic_store) -> None:
@@ -92,6 +96,7 @@ def _seed(store, fixture: str, *, source: str, symbol: str, at: dt.datetime = JA
         symbol=symbol,
         fetched_at=at,
         extension="json" if fixture.endswith("json") else "csv",
+        source_url=f"https://example.invalid/{source}/{symbol}",
         settings=store.settings,
     )
 
@@ -103,7 +108,6 @@ def test_build_raw_replays_an_archived_payload_with_no_network(synthetic_store) 
         "nasdaq_bars",
         symbols=["SPY"],
         settings=synthetic_store.settings,
-        transport=exploding_transport,
     )
 
     assert written == 3, "one partition per session, per the write path's contract"
@@ -124,7 +128,6 @@ def test_build_raw_writes_one_partition_per_as_of(synthetic_store) -> None:
         "nasdaq_bars",
         symbols=["SPY"],
         settings=synthetic_store.settings,
-        transport=exploding_transport,
     )
 
     root = synthetic_store.settings.storage_root / "raw" / "nasdaq_bars" / "SPY"
@@ -142,7 +145,6 @@ def test_build_raw_drops_rows_before_the_ingest_floor(synthetic_store) -> None:
         "nasdaq_bars",
         symbols=["SPY"],
         settings=synthetic_store.settings,
-        transport=exploding_transport,
     )
 
     assert written == 1, "2016-06-30 is before the floor; 2016-07-01 is not"
@@ -157,14 +159,12 @@ def test_build_raw_skips_partitions_it_already_wrote(synthetic_store) -> None:
         "nasdaq_bars",
         symbols=["SPY"],
         settings=synthetic_store.settings,
-        transport=exploding_transport,
     )
 
     second = build_raw(
         "nasdaq_bars",
         symbols=["SPY"],
         settings=synthetic_store.settings,
-        transport=exploding_transport,
     )
 
     assert first == 3
@@ -177,7 +177,98 @@ def test_build_raw_without_an_archive_writes_nothing(synthetic_store) -> None:
             "nasdaq_bars",
             symbols=["SPY"],
             settings=synthetic_store.settings,
-            transport=exploding_transport,
         )
         == 0
     )
+
+
+def test_archive_rejects_a_naive_fetched_at(synthetic_store) -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
+        archive_payload(
+            b"{}",
+            source="nasdaq_bars",
+            symbol="SPY",
+            fetched_at=dt.datetime(2026, 1, 5, 12, 0),
+            extension="json",
+            source_url="https://example.invalid/x",
+            settings=synthetic_store.settings,
+        )
+
+
+def test_fetch_source_archives_exactly_the_transport_bytes(synthetic_store) -> None:
+    body = (FIXTURES / "nasdaq_bars_spy.json").read_bytes()
+
+    path = fetch_source(
+        "nasdaq_bars",
+        "SPY",
+        transport=fixture_transport("nasdaq_bars_spy.json"),
+        fetched_at=JAN,
+        settings=synthetic_store.settings,
+    )
+
+    assert path is not None
+    assert gzip.decompress(path.read_bytes()) == body
+
+
+def test_fetch_source_refuses_to_archive_an_unparseable_body(synthetic_store) -> None:
+    """A bad response must never reach the append-only archive.
+
+    build_raw replays every payload for a symbol, so one unparseable body archived here would
+    abort that replay permanently, taking every later valid payload down with it.
+    """
+
+    def error_page(url: str) -> bytes:
+        return b"<html><body>403 Forbidden</body></html>"
+
+    with pytest.raises(ValueError):
+        fetch_source(
+            "nasdaq_bars",
+            "SPY",
+            transport=error_page,
+            fetched_at=JAN,
+            settings=synthetic_store.settings,
+        )
+
+    root = synthetic_store.settings.storage_root / "vendor_payloads"
+    assert list(root.rglob("*.gz")) == [], "nothing may be archived when parsing failed"
+
+
+def test_fetch_source_skips_a_taken_month_without_fetching(synthetic_store) -> None:
+    _seed(synthetic_store, "cboe_vix.csv", source="cboe_vix", symbol="VIX", at=JAN)
+
+    def must_not_be_called(url: str) -> bytes:
+        raise AssertionError("fetched a month that was already archived")
+
+    assert (
+        fetch_source(
+            "cboe_vix",
+            "VIX",
+            transport=must_not_be_called,
+            fetched_at=JAN_LATER,
+            settings=synthetic_store.settings,
+        )
+        is None
+    )
+
+
+def test_build_raw_later_vintage_adds_only_sessions_the_earlier_one_lacked(
+    synthetic_store,
+) -> None:
+    """Oldest payload wins each partition; a later one contributes only what is new."""
+    _seed(
+        synthetic_store, "nasdaq_bars_before_floor.json", source="nasdaq_bars", symbol="SPY", at=JAN
+    )
+    first = build_raw("nasdaq_bars", symbols=["SPY"], settings=synthetic_store.settings)
+
+    _seed(synthetic_store, "nasdaq_bars_spy.json", source="nasdaq_bars", symbol="SPY", at=FEB)
+    second = build_raw("nasdaq_bars", symbols=["SPY"], settings=synthetic_store.settings)
+
+    assert first == 1, "only 2016-07-01 survives the floor"
+    assert second == 3, "the 2023 sessions are new; nothing is rewritten"
+    root = synthetic_store.settings.storage_root / "raw" / "nasdaq_bars" / "SPY"
+    assert sorted(p.name for p in root.iterdir()) == [
+        "date=2016-07-01",
+        "date=2023-06-15",
+        "date=2023-06-16",
+        "date=2023-06-20",
+    ]

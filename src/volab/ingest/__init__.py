@@ -28,6 +28,8 @@ from __future__ import annotations
 import datetime as dt
 import gzip
 import json
+import os
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -53,8 +55,10 @@ __all__ = [
     "fetch_source",
 ]
 
-# The store's inception. Earlier rows are dropped: the bars window starts 2016-10-19 and this is
-# the 66th session before it, which is the longest trailing window any Phase 1 feature uses.
+# The store's inception. Earlier rows are dropped. The bars window's floor is a trailing ten
+# years -- 2016-10-20 as of 2026-10-21, and it moves forward a session a day -- and the longest
+# trailing window any Phase 1 feature uses is 66 sessions. 2016-07-01 sits 77 sessions before
+# that floor: more warmup than 66 needs, with room for the floor to drift.
 INGEST_FLOOR: dt.date = dt.date(2016, 7, 1)
 
 # Sources that serve their FULL history on every request. One payload subsumes every earlier
@@ -77,6 +81,42 @@ def _payload_root(settings: Settings, source: str, symbol: str) -> Path:
     )
 
 
+def monthly_slot_taken(
+    settings: Settings, source: str, symbol: str, fetched_at: dt.datetime
+) -> bool:
+    """Whether a full-history source already holds a payload for ``fetched_at``'s month.
+
+    Checked before fetching as well as before archiving, so a skipped month does not download a
+    vendor's entire history only to discard it.
+    """
+    if source not in ARCHIVE_MONTHLY:
+        return False
+    directory = _payload_root(settings, source, symbol)
+    if not directory.is_dir():
+        return False
+    prefix = fetched_at.astimezone(dt.UTC).strftime("%Y%m")
+    return any(entry.name.startswith(prefix) for entry in directory.glob("*.gz"))
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` through a temp file in the same directory, then rename.
+
+    The archive is append-only and committed, so a truncated file is permanent: it would make
+    every later ``build_raw`` for that source and symbol fail on decompression, and for a
+    monthly source it would occupy the month's slot. ``store._write`` guards its Parquet writes
+    the same way, for the same reason.
+    """
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=path.suffix)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def archive_payload(
     body: bytes,
     *,
@@ -84,23 +124,27 @@ def archive_payload(
     symbol: str,
     fetched_at: dt.datetime,
     extension: str,
+    source_url: str,
     settings: Settings | None = None,
 ) -> Path | None:
     """Store ``body`` untouched and return its path, or ``None`` if this month already has one.
 
+    ``source_url`` is **recorded, not reconstructed**: the caller passes the URL it actually
+    requested, which for a bars fetch carries the date range it asked for. Rebuilding it here
+    would defeat the sidecar's purpose, because that range cannot be recovered afterwards.
+
     Returns ``None`` only for a source in ``ARCHIVE_MONTHLY``; a trailing-window source is always
-    archived, because each of its payloads holds sessions that later ones will have lost.
-    Refuses to rewrite an existing payload: the archive is append-only.
+    archived, because each of its payloads holds sessions later ones will have lost. Refuses to
+    rewrite an existing payload: the archive is append-only.
     """
     if fetched_at.tzinfo is None:
         raise ValueError(f"fetched_at must be timezone-aware, got {fetched_at!r}")
+    resolved = load_settings() if settings is None else settings
     stamp = fetched_at.astimezone(dt.UTC)
-    directory = _payload_root(load_settings() if settings is None else settings, source, symbol)
-    if source in ARCHIVE_MONTHLY and directory.is_dir():
-        prefix = stamp.strftime("%Y%m")
-        if any(entry.name.startswith(prefix) for entry in directory.glob("*.gz")):
-            return None
+    if monthly_slot_taken(resolved, source, symbol, stamp):
+        return None
 
+    directory = _payload_root(resolved, source, symbol)
     path = directory / f"{stamp.strftime(_STAMP)}.{extension}.gz"
     if path.exists():
         raise RawOverwrite(
@@ -108,34 +152,38 @@ def archive_payload(
             "source and symbol inside a second collide on the filename stamp"
         )
     directory.mkdir(parents=True, exist_ok=True)
-    # mtime=0 so the same body always produces the same bytes: a committed archive should not
-    # show a diff just because it was re-gzipped.
-    path.write_bytes(gzip.compress(body, mtime=0))
+    # The sidecar lands first and the body second, so the only partial state a crash can leave is
+    # a sidecar with no payload -- and ``build_raw`` globs ``*.gz``, so it ignores one.
     sidecar = path.with_suffix("").with_suffix(".meta.json")
-    sidecar.write_text(
-        json.dumps(
-            {
-                "source": source,
-                "symbol": symbol,
-                "fetched_at": fetched_at.isoformat(),
-                "source_url": _url_for(source, symbol),
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+    _atomic_write(
+        sidecar,
+        (
+            json.dumps(
+                {
+                    "source": source,
+                    "symbol": symbol,
+                    "fetched_at": fetched_at.isoformat(),
+                    "source_url": source_url,
+                },
+                indent=2,
+            )
+            + "\n"
+        ).encode("utf-8"),
     )
+    # mtime=0 so an identical body always produces identical bytes: a committed archive should
+    # not show a diff just because it was re-gzipped.
+    _atomic_write(path, gzip.compress(body, mtime=0))
     return path
 
 
-def _url_for(source: str, symbol: str) -> str:
-    """The canonical URL for a source and symbol, for the archive's provenance sidecar.
+def _url_for(source: str, symbol: str, *, end: dt.date) -> str:
+    """The URL to request for a source and symbol.
 
-    A bars URL additionally carries the date range it was fetched with, which is why the sidecar
-    exists at all rather than the URL being rebuilt at replay time.
+    ``end`` is passed in rather than read from the clock, so the URL a fetch records is the URL
+    that fetch actually requested.
     """
     if source == "nasdaq_bars":
-        return bars.bars_url(symbol, start=INGEST_FLOOR, end=dt.date.today())
+        return bars.bars_url(symbol, start=INGEST_FLOOR, end=end)
     if source == "nasdaq_dividends":
         return bars.dividends_url(symbol)
     if source == "cboe_vix":
@@ -188,14 +236,26 @@ def fetch_source(
     """
     resolved = load_settings() if settings is None else settings
     stamp = dt.datetime.now(dt.UTC) if fetched_at is None else fetched_at
-    url = _url_for(source, symbol)
+    # Before fetching, not after: a monthly source serves its whole history on every request, so
+    # a skipped month must not download megabytes in order to discard them.
+    if monthly_slot_taken(resolved, source, symbol, stamp):
+        return None
+    url = _url_for(source, symbol, end=stamp.date())
+    body = transport(url)
+    # Parsed before it is archived, and the result discarded. The archive is append-only and
+    # committed, so an error page or a truncated response would be permanent -- and because
+    # build_raw replays every payload for a symbol, one unparseable body would abort that replay
+    # for good, taking every later valid payload with it. For a monthly source it would occupy
+    # the month's slot as well. This check is what stops a bad response poisoning the archive.
+    _parse(source, body, symbol=symbol, fetched_at=stamp, source_url=url, settings=resolved)
     extension = "json" if source.startswith("nasdaq") else "csv"
     return archive_payload(
-        transport(url),
+        body,
         source=source,
         symbol=symbol,
         fetched_at=stamp,
         extension=extension,
+        source_url=url,
         settings=resolved,
     )
 
@@ -206,14 +266,13 @@ def build_raw(
     symbols: Sequence[str],
     since: dt.date = INGEST_FLOOR,
     settings: Settings | None = None,
-    transport: Transport = default_transport,
 ) -> int:
     """Replay archived payloads into raw Parquet. Returns the number of partitions written.
 
-    ``transport`` is accepted but unused: replay reads the archive, never the network. It is in
-    the signature so a caller can pass a transport that raises and prove that.
+    Reads the archive and writes through the store. It takes no transport and has no path to
+    one: replay never touches the network, which is what lets a parse change be re-applied to
+    data a vendor may no longer serve.
     """
-    del transport
     resolved = load_settings() if settings is None else settings
     written = 0
     for symbol in symbols:
@@ -227,10 +286,12 @@ def build_raw(
                 tzinfo=dt.UTC
             )
             sidecar = payload.with_suffix("").with_suffix(".meta.json")
+            # A missing sidecar means provenance was never recorded. Say so, rather than
+            # fabricating a URL from today's clock that this payload was never fetched from.
             source_url = (
                 json.loads(sidecar.read_text())["source_url"]
                 if sidecar.is_file()
-                else _url_for(source, symbol)
+                else f"archive://{source}/{symbol}/{payload.name}"
             )
             frame = _parse(
                 source,

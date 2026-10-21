@@ -35,10 +35,15 @@ def test_fetch_vvix_handles_its_two_column_shape() -> None:
 
 
 def test_fetch_vix_as_of_equals_the_session_and_ts_is_aware() -> None:
-    frame = fetch_vix("VIX", transport=fixture_transport("cboe_vix.csv"), fetched_at=FETCHED)
+    frame = fetch_vix(
+        "VIX", transport=fixture_transport("cboe_vix.csv"), fetched_at=FETCHED
+    ).sort_values("as_of")
 
     assert isinstance(frame["ts"].dtype, pd.DatetimeTZDtype)
     assert set(frame["symbol"]) == {"VIX"}
+    # The name promises as_of equals the session, so assert it: ts is that session's close.
+    assert frame["as_of"].iloc[0] == dt.date(2023, 6, 15)
+    assert frame["ts"].iloc[0] == pd.Timestamp("2023-06-15 20:00", tz="UTC")
 
 
 def test_fetch_vix_tolerates_crlf_line_endings() -> None:
