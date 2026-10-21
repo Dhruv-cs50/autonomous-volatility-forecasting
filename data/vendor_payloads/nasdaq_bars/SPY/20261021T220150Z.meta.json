@@ -1,6 +1,0 @@
-{
-  "source": "nasdaq_bars",
-  "symbol": "SPY",
-  "fetched_at": "2026-10-21T22:01:50.423859+00:00",
-  "source_url": "https://api.nasdaq.com/api/quote/SPY/historical?assetclass=etf&fromdate=2016-07-01&todate=2026-10-21&limit=99999"
-}

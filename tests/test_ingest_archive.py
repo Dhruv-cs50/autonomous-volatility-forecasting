@@ -64,9 +64,17 @@ def test_archive_records_provenance_in_a_sidecar(synthetic_store) -> None:
     assert meta["source_url"] == "https://example.invalid/nasdaq_bars/SPY"
 
 
-def test_archive_always_writes_for_a_trailing_window_source(synthetic_store) -> None:
-    first = _archive(synthetic_store, b"{}", source="nasdaq_bars", symbol="SPY", at=JAN)
-    second = _archive(synthetic_store, b"{}", source="nasdaq_bars", symbol="SPY", at=JAN_LATER)
+def test_archive_is_not_month_limited_for_a_trailing_window_source(synthetic_store) -> None:
+    """Twice in one month is fine for Nasdaq, as long as the window actually moved.
+
+    Each payload of a trailing-window source holds sessions later ones will have lost, so the
+    monthly rule must not apply here. Identical bytes are skipped separately -- see
+    test_archive_skips_a_body_identical_to_the_newest_payload.
+    """
+    first = _archive(synthetic_store, b'{"window": 1}', source="nasdaq_bars", symbol="SPY", at=JAN)
+    second = _archive(
+        synthetic_store, b'{"window": 2}', source="nasdaq_bars", symbol="SPY", at=JAN_LATER
+    )
 
     assert first is not None and second is not None
     assert first != second
@@ -272,3 +280,21 @@ def test_build_raw_later_vintage_adds_only_sessions_the_earlier_one_lacked(
         "date=2023-06-16",
         "date=2023-06-20",
     ]
+
+
+def test_archive_skips_a_body_identical_to_the_newest_payload(synthetic_store) -> None:
+    """Two fetches of a trailing window on one day see the same bytes; store one.
+
+    The archive is committed, so a redundant copy costs git history forever and buys nothing.
+    """
+    first = _archive(synthetic_store, b"same bytes", source="nasdaq_bars", symbol="SPY", at=JAN)
+    second = _archive(
+        synthetic_store, b"same bytes", source="nasdaq_bars", symbol="SPY", at=JAN_LATER
+    )
+    third = _archive(
+        synthetic_store, b"different bytes", source="nasdaq_bars", symbol="SPY", at=FEB
+    )
+
+    assert first is not None
+    assert second is None, "identical content adds nothing"
+    assert third is not None, "a genuinely new window has different bytes"

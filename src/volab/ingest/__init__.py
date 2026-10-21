@@ -98,6 +98,30 @@ def monthly_slot_taken(
     return any(entry.name.startswith(prefix) for entry in directory.glob("*.gz"))
 
 
+def _latest_payload(settings: Settings, source: str, symbol: str) -> Path | None:
+    """The most recently stamped payload already archived for this source and symbol."""
+    directory = _payload_root(settings, source, symbol)
+    if not directory.is_dir():
+        return None
+    existing = sorted(directory.glob("*.gz"))
+    return existing[-1] if existing else None
+
+
+def body_already_archived(settings: Settings, source: str, symbol: str, body: bytes) -> bool:
+    """Whether ``body`` is byte-identical to the newest payload already held.
+
+    A trailing-window source is archived on every fetch, because each payload holds sessions
+    later ones will have lost. But two fetches on the same day see the *same* window, and this
+    archive is committed to git, so storing a second identical copy costs history forever and
+    buys nothing. Compared by content rather than by date so the rule needs no per-source
+    calendar: a genuinely new window has different bytes.
+    """
+    latest = _latest_payload(settings, source, symbol)
+    if latest is None:
+        return False
+    return gzip.decompress(latest.read_bytes()) == body
+
+
 def _atomic_write(path: Path, data: bytes) -> None:
     """Write ``data`` to ``path`` through a temp file in the same directory, then rename.
 
@@ -133,15 +157,17 @@ def archive_payload(
     requested, which for a bars fetch carries the date range it asked for. Rebuilding it here
     would defeat the sidecar's purpose, because that range cannot be recovered afterwards.
 
-    Returns ``None`` only for a source in ``ARCHIVE_MONTHLY``; a trailing-window source is always
-    archived, because each of its payloads holds sessions later ones will have lost. Refuses to
-    rewrite an existing payload: the archive is append-only.
+    Returns ``None`` when there is nothing new to store: a source in ``ARCHIVE_MONTHLY`` whose
+    month is already taken, or a body byte-identical to the newest payload already held. Refuses
+    to rewrite an existing payload: the archive is append-only.
     """
     if fetched_at.tzinfo is None:
         raise ValueError(f"fetched_at must be timezone-aware, got {fetched_at!r}")
     resolved = load_settings() if settings is None else settings
     stamp = fetched_at.astimezone(dt.UTC)
     if monthly_slot_taken(resolved, source, symbol, stamp):
+        return None
+    if body_already_archived(resolved, source, symbol, body):
         return None
 
     directory = _payload_root(resolved, source, symbol)
