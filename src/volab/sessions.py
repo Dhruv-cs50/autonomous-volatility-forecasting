@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 
 import exchange_calendars as xcals
 import pandas as pd
@@ -33,6 +34,27 @@ def _as_date(stamp: pd.Timestamp) -> dt.date:
     reach mypy as ``Any`` and would otherwise leak that through every return here.
     """
     return dt.date(stamp.year, stamp.month, stamp.day)
+
+
+_EXCHANGE_TZ = ZoneInfo("America/New_York")
+_CLOSE = dt.time(16, 0)
+
+
+def session_close_utc(day: dt.date) -> dt.datetime:
+    """16:00 America/New_York on ``day``, in UTC.
+
+    Correct for every regular session and three hours late on an early close, which no Phase 1
+    feature can see: ``as_of`` is the point-in-time axis and nothing keys on intraday time. A
+    later phase needing true closes should take them from the exchange calendar instead.
+
+    This lives here rather than beside the fetchers that first needed it, because it is a pure
+    function of the calendar and because the feature engine needs it too. Importing it from
+    ``volab.ingest`` dragged the whole ingestion package in, and with it ``volab.store``,
+    ``duckdb`` and ``pyarrow`` -- so computing a feature pulled the entire Parquet stack into
+    memory, and the feature engine gained a dependency on the ingestion layer it has no business
+    knowing about. Features consume curated data; they do not know how it got there.
+    """
+    return dt.datetime.combine(day, _CLOSE, tzinfo=_EXCHANGE_TZ).astimezone(dt.UTC)
 
 
 @lru_cache(maxsize=8)

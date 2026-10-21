@@ -17,8 +17,9 @@ import io
 
 import pandas as pd
 
-from volab.ingest._frames import build, parse_us_date, session_close_utc
+from volab.ingest._frames import build, parse_us_date
 from volab.ingest._http import Transport
+from volab.sessions import session_close_utc
 
 _HOST = "https://cdn.cboe.com/api/global/us_indices/daily_prices"
 SERIES: tuple[str, ...] = ("VIX", "VIX9D", "VIX1D", "VVIX")

@@ -17,8 +17,9 @@ from typing import Any
 
 import pandas as pd
 
-from volab.ingest._frames import build, parse_us_date, session_close_utc
+from volab.ingest._frames import build, parse_us_date
 from volab.ingest._http import Transport
+from volab.sessions import session_close_utc
 
 _HOST = "https://api.nasdaq.com/api/quote"
 BARS_COLUMNS: tuple[str, ...] = ("open", "high", "low", "close", "volume")

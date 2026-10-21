@@ -32,8 +32,7 @@ import volab.features.build as build_module
 from volab.config import load_settings
 from volab.errors import SchemaError
 from volab.features.build import COLUMNS, EXOGENOUS_SERIES, build_features, log_returns
-from volab.ingest._frames import session_close_utc
-from volab.sessions import sessions_between
+from volab.sessions import session_close_utc, sessions_between
 
 # Built once: constructing XNYS is slow enough that per-test construction shows up in the suite.
 CAL = xcals.get_calendar("XNYS")

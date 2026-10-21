@@ -9,24 +9,11 @@ mandatory columns and the provenance the store contract requires.
 from __future__ import annotations
 
 import datetime as dt
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-_EXCHANGE_TZ = ZoneInfo("America/New_York")
-_CLOSE = dt.time(16, 0)
 MANDATORY_FIRST: tuple[str, ...] = ("symbol", "ts", "as_of", "ingested_at")
 PROVENANCE: tuple[str, ...] = ("source_url", "vendor_date_text")
-
-
-def session_close_utc(day: dt.date) -> dt.datetime:
-    """16:00 America/New_York on ``day``, in UTC.
-
-    Correct for every regular session and three hours late on an early close, which no Phase 1
-    feature can see: ``as_of`` is the point-in-time axis and nothing keys on intraday time. A
-    later phase needing true closes should take them from the exchange calendar at curation.
-    """
-    return dt.datetime.combine(day, _CLOSE, tzinfo=_EXCHANGE_TZ).astimezone(dt.UTC)
 
 
 def midnight_utc(day: dt.date) -> dt.datetime:

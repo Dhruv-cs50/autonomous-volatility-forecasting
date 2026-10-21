@@ -58,9 +58,8 @@ from volab.features.realized import (
 # engine reads, so a gap row's stamp cannot drift from a real row's. It costs an import of
 # ``volab.ingest``, whose package body imports the store, which is why the import-graph test
 # asserts that nothing of the store is *bound* here rather than that it is never imported.
-from volab.ingest._frames import session_close_utc
 from volab.paths import MANDATORY_COLUMNS
-from volab.sessions import sessions_between
+from volab.sessions import session_close_utc, sessions_between
 
 # The trailing windows, in sessions, every realized column is computed over.
 WINDOWS: tuple[int, ...] = (1, 5, 22, 66)
