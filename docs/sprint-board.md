@@ -40,6 +40,10 @@ Both stories are independent: **disjoint file sets**, so they run concurrently.
 | US-3.1 | Trailing realized measures and HAR components, on `pd.Series` | implementer | `features/realized.py`, `features/har.py`, `tests/test_realized.py` | — | hand-computed values match exactly; incomplete windows null, never partial | in progress |
 | US-3.2 | Forward RV targets, `as_of` = h-th session after `ts` | implementer | `features/targets.py`, `tests/test_targets.py` | sessions | `as_of` exactly h sessions after `ts` across a holiday; off-by-one caught | in progress |
 
+Both dispatched concurrently. `features/__init__.py` was created by the controller beforehand
+(`6f92f34`) so neither story owns a shared file, and each commits with an explicit pathspec
+rather than `git add`, because the git index is shared state two agents can otherwise collide on.
+
 ## Sprint 4 — The feature table
 
 | Story | Goal | Role | Depends on | Acceptance | State |
