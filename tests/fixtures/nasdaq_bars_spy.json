@@ -1,0 +1,8 @@
+{"data":{"symbol":"SPY","totalRecords":3,
+  "tradesTable":{"asOf":null,
+    "headers":{"date":"Date","close":"Close/Last","volume":"Volume","open":"Open","high":"High","low":"Low"},
+    "rows":[
+      {"date":"06/20/2023","close":"440.50","volume":"70,123,456","open":"439.10","high":"441.00","low":"438.75"},
+      {"date":"06/16/2023","close":"439.46","volume":"98,765,432","open":"438.00","high":"440.12","low":"437.80"},
+      {"date":"06/15/2023","close":"437.21","volume":"1,234,567","open":"435.50","high":"437.90","low":"435.01"}]}},
+ "message":null,"status":{"rCode":200,"bCodeMessage":null,"developerMessage":null}}
