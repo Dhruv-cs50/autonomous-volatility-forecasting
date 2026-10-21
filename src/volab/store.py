@@ -1,9 +1,15 @@
-"""The only sanctioned read path, and the guard that seals the holdout window.
+"""The only sanctioned path in or out of the Parquet store, and the guard that seals the holdout.
 
 Statistical corrections do not catch leakage: a strategy built on a future-looking feature can
 pass every deflated-Sharpe and PBO check and still be worthless. Only the data layer can refuse,
-so this module refuses. ``load_panel`` is the sole way volab reads data, and the sole place
-permitted to read Parquet.
+so this module refuses. ``load_panel`` is the sole way volab reads data, and this module is the
+sole place permitted to touch Parquet at all -- in either direction.
+
+The ``write_*`` functions at the bottom are the writing half. They exist mainly to make step 9
+below unreachable: every row they accept must carry an ``as_of`` equal to the partition it is
+being written into, so a file that contradicts its own ``date=`` partition cannot be produced by
+this package. They do not consult the holdout boundary, and must not. Ingestion has to capture
+post-``dev_end`` rows or Phase 6 could never score them; the seal is on reads.
 
 The checks run in a fixed order, because which error surfaces first is part of the contract:
 
@@ -39,17 +45,33 @@ import inspect
 import json
 import os
 import subprocess
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 import volab
 from volab.config import Settings, load_settings
-from volab.errors import DatasetNotFound, HoldoutViolation, SchemaError, UnknownSymbol
-from volab.paths import MANDATORY_COLUMNS, Tier, dataset_glob
+from volab.errors import (
+    DatasetNotFound,
+    HoldoutViolation,
+    RawOverwrite,
+    SchemaError,
+    UnknownSymbol,
+)
+from volab.paths import (
+    MANDATORY_COLUMNS,
+    Tier,
+    curated_path,
+    dataset_glob,
+    features_path,
+    raw_path,
+)
 
 AUDIT_FILENAME: str = "holdout_access.jsonl"
 
@@ -406,3 +428,143 @@ def load_panel(
     if columns is None:
         return frame.drop(columns=[_PARTITION_COLUMN])
     return frame[list(columns)]
+
+
+def _pinned_schema(frame: pd.DataFrame) -> pa.Schema:
+    """The frame's own Arrow schema with the mandatory columns' types pinned.
+
+    ``as_of`` must land as ``date32`` and the two timestamps as microsecond timestamps, because
+    that is what ``tests/conftest.py`` writes and what ``_as_dates`` expects to read back. Left
+    to inference, a column of ``datetime.date`` objects arrives as a string or an object column
+    and step 9's comparison would be reading a different type than it was written as. Payload
+    columns keep whatever Arrow infers.
+    """
+    inferred = pa.Schema.from_pandas(frame, preserve_index=False)
+    zone = frame["ts"].dt.tz
+    pinned = {
+        "as_of": pa.date32(),
+        "ts": pa.timestamp("us", tz=str(zone)),
+        "ingested_at": pa.timestamp("us", tz="UTC"),
+    }
+    return pa.schema(
+        [pa.field(field.name, pinned.get(field.name, field.type)) for field in inferred]
+    )
+
+
+def _write(frame: pd.DataFrame, path: Path, *, as_of: dt.date, allow_overwrite: bool) -> Path:
+    """Validate ``frame`` against ``as_of`` and write it to ``path``, atomically.
+
+    The checks run in a fixed order, for the same reason ``load_panel``'s do: which error a
+    caller sees is part of the contract. Emptiness is judged before any dtype, because an empty
+    frame's columns carry no usable dtype -- pandas gives ``float64`` to an empty list -- so a
+    dtype complaint about a frame with no rows would name the wrong fault.
+    """
+    # ``datetime`` is a subclass of ``date``, so mypy accepts one here and the path builders
+    # would silently emit ``date=2023-06-15T12:00:00`` -- a partition ``parse_path`` rejects and
+    # Hive partitioning misreads. Phase 0 deferred this as a latent builder defect; it was
+    # unreachable while nothing under ``src/`` wrote files, and this function is what makes it
+    # reachable, so it is refused here rather than left to produce a corrupt partition.
+    if isinstance(as_of, dt.datetime):
+        raise SchemaError(f"as_of must be a plain date, not a datetime: {as_of!r}")
+
+    missing = [name for name in MANDATORY_COLUMNS if name not in frame.columns]
+    if missing:
+        raise SchemaError(f"cannot write {path}: missing mandatory column(s) {missing}")
+
+    if frame.empty:
+        raise SchemaError(f"cannot write {path}: the frame has no rows")
+
+    if not isinstance(frame["ts"].dtype, pd.DatetimeTZDtype):
+        raise SchemaError(
+            f"cannot write {path}: column 'ts' must be timezone-aware, "
+            f"got dtype {frame['ts'].dtype}"
+        )
+
+    null_as_of = int(frame["as_of"].isna().sum())
+    if null_as_of:
+        raise SchemaError(f"cannot write {path}: {null_as_of} row(s) have a null as_of")
+
+    # The whole reason this function exists. A row whose as_of disagrees with the partition it is
+    # being written into is what load_panel step 9 raises on at read time; refusing it here means
+    # that step can never fire on data this package wrote.
+    disagreeing = _as_dates(frame["as_of"]) != as_of
+    if bool(disagreeing.any()):
+        first = frame.loc[disagreeing, "as_of"].iloc[0]
+        raise SchemaError(
+            f"cannot write {path}: {int(disagreeing.sum())} row(s) carry an as_of that "
+            f"contradicts the partition being written, first {first} under date={as_of}"
+        )
+
+    if path.exists() and not allow_overwrite:
+        raise RawOverwrite(
+            f"{path} already exists and raw files are immutable; a second ingest of the same "
+            "source, symbol and date within one second collides on the filename stamp"
+        )
+
+    table = pa.Table.from_pandas(frame, schema=_pinned_schema(frame), preserve_index=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Written beside the destination and moved into place, so a crash or a full disk leaves the
+    # partition either absent or complete -- never a truncated Parquet file for a later read to
+    # trip over. os.replace is atomic within a filesystem, and the temp file shares the directory
+    # precisely to guarantee that.
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=".part-", suffix=".parquet.tmp")
+    os.close(descriptor)
+    temporary = Path(name)
+    try:
+        pq.write_table(table, temporary)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def write_raw(
+    frame: pd.DataFrame,
+    *,
+    source: str,
+    symbol: str,
+    as_of: dt.date,
+    ingested_at: dt.datetime,
+    settings: Settings | None = None,
+) -> Path:
+    """Write one immutable raw partition and return its path.
+
+    Refuses to replace an existing file: raw is the archive of what a vendor served, and for a
+    trailing-window source it is the only copy of sessions that can no longer be refetched.
+    """
+    resolved = load_settings() if settings is None else settings
+    path = raw_path(resolved.storage_root, source, symbol, as_of, ingested_at)
+    return _write(frame, path, as_of=as_of, allow_overwrite=False)
+
+
+def write_curated(
+    frame: pd.DataFrame,
+    *,
+    dataset: str,
+    symbol: str,
+    as_of: dt.date,
+    settings: Settings | None = None,
+) -> Path:
+    """Write one curated partition and return its path, replacing any existing file.
+
+    Curated data is a deterministic derivation of raw, so overwriting is what makes a rebuild
+    idempotent rather than a conflict.
+    """
+    resolved = load_settings() if settings is None else settings
+    path = curated_path(resolved.storage_root, dataset, symbol, as_of)
+    return _write(frame, path, as_of=as_of, allow_overwrite=True)
+
+
+def write_features(
+    frame: pd.DataFrame,
+    *,
+    feature_set: str,
+    symbol: str,
+    as_of: dt.date,
+    settings: Settings | None = None,
+) -> Path:
+    """Write one feature partition and return its path, replacing any existing file."""
+    resolved = load_settings() if settings is None else settings
+    path = features_path(resolved.storage_root, feature_set, symbol, as_of)
+    return _write(frame, path, as_of=as_of, allow_overwrite=True)

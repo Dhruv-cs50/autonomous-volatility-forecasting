@@ -44,3 +44,15 @@ class SchemaError(VolabError):
     timestamp cannot be placed on a timeline. ``as_of`` and ``ingested_at`` are not dtype-
     checked here; a bad ``as_of`` fails closed on the partition-consistency assertion instead.
     """
+
+
+class RawOverwrite(VolabError):
+    """Raised when a write would replace an existing raw Parquet file.
+
+    Raw files are immutable: they are the only copy of a vendor response whose source window
+    may since have moved on, so the write path refuses to replace one rather than clobbering it.
+    The expected cause is two ingests of the same source, symbol and date inside one second,
+    because the raw filename stamp has whole-second precision. Curated and feature files are
+    deterministic derivations and are overwritten instead, which is what makes a rebuild
+    idempotent.
+    """
