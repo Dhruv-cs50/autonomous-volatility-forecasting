@@ -130,7 +130,11 @@ def _atomic_write(path: Path, data: bytes) -> None:
     monthly source it would occupy the month's slot. ``store._write`` guards its Parquet writes
     the same way, for the same reason.
     """
-    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=path.suffix)
+    # Suffix ".tmp", never the payload's own ".gz": build_raw and the dedupe check both glob
+    # "*.gz", pathlib's glob matches dotfiles, and a temp named ".tmp-X.gz" left by a hard kill --
+    # where the cleanup below never runs -- would be replayed as a payload, crash on its
+    # unparseable timestamp, and be committable besides.
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".tmp")
     temporary = Path(name)
     try:
         with os.fdopen(descriptor, "wb") as handle:
