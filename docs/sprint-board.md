@@ -37,8 +37,21 @@ Both stories are independent: **disjoint file sets**, so they run concurrently.
 
 | Story | Goal | Role | Files | Depends on | Acceptance | State |
 |---|---|---|---|---|---|---|
-| US-3.1 | Trailing realized measures and HAR components, on `pd.Series` | implementer | `features/realized.py`, `features/har.py`, `tests/test_realized.py` | — | hand-computed values match exactly; incomplete windows null, never partial | in progress |
-| US-3.2 | Forward RV targets, `as_of` = h-th session after `ts` | implementer | `features/targets.py`, `tests/test_targets.py` | sessions | `as_of` exactly h sessions after `ts` across a holiday; off-by-one caught | in progress |
+| US-3.1 | Trailing realized measures and HAR components, on `pd.Series` | implementer | `features/realized.py`, `features/har.py`, `tests/test_realized.py` | — | hand-computed values match exactly; incomplete windows null, never partial | done `6169eff`, in review |
+| US-3.2 | Forward RV targets, `as_of` = h-th session after `ts` | implementer | `features/targets.py`, `tests/test_targets.py` | sessions | `as_of` exactly h sessions after `ts` across a holiday; off-by-one caught | done `9987e0a`, in review |
+| US-3.3 | Return read timestamps in UTC whatever the host's timezone | controller | `store.py` | — | read-back dtype is `datetime64[us, UTC]` on any host | done `aad5d6f` |
+
+US-3.3 was not planned. US-3.2 hit it while writing a test: DuckDB renders a timestamp in its
+session timezone, so `load_panel` returned `datetime64[us, America/Los_Angeles]` here and would
+return `datetime64[us, UTC]` on CI. Same instants, different dtype — a reproducibility defect in
+a project whose claim rests on reproducibility, so it was fixed in the read path rather than
+worked around per-test.
+
+**Parallelism held.** Both commits contain only their own story's files, verified by
+`git show --stat`. The two mechanics that made it safe: the shared `__init__.py` was created up
+front, and each story committed with an explicit pathspec. One wrinkle found in practice — a
+pathspec commit refuses a file git has never seen, so a new file needs `git add -N` first; the
+rule now says so.
 
 Both dispatched concurrently. `features/__init__.py` was created by the controller beforehand
 (`6f92f34`) so neither story owns a shared file, and each commits with an explicit pathspec
