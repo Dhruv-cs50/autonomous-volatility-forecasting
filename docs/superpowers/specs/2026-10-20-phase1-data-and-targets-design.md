@@ -567,8 +567,21 @@ perturbation that silently no-ops would make its test pass for the wrong reason.
 
 1. **`test_perturbing_post_t_leaves_features_byte_identical`** — the exit criterion. Build a
    panel through `T`. Call `build_features(panel, through=T₀)` with `T₀ < T`. Then mutate every
-   row after `T₀`: scale closes, flip return signs, inject NaN, delete rows, append new
-   sessions. Recompute with the same `through=T₀`. Assert byte-identical, column by column.
+   row after `T₀` and recompute with the same `through=T₀`. Assert byte-identical, column by
+   column.
+
+   **The perturbation must change the sign structure of future returns, not only their
+   magnitudes, and this is a requirement rather than one option among several.** Scaling every
+   future close by a constant leaves the sign of every future return unchanged, so a
+   sign-dependent feature that peeks forward survives it — and `semivar_neg_proxy` is exactly
+   such a feature, which makes mutation 1 below the one a scale-only perturbation lets escape.
+   This was found the hard way during US-4.1: the mutation initially passed the perturbation
+   test, and the test was only made to bite by replacing the scaling with a decaying future
+   path. A perturbation set that misses this is the vacuous-test failure in section 3, reached
+   by following section 11 too literally.
+
+   Use a decaying or sign-alternating future path, plus the rest: inject NaN, delete rows,
+   append new sessions.
 2. **`test_panel_extent_does_not_change_features`** — `build_features(panel_to_T₀,
    through=T₀)` equals `build_features(panel_to_T, through=T₀)`. Catches a feature that depends
    on the panel's extent — a mean over the whole frame, a `max()`, a normalisation by a

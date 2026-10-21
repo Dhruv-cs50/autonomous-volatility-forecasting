@@ -71,7 +71,24 @@ rather than `git add`, because the git index is shared state two agents can othe
 
 | Story | Goal | Role | Depends on | Acceptance | State |
 |---|---|---|---|---|---|
-| US-4.1 | `build_features(panel, *, through)` — cutoff separate from panel extent | implementer + code-reviewer | 3.1, 3.2 | columns match spec §9; a missing session does not shorten a window; **asserts `ts` is monotonic ascending**; derives `log_return`; HAR columns carry `_proxy` | todo |
+| US-4.1 | `build_features(panel, *, through)` — cutoff separate from panel extent | implementer + code-reviewer | 3.1, 3.2 | columns match spec §9; a missing session does not shorten a window; **asserts `ts` is monotonic ascending**; derives `log_return`; HAR columns carry `_proxy` | done `acc181a`, in review |
+
+**US-4.1 found the sharpest thing in the phase so far, and it corrects the spec.** Its mutation
+check showed that spec §11's own mutation 1 — making `semivar_neg_proxy` peek forward —
+*escaped* the perturbation test, because scaling future closes leaves the **sign** of every
+future return unchanged, and semivariance keys on sign. The test only bit once the perturbation
+became a decaying future path. §11 listed its perturbations as a menu; a sign-changing
+perturbation is now a stated requirement, because following the old wording literally produced
+exactly the vacuous test §3 names as an anti-goal. Verified independently: mutating
+`realized.py` now fails 3 tests and passes clean on revert.
+
+Interfaces US-4.2 must consume, chosen by US-4.1 where the brief was open:
+`build_features(panel, *, through, calendar)`; `log_returns(close)` is public so targets reuse it
+rather than deriving returns twice; `COLUMNS`, `FEATURE_COLUMNS`, `HAR_COLUMNS`, `WINDOWS`,
+`IV_SERIES`, `FRED_SERIES`, `EXOGENOUS_SERIES`. The panel is the **three curated reads
+concatenated long-form** — bars on `close`/`has_distribution`, VIX family on `close`, FRED on
+`value` — with `_subject()` picking the symbol that is not a named exogenous series. `log_return`
+is **not** an output column.
 | US-4.2 | `python -m volab.features build` writing the table and the four target sets | implementer | 4.1 | real table on disk per symbol; **time a 4-horizon `load_panel`** against the §12 budget | todo |
 
 Carried into Sprint 4 from Sprint 3's review:
