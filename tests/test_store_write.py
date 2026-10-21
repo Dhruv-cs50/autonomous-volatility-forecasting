@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 from pathlib import Path
 
+import duckdb
 import pandas as pd
 import pytest
 
@@ -232,19 +233,40 @@ def test_write_rejects_a_datetime_as_of(synthetic_store) -> None:
         )
 
 
-def test_load_panel_returns_timestamps_in_utc_whatever_the_host_timezone(
-    synthetic_store,
+@pytest.mark.parametrize("zone", ["Asia/Kolkata", "America/Los_Angeles", "UTC"])
+def test_load_panel_returns_timestamps_in_utc_whatever_the_session_timezone(
+    synthetic_store, zone: str
 ) -> None:
-    """DuckDB renders TIMESTAMP WITH TIME ZONE in the host's timezone, so without normalising,
-    this laptop and CI would return identical instants under different dtypes. The instants were
-    always right; the dtype was not reproducible, which in this project is the same defect."""
-    write_curated(
-        _frame(), dataset="bars_daily", symbol="SPY", as_of=DAY, settings=synthetic_store.settings
-    )
+    """The read dtype must be UTC regardless of the timezone DuckDB is rendering in.
 
-    frame = load_panel("bars_daily", symbols=["SPY"], end=DAY, settings=synthetic_store.settings)
+    DuckDB renders a TIMESTAMP WITH TIME ZONE in its session timezone, which defaults to the
+    host's, so without normalising, this laptop and CI return identical instants under different
+    dtypes. The instants were always right; the dtype was not reproducible, which in this project
+    is the same class of defect.
 
-    assert str(frame["ts"].dtype) == "datetime64[us, UTC]"
-    assert str(frame["ingested_at"].dtype) == "datetime64[us, UTC]"
-    # The instant is unchanged by the conversion, only its rendering.
-    assert frame["ts"].iloc[0] == pd.Timestamp("2023-06-15 00:00", tz="UTC")
+    The session timezone is set explicitly here rather than left to the host. An earlier version
+    of this test asserted the dtype without doing that, which made it unable to fail on a UTC
+    host -- so on CI it would have passed with the normalisation reverted. A test that cannot
+    fail is the thing this project exists to catch, so the zone is now a parameter and
+    ``Asia/Kolkata`` is the case that would go red.
+    """
+    duckdb.sql(f"SET TimeZone='{zone}'")
+    try:
+        write_curated(
+            _frame(),
+            dataset="bars_daily",
+            symbol="SPY",
+            as_of=DAY,
+            settings=synthetic_store.settings,
+        )
+
+        frame = load_panel(
+            "bars_daily", symbols=["SPY"], end=DAY, settings=synthetic_store.settings
+        )
+
+        assert str(frame["ts"].dtype) == "datetime64[us, UTC]"
+        assert str(frame["ingested_at"].dtype) == "datetime64[us, UTC]"
+        # The instant is unchanged by the conversion, only its rendering.
+        assert frame["ts"].iloc[0] == pd.Timestamp("2023-06-15 00:00", tz="UTC")
+    finally:
+        duckdb.sql("SET TimeZone='UTC'")

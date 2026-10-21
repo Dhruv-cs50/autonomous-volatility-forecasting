@@ -50,11 +50,18 @@ return `datetime64[us, UTC]` on CI. Same instants, different dtype — a reprodu
 a project whose claim rests on reproducibility, so it was fixed in the read path rather than
 worked around per-test.
 
-**Parallelism held.** Both commits contain only their own story's files, verified by
-`git show --stat`. The two mechanics that made it safe: the shared `__init__.py` was created up
-front, and each story committed with an explicit pathspec. One wrinkle found in practice — a
-pathspec commit refuses a file git has never seen, so a new file needs `git add -N` first; the
-rule now says so.
+**Parallelism held, but the account of why was wrong.** Corrected after a delivery audit checked
+the commit timestamps.
+
+What is true: `6169eff` (US-3.1) and `9987e0a` (US-3.2) share no *story* files, so the pathspec
+discipline did its job, and a `git add -N` step is needed because a pathspec commit refuses a
+file git has never seen.
+
+What was false: this board claimed the shared `features/__init__.py` "was created up front" by
+the controller. Git says otherwise — `9987e0a` **created** it at 15:29:41 and the controller's
+`6f92f34` *modified* it four seconds later. US-3.2 was already running when the file was created,
+so creating it up front protected US-3.1 only. The claim was written from intent rather than from
+the log, which is exactly the kind of thing an audit is for.
 
 Both dispatched concurrently. `features/__init__.py` was created by the controller beforehand
 (`6f92f34`) so neither story owns a shared file, and each commits with an explicit pathspec
@@ -99,8 +106,22 @@ only one test catches means the other is too weak.
 |---|---|---|---|---|
 | US-6.1 | FRED backfill | controller | **blocked** — fred.stlouisfed.org is serving a maintenance page | blocked |
 | US-6.2 | Finish the decisions log | controller | 5.x | todo |
-| US-6.3 | Final whole-branch review, strongest model, merge base `399c4fd` | code-reviewer | 6.2 | todo |
+| US-6.3 | Final whole-branch review, strongest model, merge base **`origin/main`** | code-reviewer | 6.2 | todo |
 | US-6.4 | Open the PR against main | controller | 6.3 | todo |
+
+## Carried from the Sprint 3 delivery audit
+
+| Story | Goal | Role | State |
+|---|---|---|---|
+| US-6.5 | Tests for `python -m volab.ingest` — the four verbs have none, so "done" rested on a manual run | implementer | todo |
+| US-6.6 | Measure the **feature build** against §12's 5-minute budget. Only the `load_panel` half was measured; the build half was extrapolated, and §12 requires both | controller | todo (needs 4.2) |
+| US-6.7 | Reconcile the decisions log: R8–R12, R23, R24 exist only in the gitignored ledger | controller | todo |
+
+Audit corrections already applied: the merge base is re-pointed to `origin/main` (it had moved to
+`a4027d4`, making `399c4fd` stale); three committed `.DS_Store` files are untracked; R15's
+promised comment, silently dropped, has landed; and the UTC test now sets DuckDB's session
+timezone so it can actually fail — it previously could not go red on a UTC host like CI, which
+made it a test that proved nothing there.
 
 ## Risks
 

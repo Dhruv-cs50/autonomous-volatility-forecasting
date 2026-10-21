@@ -511,6 +511,10 @@ def _write(frame: pd.DataFrame, path: Path, *, as_of: dt.date, allow_overwrite: 
             f"contradicts the partition being written, first {first} under date={as_of}"
         )
 
+    # Checked after validation, deliberately: a schema fault is a code defect, while a collision
+    # is often expected operational state -- a resumed backfill meeting work it already did. The
+    # defect is the more useful thing to report first, and nothing has reached disk either way,
+    # because the write below goes to a temp file and is renamed into place.
     if path.exists() and not allow_overwrite:
         raise RawOverwrite(
             f"{path} already exists and raw files are immutable; a second ingest of the same "

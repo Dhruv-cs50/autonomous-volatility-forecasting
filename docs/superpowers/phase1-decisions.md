@@ -8,7 +8,11 @@ Phase 1 ran as a hybrid: independent review seats only where look-ahead could hi
 feature engine, the point-in-time suite), one batched seat for the three vendor fetchers, and the
 config change, write path and curation implemented directly under the final whole-branch review.
 
-Numbering is the order the decisions were made. R1–R19 below are the full set so far.
+Numbering is the order the decisions were made. **This log is incomplete, and says so
+deliberately**: R8–R12, R23 and R24 live in the session's working ledger and are not yet here,
+and reconciling them is story US-6.7. A delivery audit caught an earlier version of this line
+claiming to hold the full set while the body already ran past it — visibly partial is better
+than falsely complete.
 
 ## Pre-flight rulings
 
@@ -143,13 +147,32 @@ committed archive and would have broken every future FRED replay permanently.
 
 ## Where execution stands
 
-Branch `phase-1-data-and-targets`. 285 tests passing; `ruff check`, `ruff format --check` and
+Branch `phase-1-data-and-targets`. **382 tests passing**; `ruff check`, `ruff format --check` and
 `mypy src` all clean; the import ratchet green with `ALLOWED` unchanged at `{"store.py"}`.
 
 Complete: the split and `exogenous` key; the write path; session arithmetic; the fetchers,
-payload archive and `build_raw`, reviewed with all three Important findings fixed. The live
-backfill has written 16,500 raw partitions and 10 committed payloads (696 KB), FRED excepted.
+payload archive and `build_raw` (reviewed, three Important findings fixed, re-review clean);
+curation and the ingest CLI; trailing realized measures and HAR; forward targets; and the UTC
+read normalisation. The live backfill has written 16,500 raw partitions, 15,015 curated
+partitions and 10 committed payloads (696 KB), FRED excepted.
 
-Remaining: the scoped re-review of the fetcher fix diff; FRED once the outage clears; curation
-and the CLI; targets; the feature engine; the point-in-time suite with both mutation proofs; and
-this log's completion alongside the PR.
+Remaining: `build_features` and the features CLI; the point-in-time suite with both mutation
+proofs; FRED once the outage clears; the three stories the Sprint 3 audit added (US-6.5 CLI
+tests, US-6.6 the feature-build measurement, US-6.7 this log's reconciliation); the final
+whole-branch review; and the PR.
+
+A delivery audit at the Sprint 3 boundary found this section stale by four stories and two
+sprints, and found five further records wrong or unevidenced. What it corrected:
+
+- The Sprint 3 concurrency account was written from intent rather than the log. `9987e0a`
+  created `features/__init__.py`; the controller's `6f92f34` modified it four seconds later. The
+  pathspec discipline worked, but "created up front" protected only the second story dispatched.
+- **The UTC test could not fail on a UTC host.** It asserted a dtype that is already UTC when
+  the session timezone is UTC, so on CI it would have passed with the fix reverted. It now sets
+  DuckDB's session timezone explicitly and is parametrised over `Asia/Kolkata`,
+  `America/Los_Angeles` and `UTC`; reverting the normalisation now fails 2 of 3 cases, verified.
+  A test that cannot fail is the exact defect this project exists to catch.
+- R15 promised a one-line comment at the overwrite check and it was never written. It has landed.
+- The final review's merge base `399c4fd` was stale: `origin/main` has moved to `a4027d4`. The
+  board now points at `origin/main`.
+- Three `.DS_Store` files had been committed by careless `git add` and are now untracked.
