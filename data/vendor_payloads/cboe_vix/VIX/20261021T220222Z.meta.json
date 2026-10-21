@@ -1,0 +1,6 @@
+{
+  "source": "cboe_vix",
+  "symbol": "VIX",
+  "fetched_at": "2026-10-21T22:02:22.978375+00:00",
+  "source_url": "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
+}

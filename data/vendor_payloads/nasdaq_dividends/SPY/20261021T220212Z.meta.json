@@ -1,0 +1,6 @@
+{
+  "source": "nasdaq_dividends",
+  "symbol": "SPY",
+  "fetched_at": "2026-10-21T22:02:12.160624+00:00",
+  "source_url": "https://api.nasdaq.com/api/quote/SPY/dividends?assetclass=etf"
+}

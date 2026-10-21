@@ -1,0 +1,6 @@
+{
+  "source": "nasdaq_dividends",
+  "symbol": "QQQ",
+  "fetched_at": "2026-10-21T22:02:16.382519+00:00",
+  "source_url": "https://api.nasdaq.com/api/quote/QQQ/dividends?assetclass=etf"
+}
