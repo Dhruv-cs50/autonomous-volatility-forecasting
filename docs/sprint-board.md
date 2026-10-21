@@ -61,8 +61,23 @@ rather than `git add`, because the git index is shared state two agents can othe
 
 | Story | Goal | Role | Depends on | Acceptance | State |
 |---|---|---|---|---|---|
-| US-4.1 | `build_features(panel, *, through)` — cutoff separate from panel extent | implementer + code-reviewer | 3.1, 3.2 | columns match spec §9; a missing session does not shorten a window | todo |
-| US-4.2 | `python -m volab.features build` writing the table and the four target sets | implementer | 4.1 | real table on disk per symbol | todo |
+| US-4.1 | `build_features(panel, *, through)` — cutoff separate from panel extent | implementer + code-reviewer | 3.1, 3.2 | columns match spec §9; a missing session does not shorten a window; **asserts `ts` is monotonic ascending**; derives `log_return`; HAR columns carry `_proxy` | todo |
+| US-4.2 | `python -m volab.features build` writing the table and the four target sets | implementer | 4.1 | real table on disk per symbol; **time a 4-horizon `load_panel`** against the §12 budget | todo |
+
+Carried into Sprint 4 from Sprint 3's review:
+
+- **`build_features` must assert `ts` is monotonic ascending.** The realized measures are purely
+  positional, so a descending panel would silently produce forward-looking features — and the
+  Sprint 5 AST scan could not catch it, because the scan reads syntax and this is a property of
+  the data. One assertion in the one place that owns ordering, not a check inside hot pure
+  functions.
+- **`log_return` has to be derived here.** Curated bars keep raw OHLCV and `has_distribution`;
+  no return column exists yet. US-3.2's panel contract expects one.
+- **Reuse `write_targets`** rather than re-implementing the per-`as_of` write. It already handles
+  the `Timestamp`-key pitfall that would otherwise produce `date=...T00:00:00` partitions.
+- **Settle `ingested_at` for targets**: currently taken from the row that completed the horizon,
+  where the conservative choice is the max over the window. A no-op for a bulk backfill, which is
+  why it was deferred rather than fixed.
 
 ## Sprint 5 — The leakage proof (the phase's exit criterion)
 

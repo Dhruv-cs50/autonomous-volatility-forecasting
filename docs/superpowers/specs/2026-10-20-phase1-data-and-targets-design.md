@@ -448,7 +448,7 @@ nothing else. Let `r_t = log(C_t / C_{t-1})` over consecutive XNYS sessions, fro
 | `semivar_pos_proxy_d{n}` | `Σ r² · 1{r > 0}` over the window | as above, positive |
 | `signed_jump_proxy_d{n}` | `semivar_pos_proxy_d{n} − semivar_neg_proxy_d{n}` | daily-return analogue of the signed jump |
 | `bipower_proxy_d{n}` | `(π/2) · Σ_{i=0}^{n-2} \|r_{t-i}\| · \|r_{t-i-1}\|`, `n ≥ 2` | bipower on daily returns |
-| `har_d`, `har_w`, `har_m` | `r_t²`; mean of the last 5; mean of the last 22 | standard HAR components on the RV proxy |
+| `har_d_proxy`, `har_w_proxy`, `har_m_proxy` | `r_t²`; mean of the last 5; mean of the last 22 | standard HAR components, computed on the RV **proxy** |
 | `iv_h1`, `iv_h5`, `iv_h22` | VIX1D, VIX9D, VIX closes | horizon-matched implied vol, annualised % |
 | `iv_var_h{1,5,22}` | `(close/100)² · (h/252)` | the same, as variance over the horizon |
 | `vvix` | VVIX close | vol-of-vol |
@@ -459,8 +459,16 @@ Horizon matching follows the research: VIX1D for 1 day, VIX9D (9 calendar days �
 for the 5-day horizon, VIX (30 calendar days ≈ 21 sessions) for 22 days.
 
 **Naming is a correctness requirement, not style.** Every daily-return estimator carries
-`_proxy_`. A later phase comparing against the literature must not be able to mistake these for
+`_proxy`. A later phase comparing against the literature must not be able to mistake these for
 intraday measures.
+
+An earlier draft of this table listed the HAR components as bare `har_d` / `har_w` / `har_m`,
+which contradicted that rule in the same section that states it: they are means of the
+squared-daily-return proxy and carry exactly the confusion the rule exists to prevent. The
+**persisted column names** therefore take the suffix. `har_components()`'s own dict keys stay
+`har_d` / `har_w` / `har_m`, because they are internal to a function whose docstring says what
+they are made of, and the confusion the rule guards against happens where a column is read back
+months later, not inside one function.
 
 **Incomplete windows yield null, never a partial sum.** A feature at `t` whose window extends
 before the panel's first session is `NaN`. Nulls are written, not dropped, so the table has one
