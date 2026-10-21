@@ -90,7 +90,7 @@ documentation. All three working sources need **no API key** and no account.
 
 | Dataset | Endpoint | Verified span | Grain |
 |---|---|---|---|
-| Daily bars, SPY/QQQ/IWM | `api.nasdaq.com/api/quote/{sym}/historical?assetclass=etf` | 2016-10-19 → 2026-10-19, **2513 sessions** | daily OHLCV |
+| Daily bars, SPY/QQQ/IWM | `api.nasdaq.com/api/quote/{sym}/historical?assetclass=etf` | a trailing **2,513 sessions**; 2016-10-19 → 2026-10-19 when first probed, 2016-10-20 → 2026-10-20 two days later | daily OHLCV |
 | VIX | `cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv` | 1990-01-02 → 2026-10-19 (9297) | daily OHLC |
 | VIX9D | …`/VIX9D_History.csv` | 2011-01-04 → 2026-10-19 (3971) | daily OHLC |
 | VIX1D | …`/VIX1D_History.csv` | **2022-05-13** → 2026-10-19 (1112) | daily OHLC |
@@ -168,11 +168,15 @@ produces a number.
 
 ### Why these dates
 
+Bar counts are as of the 2016-10-20 floor; the window is trailing, so the first column drifts
+down by one for every session that passes before the backfill runs (see section 15). VIX1D's 912
+and the holdout's 200 are fixed, because neither source is trailing.
+
 | `dev_end` | bar sessions in dev | VIX1D sessions in dev | holdout sessions (at 2026-10-19) |
 |---|---|---|---|
 | 2023-12-31 (old) | 1811 | 410 | 702 |
 | 2025-06-30 | 2185 | 784 | 328 |
-| **2025-12-31 (chosen)** | **2313** | **912** | **200** |
+| **2025-12-31 (chosen)** | **2312** | **912** | **200** |
 | 2026-03-31 | 2374 | 973 | 139 |
 | 2026-06-30 | 2436 | 1035 | 77 |
 
@@ -794,12 +798,13 @@ Phase 1 must not require it, and must not be rearranged to accommodate it later:
 
 | Risk | Consequence | Mitigation / status |
 |---|---|---|
-| Nasdaq's 10-year cap is a **trailing** window | the dev window's start drifts forward ~1 session/day; history is lost permanently once it falls off | **Run the full backfill first, before the feature engine exists.** Immutable raw Parquet pins the floor; the store only accumulates. The store's inception is **2016-10-19** and the span cannot be reproduced from scratch later. This is what makes Phase 0's immutability load-bearing rather than decorative. |
+| Nasdaq's 10-year cap is a **trailing** window | the dev window's start drifts forward ~1 session/day; history is lost permanently once it falls off | **Observed, not predicted:** the floor was 2016-10-19 when first probed and 2016-10-20 two days later, still exactly 2,513 sessions, so two days of delay cost one session permanently. The backfill ran before the feature engine existed, as planned, and the store's inception is therefore **2016-10-20**. Immutable raw Parquet plus the committed payload archive pin it; the store only accumulates from here and the span cannot be reproduced from scratch. This is what makes Phase 0's immutability load-bearing rather than decorative. |
 | `api.nasdaq.com` is undocumented and keyless | it may change shape, rate-limit or block without notice | raw archive means a break costs new data, never existing data; the fetcher's injected transport makes a vendor swap local |
 | Nasdaq closes are **unadjusted**, and distributions are only obtainable for QQQ | every distribution date carries a spurious ~0.3% negative return that flows **systematically and signed** into `semivar_neg_proxy_*` and `signed_jump_proxy_*` — ~6% of a typical day's variance, on ~40 of 2,513 dev sessions, always in the same direction | `has_distribution` is ingested and set for QQQ (section 6a). **For SPY and IWM no keyless declared source exists**, so the flag is `False` everywhere and the bias is present but unflagged. Bar-derived inference is forbidden: a false positive would exclude a real volatility event. Phase 2 must treat SPY/IWM semivariance as carrying this known bias |
 | FRED keyless gives the **latest vintage only** | a revision silently replaces its original, so `as_of` is an assumption for FRED alone | conservative one-session lag; rare for daily rate series; true vintages need ALFRED and a key |
 | No intraday data | the framework's two highest-ranked inputs are unavailable | stated everywhere, proxies named as proxies, section 14 keeps the door open |
 | 200-session holdout | the Phase 6 check is weak at 22 and 66 days | recorded in section 5; Phase 6 must report it |
+| **Cboe publishes VIX on days the NYSE is closed** | 33 rows since 2016-07-01 — Memorial Day, Independence Day, Labor Day, Thanksgiving, MLK Day — carry real values with no equity session to attach them to. VIX9D, VIX1D and VVIX have none | verified against the archived payloads. The non-session policy splits by tier: **bars reject** such a row, because a bar dated when the market was shut means the source disagrees with the calendar and would corrupt the return series; **exogenous series drop and report** it, because refusing outright would discard 9,298 usable VIX rows over 33 unusable ones. The dropped count is printed, so a vendor change surfaces rather than passing silently |
 | `load_panel` is modified | a regression here would break the project's central guarantee | the change is additive and confined to the symbol check; the entire Phase 0 suite must pass unmodified apart from two date assertions |
 | ~88,900 single-row Parquet files; ~25,600 paths per feature build | reads may be slow enough to make the suite and the daily pipeline painful | section 12: measure on one symbol first, stated budget, stop-and-escalate trigger before the bulk backfill |
 | The payload archive is **committed to a public repository**, republishing an undocumented vendor's responses | Nasdaq may send a takedown request; Cboe's CSVs are already public and FRED is public domain, so the exposure is Nasdaq's tree alone | Dhruv's informed decision (section 13), taken over the private-repo alternative. Remedy if it happens: make the repository private, or rewrite history to drop `data/vendor_payloads/nasdaq_*`. A `NOTICE` file records provenance. The durability risk this replaces — irreplaceable history on one laptop — is now closed by git |

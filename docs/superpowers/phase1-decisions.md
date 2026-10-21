@@ -95,12 +95,40 @@ a full feature build touches, about 5s against a 5-minute budget. The ~88,900-fi
 is correct arithmetic but not a real performance problem. **No escalation; the
 one-`as_of`-per-partition invariant stays and lever (b) is unused.**
 
-## Corrections owed to the spec
+## Corrections made to the spec
 
 The trailing window drifted during execution, exactly as §15 predicted. Store inception is
-**2016-10-20**, not the 2016-10-19 in §13, and dev-window bar sessions are **2,312**, not the
-2,313 in §5's table. Two days of delay cost one session, permanently. The split decision is
-unchanged: 2,312 against a 200-session holdout is the same trade Dhruv approved.
+**2016-10-20**, not 2016-10-19, and dev-window bar sessions are **2,312**, not 2,313. Two days of
+delay cost one session, permanently. The split decision is unchanged: 2,312 against a
+200-session holdout is the same trade Dhruv approved. §4, §5 and §15 are corrected, and §5 now
+states which of its columns drift and which are fixed.
+
+## Curation decisions
+
+- **R20** `curate` normalises `as_of` to `dt.date` before grouping. The store is asymmetric: a
+  fetcher writes `as_of` as `date` objects but `load_panel` returns `datetime64`, so grouping a
+  read frame yields `Timestamp` keys and `write_curated` would have built
+  `date=2023-06-16T00:00:00`. R14's guard refused it rather than letting a malformed partition
+  through, which is how this was found. **Worth a reviewer's attention as a store-contract wart:
+  what you write is not the dtype you read back.**
+- **R21** The non-session policy **splits by tier**. Bars **reject** a row dated outside an XNYS
+  session; exogenous series **drop and report** it. Cboe genuinely publishes VIX on NYSE
+  holidays — 33 rows since 2016-07-01 with real values, while VIX9D, VIX1D and VVIX have none.
+  A bar dated when the market was shut means the source disagrees with the calendar and would
+  corrupt the return series. An exogenous value on a closed day has no session to attach to and
+  can never enter a session-indexed window, so refusing outright would discard 9,298 usable VIX
+  rows over 33 unusable ones. Dropping is safe point-in-time: it removes rows rather than
+  inventing them, on dates no feature is evaluated on. *Cost if wrong:* if those holiday values
+  ever mattered, they are absent; the count is printed so a vendor change surfaces.
+- **R22** Numeric stripping is narrow **per field** — `,` for bars, `$` for dividend amounts —
+  rather than a blanket punctuation strip. Bars carry no currency symbol at all, so a `$` in a
+  price means the vendor changed format and must fail loudly.
+
+## Real-store curation counts
+
+Bars 2,312 partitions per symbol. VIX, VIX9D and VVIX 2,389 each, covering the 77-session warmup
+before the bars floor. **VIX1D 912 — exactly the dev-session count computed in §5 when arguing to
+move the split**, which is the arithmetic behind that decision confirmed against real data.
 
 ## External blocker: FRED
 
