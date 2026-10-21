@@ -1,8 +1,9 @@
-"""Forward realized-variance targets, stamped with the session they become knowable.
+"""Forward realized-variance *proxy* targets, stamped with the session they become knowable.
 
 For a base session ``t`` and horizon ``h`` the target is the sum of the next ``h`` squared daily
-returns. It is forward-looking by definition, so it cannot live beside the features: it is kept
-in its own dataset and carries
+returns. That is a daily-return proxy for realized variance, not an intraday measure, and must
+not be mistaken for one when compared against the literature. It is forward-looking by
+definition, so it cannot live beside the features: it is kept in its own dataset and carries
 
 * ``ts``    -- ``t``, the session the forecast is *for*;
 * ``as_of`` -- the ``h``-th XNYS session after ``t``, the session its last return is known.
@@ -116,7 +117,23 @@ def build_targets(
     if panel.empty:
         return pd.DataFrame({column: [] for column in columns})
 
+    if not isinstance(panel["ts"].dtype, pd.DatetimeTZDtype):
+        raise SchemaError(
+            f"cannot build targets: column 'ts' must be timezone-aware, got {panel['ts'].dtype}"
+        )
     days = [_as_date(value) for value in panel["as_of"]]
+    # The base session is read from ``as_of`` but ``ts`` is what the result carries, so the two
+    # must name the same session. A feature-style panel whose ``as_of`` is lagged would otherwise
+    # yield targets silently shifted by a session.
+    ts_days = [stamp.date() for stamp in panel["ts"].dt.tz_convert("UTC")]
+    disagreeing = [(d, t) for d, t in zip(days, ts_days, strict=True) if d != t]
+    if disagreeing:
+        as_of, ts_day = disagreeing[0]
+        raise SchemaError(
+            f"cannot build targets: {len(disagreeing)} row(s) have an as_of that is not the "
+            f"session of their ts (UTC), first as_of {as_of} against ts {ts_day}; the panel "
+            "must be bars-shaped, with as_of equal to the session date"
+        )
     if len(set(days)) != len(days):
         raise SchemaError("cannot build targets: a session appears in more than one row")
 
@@ -155,6 +172,18 @@ def write_targets(
     """
     if targets.empty:
         raise SchemaError(f"cannot write targets_rv_h{horizon}/{symbol}: the frame has no rows")
+    name = target_column(horizon)
+    if name not in targets.columns:
+        raise SchemaError(
+            f"cannot write {targets_dataset(horizon)}/{symbol}: the frame lacks column {name!r}, "
+            f"so it is not a horizon-{horizon} target frame (has {list(targets.columns)})"
+        )
+    wrong = sorted({str(value) for value in targets["symbol"] if value != symbol})
+    if wrong:
+        raise SchemaError(
+            f"cannot write {targets_dataset(horizon)}/{symbol}: the frame holds rows for "
+            f"symbol(s) {wrong}"
+        )
     keyed = targets.assign(as_of=[_as_date(value) for value in targets["as_of"]])
     return [
         write_features(

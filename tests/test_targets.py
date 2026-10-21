@@ -275,3 +275,57 @@ def test_write_targets_refuses_an_empty_frame(synthetic_store) -> None:
     empty = build_targets(_panel(SESSIONS[:1], RETURNS[:1]), horizon=1, calendar=CAL)
     with pytest.raises(SchemaError, match="no rows"):
         write_targets(empty, horizon=1, symbol="SPY", settings=synthetic_store.settings)
+
+
+def test_a_panel_whose_as_of_is_lagged_behind_ts_is_refused() -> None:
+    # A feature-style panel: as_of one session after ts. Taken at face value the targets would
+    # be shifted by a session, so the mismatch is refused rather than repaired.
+    panel = _panel(SESSIONS, RETURNS)
+    panel["as_of"] = SESSIONS[1:] + [dt.date(2024, 1, 11)]
+    with pytest.raises(SchemaError, match="not the session of their ts"):
+        build_targets(panel, horizon=1, calendar=CAL)
+
+
+def test_a_panel_with_a_naive_ts_is_refused() -> None:
+    panel = _panel(SESSIONS, RETURNS)
+    panel["ts"] = panel["ts"].dt.tz_localize(None)
+    with pytest.raises(SchemaError, match="timezone-aware"):
+        build_targets(panel, horizon=1, calendar=CAL)
+
+
+def test_write_targets_refuses_a_frame_of_another_horizon(synthetic_store) -> None:
+    days = sessions_between(CAL, dt.date(2023, 12, 18), dt.date(2023, 12, 29))
+    h5 = build_targets(_panel(days, [0.01] * len(days)), horizon=5, calendar=CAL)
+    with pytest.raises(SchemaError, match="target_rv_proxy_h22"):
+        write_targets(h5, horizon=22, symbol="SPY", settings=synthetic_store.settings)
+    assert not (synthetic_store.root / "features" / "targets_rv_h22").exists()
+
+
+def test_write_targets_refuses_a_frame_of_another_symbol(synthetic_store) -> None:
+    days = sessions_between(CAL, dt.date(2023, 12, 18), dt.date(2023, 12, 29))
+    qqq = build_targets(_panel(days, [0.01] * len(days), symbol="QQQ"), horizon=1, calendar=CAL)
+    with pytest.raises(SchemaError, match="QQQ"):
+        write_targets(qqq, horizon=1, symbol="SPY", settings=synthetic_store.settings)
+    assert not (synthetic_store.root / "features" / "targets_rv_h1").exists()
+
+
+def test_reading_targets_at_a_cutoff_returns_only_realised_base_sessions(synthetic_store) -> None:
+    # The store filter doing the work the module docstring claims: as_of values straddle the
+    # cutoff, and only base sessions at least `horizon` sessions before it come back.
+    horizon, cutoff = 2, dt.date(2023, 12, 27)
+    days = sessions_between(CAL, dt.date(2023, 12, 18), dt.date(2023, 12, 29))
+    targets = build_targets(_panel(days, [0.01] * len(days)), horizon=horizon, calendar=CAL)
+    write_targets(targets, horizon=horizon, symbol="SPY", settings=synthetic_store.settings)
+
+    back = load_panel(
+        targets_dataset(horizon),
+        symbols=["SPY"],
+        end=cutoff,
+        tier=Tier.FEATURES,
+        settings=synthetic_store.settings,
+    )
+
+    last_base = back["ts"].max().date()
+    assert last_base == days[days.index(cutoff) - horizon]  # 2023-12-22: two sessions before
+    assert (back["as_of"].dt.date <= cutoff).all()
+    assert len(back) < len(targets)  # some targets were written but are not yet visible
