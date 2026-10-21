@@ -31,15 +31,18 @@ rather than given review seats — neither is a place look-ahead can hide.
 Closed: 304 tests, gates green, 16,500 raw partitions, 10 committed payloads.
 Re-review verdicted all six findings ADDRESSED.
 
-## Sprint 3 — Feature engine foundations · OPEN
+## Sprint 3 — Feature engine foundations · CLOSED
 
 Both stories are independent: **disjoint file sets**, so they run concurrently.
 
 | Story | Goal | Role | Files | Depends on | Acceptance | State |
 |---|---|---|---|---|---|---|
-| US-3.1 | Trailing realized measures and HAR components, on `pd.Series` | implementer | `features/realized.py`, `features/har.py`, `tests/test_realized.py` | — | hand-computed values match exactly; incomplete windows null, never partial | done `6169eff`, in review |
-| US-3.2 | Forward RV targets, `as_of` = h-th session after `ts` | implementer | `features/targets.py`, `tests/test_targets.py` | sessions | `as_of` exactly h sessions after `ts` across a holiday; off-by-one caught | done `9987e0a`, in review |
+| US-3.1 | Trailing realized measures and HAR components, on `pd.Series` | implementer | `features/realized.py`, `features/har.py`, `tests/test_realized.py` | — | hand-computed values match exactly; incomplete windows null, never partial | done `6169eff` + `6e6774d` |
+| US-3.2 | Forward RV targets, `as_of` = h-th session after `ts` | implementer | `features/targets.py`, `tests/test_targets.py` | sessions | `as_of` exactly h sessions after `ts` across a holiday; off-by-one caught | done `9987e0a` + `11744ea` |
 | US-3.3 | Return read timestamps in UTC whatever the host's timezone | controller | `store.py` | — | read-back dtype is `datetime64[us, UTC]` on any host | done `aad5d6f` |
+
+Closed at 380 tests, gates green, reviewed: spec ✅ both, no Critical, no Important. Four of ten
+minors fixed in a scoped round, six deferred to the final review.
 
 US-3.3 was not planned. US-3.2 hit it while writing a test: DuckDB renders a timestamp in its
 session timezone, so `load_panel` returned `datetime64[us, America/Los_Angeles]` here and would
