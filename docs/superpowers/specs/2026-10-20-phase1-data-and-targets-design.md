@@ -550,8 +550,24 @@ one. The guard Phase 0 built does the work.
 
 ## 11. Point-in-time tests — the exit criterion
 
-`tests/test_point_in_time.py`. Byte-identity means per column: equal dtype, and
-`frame[col].to_numpy().tobytes()` equal. Float tolerance is not used anywhere in this file.
+`tests/test_point_in_time.py`. Byte-identity means per column: equal dtype, and equal canonical
+bytes — **not** a literal `frame[col].to_numpy().tobytes()`, which this spec prescribed until it
+was probed and found unusable. `tobytes()` on an object array compares *pointers*, so two
+independently built copies of one identical panel compare unequal; measured, `symbol` (pandas 3
+`str`), `ts` (`datetime64[us, UTC]`) and `as_of` (`object`) all came back unequal while only
+`float64` held. Applied literally the assertion would have failed on every run, and the obvious
+repair — skipping the columns that misbehave — would have quietly stopped checking the identity
+columns altogether.
+
+So the comparison is canonical per dtype: raw buffers for floats and datetimes, values plus the
+null mask for nullable booleans, and `repr` for object columns. **No float tolerance anywhere in
+this file**, and each branch of the canonicaliser carries its own red case.
+
+This is the third prescription in this section to be wrong, after the perturbation menu and its
+coverage. The pattern is worth naming: every part of §11 that was written as prose and not
+checked against a running interpreter turned out to be mistaken, and each was caught by probing
+or mutation rather than by review. Treat the remaining prose here as a statement of intent that
+an implementer is expected to verify, not as a recipe.
 
 These tests call `build_features(panel, through=T₀)` **directly**, with a panel built in the
 test and never round-tripped through `load_panel`. That is essential: routing the panel through
