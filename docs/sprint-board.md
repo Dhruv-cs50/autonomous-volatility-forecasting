@@ -233,3 +233,39 @@ two observations sharing one knowable session because FRED's calendar and XNYS d
 2. US-6.8 `vix_family` schema, US-6.9 the two CLI defects — both dispatched.
 3. US-6.2 final decisions-log pass, US-6.3 final whole-branch review (merge base `origin/main`),
    US-6.4 the PR.
+
+## Handover (2026-10-22, context exhausted in the originating session)
+
+Branch `phase-1-data-and-targets`, pushed, HEAD `03881d2`. **634 tests pass**; `ruff check`,
+`ruff format --check` and `mypy src` clean; the import ratchet green with `ALLOWED` unchanged at
+`{"store.py"}`.
+
+Closed since the last note: US-5.1's fix round (3 escapes, 16 mutations, none surviving),
+US-5.2/5.3 (both mutation proofs recorded verbatim), US-6.1 (FRED, plus the three of my own
+defects that were blocking it), US-6.5, US-6.6, US-6.7, US-6.8 (`vix_family` reads in one call,
+8,079 rows), US-6.9 (CLI reporting plus the typed `ParseRefused`), and the README rewrite.
+
+**Four things remain.**
+
+1. **US-5.1's adversarial re-review.** Dispatched from the originating session on Opus against
+   `tests/test_point_in_time.py` at `f4e4c92..808a239`. Its verdict may not have been relayed. If
+   no verdict is recorded in `phase1-decisions.md`, dispatch a fresh one — this file has already
+   failed one review, so it does not merge unreviewed. Brief it to attack the **panel builder**,
+   not the test bodies: all three earlier escapes were fixture gaps rather than missing
+   assertions. Two shapes the fixture still cannot express — more than one subject symbol, so
+   cross-sectional peeks are unreachable, and a per-release-varying exogenous lag.
+2. **US-6.2** — a final pass over `phase1-decisions.md`, which now holds R1–R30.
+3. **US-6.3** — the final whole-branch review, strongest model, **merge base `origin/main`**
+   (not `399c4fd`; main moved).
+4. **US-6.4** — open the PR.
+
+**What the PR must say**, because it is the project's actual claim: four separate times in this
+phase a badly chosen leakage test let a real forward peek through, and every one was found by
+running something rather than reading it. Spec §11 was wrong four times — the perturbation menu,
+its coverage, the byte-comparison method, and mutation 2's purpose. The two mutation classes
+prove the two defence layers are complementary: a forward offset is caught by both the
+behavioural tests and the AST scan, while a full-sample statistic is caught only behaviourally
+and is structurally invisible to the scan. State plainly that no free intraday source exists, so
+the daily-return estimators carry `_proxy`; that SPY and IWM distribution dates are unobtainable
+so that bias is documented rather than detected; and that the 200-session holdout is thin at the
+22- and 66-day horizons.
