@@ -82,11 +82,13 @@ reasoning is in `docs/superpowers/phase1-decisions.md`.
 Writes may go past the boundary, and must: ingestion has to capture holdout rows or Phase 6 could
 never score them. **Only reads are sealed.**
 
-## The point-in-time proof
+## The point-in-time evidence
 
 The phase's exit criterion is that features at `t` do not move when data after `t` changes. A
-leakage suite nobody has watched fail is not evidence, so the guarantee is demonstrated by
-mutation, with the output recorded in `docs/superpowers/phase1-decisions.md`:
+leakage suite nobody has watched fail is not evidence, so two defects were planted and run, with
+the output recorded in `docs/superpowers/phase1-decisions.md`. Two mutants caught is evidence
+that the layers fire, not a proof that nothing gets past them — what does get past them is
+below:
 
 | Planted defect | Behavioural tests | AST scan |
 |---|---|---|
@@ -101,8 +103,11 @@ separate times**, and every one was found by running something rather than by re
 ### What it does not catch
 
 Two classes are measured and remain open, so the claim is deliberately narrow: **the suite
-catches every syntactic forward peek and every leak the perturbation images can distinguish, and
-nothing stronger.**
+catches the spellings the AST scan enumerates — a `shift`/`diff` offset that is not a
+non-negative integer literal, a `bfill`/`backfill`/`interpolate`, a `method=` that is not
+`ffill`/`pad`, a non-false `center=`, any slice — plus every leak the perturbation images can
+distinguish, and nothing stronger.** A forward peek spelled outside that list is not
+hypothetical: the first class below is one, written in source, and it passes 607 of 608 tests.
 
 - **A predicate constant across the perturbation images.** At the cutoff the fixture presents
   `|r_next|` from a finite set, so a band threshold placed in a gap of that set — a credible

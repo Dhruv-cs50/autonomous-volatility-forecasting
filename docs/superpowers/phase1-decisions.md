@@ -655,7 +655,16 @@ dividend rows from the Nasdaq endpoint at all, so for those two symbols the unad
 is present and documented rather than detected. That split is in the README's limitations and is
 recorded here because it is the kind of partial coverage that reads as full coverage later.
 
-## US-5.1 re-review: all eight findings ADDRESSED, and TWO NEW ESCAPES — the story reopens again
+## US-5.1 re-review: all eight findings ADDRESSED, and TWO NEW ESCAPES — done, with two limits carried
+
+**On the state this leaves the story in**, because the first version of this heading said "the
+story reopens again" and that was wrong. The board's reopen rule is about the *dispatched*
+mutations: if one of those survives, the suite is weaker than the story claimed and the story
+goes back. All five fired, each reconstructed independently here. E1 and E2 are escapes this
+review **invented** beyond the brief, and they are class-level limits of the approach rather
+than defects in the deliverable — no change to `src/` would close them that is in this story's
+scope. So US-5.1 is **done with carried limits**: deliverable complete and reviewed, two
+classes knowingly deferred to Phase 2 and written into the README's limitations.
 
 All eight earlier findings verified ADDRESSED, each mutant reconstructed independently with
 failure sets matching the implementer's report exactly. No new breakage; 66 → 100 test ids with
@@ -715,8 +724,12 @@ itself.
 
 ### What this means for the PR
 
-The exit criterion holds against every *syntactic* forward peek and every leak the perturbation
-images can distinguish. It does **not** hold against a predicate constant across those images,
+The exit criterion holds against the spellings the AST scan enumerates — a `shift`/`diff`
+offset that is not a non-negative integer literal, a `bfill`/`backfill`/`interpolate`, a
+`method=` that is not `ffill`/`pad`, a non-false `center=`, any slice — and against every leak
+the perturbation images can distinguish. It does **not** hold against a forward peek spelled
+outside that list, which is not hypothetical: E1 above is one, written in source, and it passes
+607 of 608 tests. It does **not** hold against a predicate constant across those images,
 nor against cross-call state. **The PR must say so.** Claiming the suite catches leakage in
 general would be exactly the overclaim this project was built to refuse — and we would be making
 it in the document that argues the harness is honest.

@@ -149,7 +149,7 @@ Carried into Sprint 4 from Sprint 3's review:
 
 | Story | Goal | Role | Depends on | Acceptance | State |
 |---|---|---|---|---|---|
-| US-5.1 | Point-in-time suite + AST forward-look scan | implementer + code-reviewer | 4.1 | perturbing post-`T₀` data leaves features byte-identical | done `d2321d1` — all 8 findings addressed; 2 new escapes (E1, E2) recorded as class-level limits, deferred to Phase 2 |
+| US-5.1 | Point-in-time suite + AST forward-look scan | implementer + code-reviewer | 4.1 | perturbing post-`T₀` data leaves features byte-identical | done `d2321d1`, with carried limits — all 8 findings addressed and all 5 dispatched mutations fired, so the reopen rule below did not trigger; E1 and E2 are class-level limits the re-review found beyond its brief, carried to Phase 2 |
 
 US-5.1 carries both spec corrections earlier stories forced — the perturbation must change the
 sign structure of future returns **and** cover every input group — plus the AST scan exempting
@@ -163,6 +163,11 @@ story reopens rather than being reported green.**
 
 US-5.2 and US-5.3 are deliberately separate stories: they prove different tests, and a mutation
 only one test catches means the other is too weak.
+
+**On "reopens" above:** the rule is about the mutations the story is dispatched with. Every one
+of the five fired, so US-5.1 closed. E1 and E2 came out of the re-review inventing new attacks
+past its brief; they are limits of the approach, not surviving mutations, and no change inside
+this story would close them. `docs/superpowers/phase1-decisions.md` says the same.
 
 ## Sprint 6 — Ship
 
