@@ -377,3 +377,40 @@ badly chosen one lets a real peek through.
 This also corrected the spec a fourth time. §11 predicted test 1 would *not* catch mutation 2,
 "no individual row changed" — wrong, because a full-sample statistic includes the perturbed
 future rows. The prediction was never run before being written down.
+
+
+## A fourth escape, found while fixing a Minor
+
+The review of the point-in-time suite noted in passing that the older leakage tests in
+`tests/test_features_build.py` compared with `pd.testing.assert_frame_equal`'s **default
+tolerance**, so they would accept a rounding-sized leak. It was filed Minor. Verifying the fix
+turned it into something sharper.
+
+Those five comparisons now carry `check_exact=True`. The measurement that justifies it, a
+forward leak **ten thousand times smaller** than the tolerance they used to allow:
+
+```python
+data[f"rv_proxy_d{window}"] += returns.shift(-1).fillna(0.0) * 1e-9
+```
+
+| Comparison | Result |
+|---|---|
+| **with** `check_exact=True` | **3 failed** — growing-panel, `[close]` perturbation, combined |
+| **without** it (the code as it stood) | **43 passed** — the leak walks straight through |
+| both reverted | 43 passed |
+
+So the tests meant to catch look-ahead would have accepted a genuine forward-looking feature,
+provided it was small. That is the worst shape for this defect to take: a leak of 1e-9 does not
+look like a bug, it looks like floating-point noise, and the test that should refuse it instead
+confirmed the code was clean.
+
+**Ruling R29: a leakage test may carry no tolerance at all.** Not a tight one — none. Every
+comparison in a test whose purpose is to detect look-ahead compares exactly, because the size of
+a leak is evidence about how it was introduced and not about whether it matters. *Cost if wrong:*
+a genuine floating-point non-determinism in the engine would now fail these tests rather than
+pass them, which is information we would want.
+
+Worth noting how this was found: not by review — the review filed it Minor, correctly on the
+evidence it had — but by mutating the fix to check it did what the commit message claimed. The
+phase's record on this is now four for four: every leakage gap was found by running something,
+and none by reading.
