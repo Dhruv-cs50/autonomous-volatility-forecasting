@@ -145,11 +145,19 @@ Carried into Sprint 4 from Sprint 3's review:
   where the conservative choice is the max over the window. A no-op for a bulk backfill, which is
   why it was deferred rather than fixed.
 
-## Sprint 5 — The leakage proof (the phase's exit criterion)
+## Sprint 5 — The leakage proof (the phase's exit criterion) · OPEN
 
 | Story | Goal | Role | Depends on | Acceptance | State |
 |---|---|---|---|---|---|
-| US-5.1 | Point-in-time suite + AST forward-look scan | implementer + code-reviewer | 4.1 | perturbing post-`T₀` data leaves features byte-identical | todo |
+| US-5.1 | Point-in-time suite + AST forward-look scan | implementer + code-reviewer | 4.1 | perturbing post-`T₀` data leaves features byte-identical | in progress |
+
+US-5.1 carries both spec corrections earlier stories forced — the perturbation must change the
+sign structure of future returns **and** cover every input group — plus the AST scan exempting
+`targets.py` as a whole file rather than by construct. It is dispatched with five mutations it
+must demonstrate firing, including the two that escaped earlier suites: a sign-dependent peek
+(`semivar_neg_proxy`) and a sign-blind one (`bipower_proxy`, which is `|r_t| · |r_{t-1}|`, so
+only a magnitude change catches it). **If any mutation survives, that is the finding, and the
+story reopens rather than being reported green.**
 | US-5.2 | Mutation 1: `semivar_neg_proxy_d5` → `.shift(-1)`; record verbatim failure | controller | 5.1 | tests 1 **and** 4 both fire | todo |
 | US-5.3 | Mutation 2: trailing `.rolling(22).mean()` → full-sample `.mean()` | controller | 5.1 | test 2 fires; test 1 does **not** | todo |
 
