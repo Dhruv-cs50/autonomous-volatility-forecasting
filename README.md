@@ -91,8 +91,30 @@ mutation, with the output recorded in `docs/superpowers/phase1-decisions.md`:
 
 Two layers, because neither suffices alone. The scan reads syntax, so it cannot see a leak that
 looks like ordinary normalisation; the behavioural tests depend on the perturbation being well
-chosen. During this phase a badly chosen perturbation let a real forward peek through **four
+chosen. During this phase a badly chosen perturbation let a real forward peek through **five
 separate times**, and every one was found by running something rather than by reading it.
+
+### What it does not catch
+
+Two classes are measured and remain open, so the claim is deliberately narrow: **the suite
+catches every syntactic forward peek and every leak the perturbation images can distinguish, and
+nothing stronger.**
+
+- **A predicate constant across the perturbation images.** At the cutoff the fixture presents
+  `|r_next|` from a finite set, so a band threshold placed in a gap of that set — a credible
+  crash-eve signal — is invariant under every perturbation. Measured at **607 of 608 tests
+  passing**. More perturbation groups raise the attacker's cost without closing the class; dense
+  or property-based magnitudes would.
+- **Cross-call state.** A memoised full-sample statistic defeats the only full-sample detector,
+  because both tables it compares are built in one process. Measured at **0 of 100 failures**.
+  A subprocess-level check would see it.
+
+Both are Phase 2 work. They are named here rather than in a footnote because a leakage suite
+whose limits are not stated invites exactly the trust this project exists to withhold.
+
+The AST scan is a ratchet against a careless spelling, never a defence: four evasions of it have
+been measured, and an order-only peek — "was tomorrow's move bigger than today's?" — needs no
+`shift`, slice or `center` at all.
 
 ## Getting started
 
