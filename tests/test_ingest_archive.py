@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from fixture_transport import FIXTURES, fixture_transport
 
-from volab.errors import RawOverwrite
+from volab.errors import ParseRefused, RawOverwrite
 from volab.ingest import (
     ARCHIVE_MONTHLY,
     INGEST_FLOOR,
@@ -228,7 +228,7 @@ def test_fetch_source_refuses_to_archive_an_unparseable_body(synthetic_store) ->
     def error_page(url: str) -> bytes:
         return b"<html><body>403 Forbidden</body></html>"
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ParseRefused):
         fetch_source(
             "nasdaq_bars",
             "SPY",

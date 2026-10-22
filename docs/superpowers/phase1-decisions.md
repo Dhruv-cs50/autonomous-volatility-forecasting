@@ -477,3 +477,32 @@ Carried forward: `features/__main__.py`'s per-series exogenous read was a workar
 defect and could now be a single call. Left alone deliberately — it also carries the
 latest-observation-per-session collapse from the FRED work, so simplifying it is a real change
 rather than a deletion, and it is not worth a regression risk today.
+
+
+## US-6.9: the CLI's two defects, and a typed refusal (cb1f28b, cd46c45, and the base change)
+
+A rejected payload now reports REFUSED rather than FAILED, and `curate --source nasdaq_dividends`
+says where dividends are actually curated instead of exiting 0 in silence. 77 CLI tests, suite 634.
+
+Two decisions worth recording.
+
+**The implementer's `CURATED_WITH` mapping is better than the brief.** I asked it to fix the
+dividends no-op; it added a mapping plus a `RuntimeError` for any source with no curation rule, so
+a source added later cannot silently do nothing. It fixed the class rather than the instance.
+
+**Ruling R30: `ParseRefused` derives from `VolabError` alone, not `(VolabError, ValueError)`.**
+The implementer used the dual base to keep an out-of-scope test passing, flagged it, and asked —
+correctly. Dropping it, for two reasons. The taxonomy's design property is that one clause catches
+the whole data layer, and a second base weakens that. And the accidental-capture surface is
+real rather than theoretical: `src/volab/` holds **eleven** `except ValueError` sites, including
+the date parsers in `_frames.py` and the numeric guard in `fred.py`, so a `ParseRefused` passing
+through any of them would be converted or swallowed. No live path does today — `fetch_source`
+raises above all of them — but the hazard is one refactor away. The test that asserted
+`pytest.raises(ValueError)` was pinning the old implementation detail; it now asserts the
+contract. *Cost if wrong:* an external caller written against `except ValueError` stops catching
+it, which is the point.
+
+Accepted with the implementer's own caveat: `except Exception` around the parse means a genuine
+parser bug also reports as REFUSED. The chained cause and the original exception name in the
+printed line keep it traceable, and the alternative — enumerating the exception types a parser may
+raise — would be wrong the first time a vendor changed shape.

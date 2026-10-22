@@ -178,7 +178,7 @@ only one test catches means the other is too weak.
 | Story | Goal | Role | State |
 |---|---|---|---|
 | US-6.5 | Tests for `python -m volab.ingest` — the four verbs have none, so "done" rested on a manual run | implementer | done `6cd52a5`, 60 tests |
-| US-6.9 | Two CLI defects US-6.5 found and correctly did not fix | implementer | todo |
+| US-6.9 | Two CLI defects US-6.5 found and correctly did not fix | implementer | done `cb1f28b`; `ParseRefused` follow-up approved |
 
 US-6.5 could not get a RED, because the CLI already worked — so it proved its tests bite with
 **10 in-process mutants** applied through a scratchpad pytest plugin, leaving `src/` untouched.

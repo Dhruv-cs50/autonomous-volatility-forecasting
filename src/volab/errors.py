@@ -58,7 +58,7 @@ class RawOverwrite(VolabError):
     """
 
 
-class ParseRefused(VolabError, ValueError):
+class ParseRefused(VolabError):
     """Raised when a vendor response arrived and this code could not read it.
 
     The expected cause is an HTML maintenance page where a CSV was due, a truncated body, or a
