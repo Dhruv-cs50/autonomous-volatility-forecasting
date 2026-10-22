@@ -149,7 +149,7 @@ Carried into Sprint 4 from Sprint 3's review:
 
 | Story | Goal | Role | Depends on | Acceptance | State |
 |---|---|---|---|---|---|
-| US-5.1 | Point-in-time suite + AST forward-look scan | implementer + code-reviewer | 4.1 | perturbing post-`T₀` data leaves features byte-identical | in progress |
+| US-5.1 | Point-in-time suite + AST forward-look scan | implementer + code-reviewer | 4.1 | perturbing post-`T₀` data leaves features byte-identical | in progress — round-2 re-review dispatched on Opus; no verdict was ever recorded from the first attempt |
 
 US-5.1 carries both spec corrections earlier stories forced — the perturbation must change the
 sign structure of future returns **and** cover every input group — plus the AST scan exempting
@@ -170,7 +170,7 @@ only one test catches means the other is too weak.
 |---|---|---|---|---|
 | US-6.1 | FRED backfill | controller | done `5ba4814` — 7,718 raw partitions; macro columns live |
 | US-6.2 | Finish the decisions log | controller | 5.x | done `8298a2e` — 7 records corrected, both mutations re-measured at 100 tests |
-| US-6.3 | Final whole-branch review, strongest model, merge base **`origin/main`** | code-reviewer | 6.2 | todo |
+| US-6.3 | Final whole-branch review, strongest model, merge base **`origin/main`** | code-reviewer | 6.2 | in progress — dispatched on Opus over `origin/main..52a1ddc` |
 | US-6.4 | Open the PR against main | controller | 6.3 | todo |
 
 ## Carried from the Sprint 3 delivery audit
