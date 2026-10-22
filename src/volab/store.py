@@ -153,7 +153,16 @@ def _git_state() -> tuple[str, bool | None]:
     def run(*args: str) -> str | None:
         try:
             completed = subprocess.run(
-                ["git", *args],
+                # ``--no-optional-locks`` is load-bearing, not tidiness. ``git status`` otherwise
+                # takes ``index.lock`` to refresh the index, and this runs on every audited read
+                # -- so a suite run would contend with a developer's own commit. Worse, the
+                # timeout below kills git mid-refresh and leaves a zero-byte ``index.lock``
+                # behind, which blocks every later commit until someone removes it by hand.
+                # Measured in this repository: ``git status --porcelain`` takes 3.06s against a
+                # 5.0s timeout, so the margin is 1.6x on 24,218 raw partitions over an
+                # iCloud-synced directory. That lock cost this project roughly an hour before the
+                # flag was traced as the cause. The flag makes the call read-only.
+                ["git", "--no-optional-locks", *args],
                 cwd=_PACKAGE_DIR,
                 capture_output=True,
                 text=True,

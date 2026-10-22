@@ -16,6 +16,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from volab import store
 from volab.config import Splits
 from volab.errors import DatasetNotFound, HoldoutViolation, SchemaError, UnknownSymbol
 from volab.paths import MANDATORY_COLUMNS, Tier, curated_path
@@ -287,6 +288,34 @@ def test_both_keys_return_holdout_rows_and_write_one_audit_line(
         "git_sha",
         "git_dirty",
     }
+
+
+def test_the_audit_stamp_never_takes_gits_index_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every git call in the audit stamp passes ``--no-optional-locks``.
+
+    Without it, ``git status`` takes ``index.lock`` to refresh the index, and the stamp's own
+    timeout can kill git mid-refresh and leave a zero-byte lock that blocks later commits. A
+    suite run would then be a source of the locks it has to work around, which is how this was
+    found. Asserted on the argv rather than on behaviour, because reproducing the contention
+    needs a concurrent committer.
+    """
+    seen: list[list[str]] = []
+
+    class Completed:
+        returncode = 0
+        stdout = "deadbeef"
+
+    def fake_run(argv: list[str], **kwargs: object) -> Completed:
+        seen.append(argv)
+        return Completed()
+
+    monkeypatch.setattr(store.subprocess, "run", fake_run)
+    store._git_state()
+
+    assert seen, "the stamp made no git call at all"
+    for argv in seen:
+        assert argv[0] == "git"
+        assert argv[1] == "--no-optional-locks", f"{argv} can take index.lock"
 
 
 def test_dev_window_read_writes_no_audit_line(synthetic_store) -> None:
