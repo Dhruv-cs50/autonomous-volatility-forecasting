@@ -128,10 +128,18 @@ EXPECTED_PAIRS: frozenset[tuple[str, str]] = frozenset(
 # An exogenous row's ``ts`` is the vendor's observation stamp and its ``as_of`` is the session the
 # value first became knowable. For a lagged series those are different days: ``ingest/fred.py``
 # writes ``ts = midnight_utc(observation)`` and ``as_of = nth_session_after(calendar, day, lag)``.
-# Held a day apart here deliberately. If the two keys coincide -- as they did in the first version
-# of this fixture -- then a join reading ``ts`` instead of ``as_of``, which is every FRED release
-# read one session early and the exact leak ``_exogenous_column``'s docstring claims to prevent,
+# Held apart here deliberately. If the two keys coincide -- as they did in the first version of
+# this fixture -- then a join reading ``ts`` instead of ``as_of``, which is every FRED release read
+# one session early and the exact leak ``_exogenous_column``'s docstring claims to prevent,
 # produces byte-identical output and nothing in this repository can see it.
+#
+# The gap is one **session**, not one calendar day: ``ts`` is the *previous session's* midnight.
+# A calendar day works only when the day after the cutoff happens to be a session -- over a
+# weekend or a holiday there would be no row to misread onto the cutoff row at all, and the leak
+# would pass silently for no better reason than which weekday the cutoff fell on. A session gap
+# also matches what ``ingest/fred.py`` produces, where the observation falls on a session and
+# ``as_of`` is the next one. The constant below is only the first row's fallback, which has no
+# earlier session to borrow and is nowhere near the cutoff.
 EXOGENOUS_TS_LAG = dt.timedelta(days=1)
 
 SESSIONS = sessions_between(CAL, dt.date(2024, 1, 2), dt.date(2025, 6, 30))
@@ -250,7 +258,10 @@ class Inputs:
         than reach across it.
         """
         keep = [k for k, day in enumerate(self.days) if day not in self.holes]
-        points = [_midnight(self.days[k]) - EXOGENOUS_TS_LAG + self.ts_shift[k] for k in keep]
+        points = [
+            _midnight(self.days[k - 1] if k else self.days[0] - EXOGENOUS_TS_LAG) + self.ts_shift[k]
+            for k in keep
+        ]
         return pd.DataFrame(
             {
                 "symbol": [name] * len(keep),
@@ -689,6 +700,12 @@ def test_the_holed_variant_really_does_carry_a_gap_and_a_null() -> None:
     bars = panel[panel["symbol"] == SUBJECT]
 
     assert CUTOFF not in set(exogenous["as_of"]), "the exogenous hole closed"
+    # Exactly one session between an exogenous row's observation stamp and the session it is
+    # knowable on, whatever weekday the cutoff falls on.
+    stamped = {row.as_of: row.ts.date() for row in exogenous.itertuples()}
+    for as_of, stamp in stamped.items():
+        index = SESSIONS.index(as_of)
+        assert stamp == (SESSIONS[index - 1] if index else as_of - EXOGENOUS_TS_LAG)
     assert set(exogenous["symbol"]) == set(EXOGENOUS_SERIES), "a series vanished entirely"
     assert bars.loc[bars["as_of"] == CUTOFF, CLOSE_COLUMN].isna().all(), "the null close filled in"
     # The bar itself is still there; it is the close that is unusable.
