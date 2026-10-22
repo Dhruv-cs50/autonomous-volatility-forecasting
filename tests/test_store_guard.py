@@ -11,7 +11,6 @@ import dataclasses
 import datetime as dt
 import json
 
-import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -88,7 +87,11 @@ def test_columns_none_returns_the_contract_columns_without_the_partition_artefac
     assert "date" not in frame.columns
 
 
-@pytest.mark.parametrize("empty", [[], (), pd.Index([]), np.array([], dtype=str)], ids=type)
+# A list, a tuple, and two pandas sequences whose truthiness is ambiguous -- which is why
+# ``load_panel`` judges ``columns`` by ``len`` and not by ``bool``. numpy would be the
+# obvious fourth, but it is only a transitive dependency of pandas here and this suite does
+# not import it; ``pd.Series`` raises on ``bool()`` just as an ndarray does.
+@pytest.mark.parametrize("empty", [[], (), pd.Index([]), pd.Series([], dtype=str)], ids=type)
 def test_empty_columns_raises_value_error(synthetic_store, empty) -> None:
     synthetic_store.write("bars_daily", "SPY", [DEV_DAY])
 
