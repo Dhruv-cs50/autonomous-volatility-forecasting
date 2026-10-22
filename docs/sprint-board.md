@@ -177,7 +177,24 @@ only one test catches means the other is too weak.
 
 | Story | Goal | Role | State |
 |---|---|---|---|
-| US-6.5 | Tests for `python -m volab.ingest` — the four verbs have none, so "done" rested on a manual run | implementer | in progress |
+| US-6.5 | Tests for `python -m volab.ingest` — the four verbs have none, so "done" rested on a manual run | implementer | done `6cd52a5`, 60 tests |
+| US-6.9 | Two CLI defects US-6.5 found and correctly did not fix | implementer | todo |
+
+US-6.5 could not get a RED, because the CLI already worked — so it proved its tests bite with
+**10 in-process mutants** applied through a scratchpad pytest plugin, leaving `src/` untouched.
+Each mutant failed 2–20 tests: dropped exit code, fetch stopping at the first failure, a missing
+raw dataset no longer caught, curate reading past `dev_end`, `--end` silently accepted, unknown
+`--source` doing nothing, backfill stages out of order, and `build-raw` fetching.
+
+It also found that the obvious network guard would not work: `exploding_transport` is useless
+here because `_fetch` catches `Exception`, so a network hit would become a green exit-1 test. It
+used `pytest.fail` plus a socket block instead. That is the kind of thing only writing the test
+reveals.
+
+US-6.9, both found and left alone per instruction: a payload that fails to parse — FRED's
+maintenance page included — prints `FAILED ValueError` rather than `REFUSED`, contradicting
+`_fetch`'s own comment; and `curate --source nasdaq_dividends` creates no jobs, prints nothing
+and exits 0, so asking to curate dividends returns silence and success.
 | US-6.6 | Measure the **feature build** against §12's 5-minute budget. Only the `load_panel` half was measured; the build half was extrapolated, and §12 requires both | controller | done — 70.1s vs 5 min, in `b35b79a` |
 | US-6.7 | Reconcile the decisions log: R8–R12, R23, R24 exist only in the gitignored ledger | controller | done — all 28 rulings now recorded |
 
