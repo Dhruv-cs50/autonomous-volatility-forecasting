@@ -22,7 +22,6 @@ from volab.ingest._http import Transport
 from volab.sessions import session_close_utc
 
 _HOST = "https://cdn.cboe.com/api/global/us_indices/daily_prices"
-SERIES: tuple[str, ...] = ("VIX", "VIX9D", "VIX1D", "VVIX")
 OHLC_COLUMNS: tuple[str, ...] = ("open", "high", "low", "close")
 CLOSE_ONLY_COLUMNS: tuple[str, ...] = ("close",)
 

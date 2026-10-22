@@ -19,6 +19,7 @@ store really does hold the future, so a read that stopped one boundary late woul
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import json
 import re
@@ -33,9 +34,10 @@ import pytest
 from fixture_transport import FIXTURES
 
 import volab.ingest.__main__ as cli
-from volab.config import Settings
+from volab.config import Settings, load_settings
 from volab.errors import ParseRefused, SchemaError
 from volab.ingest import SOURCES, archive_payload, build_raw, fetch_source
+from volab.ingest.__main__ import EXOGENOUS_SOURCE
 from volab.ingest.curate import BARS_DATASET, FRED_DATASET, VIX_DATASET
 from volab.paths import Tier
 from volab.store import load_panel
@@ -513,6 +515,42 @@ def test_an_unknown_source_exits_rather_than_silently_doing_nothing(
     assert "unknown source 'nasdaq_barz'" in message
     for source in SOURCES:
         assert source in message
+    assert list(Path(synthetic_store.root).iterdir()) == []
+
+
+def test_the_exogenous_series_match_the_configured_ones() -> None:
+    """The plan's exogenous half is the configured list, not a copy of it.
+
+    ``load_settings`` directly rather than the patched ``cli.load_settings``: what has to hold
+    is that the repository's own configuration is fully served, which a synthetic one cannot
+    show. The two source lists must partition ``exogenous`` exactly -- same set, same length,
+    no overlap -- so neither a dropped series nor one fetched twice can hide here.
+    """
+    settings = load_settings()
+
+    assert set(EXOGENOUS_SOURCE) == set(settings.exogenous)
+    assert set(EXOGENOUS_SOURCE.values()) <= set(SOURCES)
+
+    planned = dict(cli._plan(settings))
+    exogenous = planned["cboe_vix"] + planned["fred"]
+    assert set(exogenous) == set(settings.exogenous)
+    assert len(exogenous) == len(settings.exogenous)
+    assert not set(planned["cboe_vix"]) & set(planned["fred"])
+
+
+def test_a_configured_series_no_source_can_serve_stops_the_run(
+    synthetic_store: SyntheticStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The failure mode the map replaces: a series added to the configuration and never fetched."""
+    unplaced = dataclasses.replace(
+        synthetic_store.settings, exogenous=(*synthetic_store.settings.exogenous, "SOFR")
+    )
+    monkeypatch.setattr(cli, "load_settings", lambda: unplaced)
+
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["fetch"])
+
+    assert "SOFR" in str(raised.value.code)
     assert list(Path(synthetic_store.root).iterdir()) == []
 
 

@@ -41,8 +41,6 @@ FRED_DATASET = "fred_daily"
 _VIX_PAYLOAD: tuple[str, ...] = ("open", "high", "low", "close")
 
 
-# Separators and symbols a vendor may wrap a number in. Stripped, never guessed at: anything
-# left that is not a number raises.
 def _as_date(value: object) -> dt.date:
     """Normalise an ``as_of`` to a plain ``date``.
 
@@ -66,9 +64,11 @@ def _to_float(
 ) -> float:
     """Parse a vendor number, stripping only what that field legitimately contains.
 
-    ``strip`` is narrow per field rather than a blanket "remove punctuation". Bars carry
-    thousands separators in volume and no currency symbol at all, so a ``$`` in a price means
-    the vendor changed format -- which must fail loudly here, not be quietly absorbed.
+    ``strip`` names the separators and symbols that field may legitimately arrive wrapped in.
+    Those are removed and nothing else is guessed at: anything left that is not a number
+    raises. It is narrow per field rather than a blanket "remove punctuation" because bars
+    carry thousands separators in volume and no currency symbol at all, so a ``$`` in a price
+    means the vendor changed format -- which must fail loudly here, not be quietly absorbed.
     """
     text = str(value).strip().translate(str.maketrans("", "", strip))
     try:

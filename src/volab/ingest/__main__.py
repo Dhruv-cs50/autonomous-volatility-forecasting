@@ -25,8 +25,19 @@ from volab.errors import DatasetNotFound, VolabError
 from volab.ingest import SOURCES, build_raw, fetch_source
 from volab.ingest.curate import curate_bars, curate_fred, curate_vix
 
-VIX_SERIES: tuple[str, ...] = ("VIX", "VIX9D", "VIX1D", "VVIX")
-FRED_SERIES: tuple[str, ...] = ("BAA10Y", "DGS10", "T10Y2Y")
+# Which source serves each exogenous series. The fetch plan is ``settings.exogenous`` split by
+# this map rather than a second copy of the list: a hand-kept copy was pinned to nothing, so a
+# series added to ``config.exogenous`` was silently never fetched. A series with no entry here
+# stops the run instead, because there is no source that could serve it.
+EXOGENOUS_SOURCE: dict[str, str] = {
+    "VIX": "cboe_vix",
+    "VIX9D": "cboe_vix",
+    "VIX1D": "cboe_vix",
+    "VVIX": "cboe_vix",
+    "BAA10Y": "fred",
+    "DGS10": "fred",
+    "T10Y2Y": "fred",
+}
 
 
 _EPILOG = (
@@ -43,12 +54,27 @@ _EPILOG = (
 
 
 def _plan(settings: Settings) -> list[tuple[str, tuple[str, ...]]]:
-    """Which symbols each source covers. Bars and dividends follow the configured universe."""
+    """Which symbols each source covers: the configured universe, and the configured exogenous.
+
+    Both halves come from the settings, so the only way to change what is fetched is to change
+    the configuration. Order within a source follows ``settings.exogenous``, so the fetch
+    reports in the order the file lists.
+    """
+    unplaced = sorted(set(settings.exogenous) - set(EXOGENOUS_SOURCE))
+    if unplaced:
+        raise SystemExit(
+            f"exogenous series {unplaced} have no source in EXOGENOUS_SOURCE, so nothing would "
+            "fetch them; add them there, or remove them from the configuration"
+        )
+    exogenous = {
+        source: tuple(name for name in settings.exogenous if EXOGENOUS_SOURCE[name] == source)
+        for source in ("cboe_vix", "fred")
+    }
     return [
         ("nasdaq_bars", settings.universe),
         ("nasdaq_dividends", settings.universe),
-        ("cboe_vix", VIX_SERIES),
-        ("fred", FRED_SERIES),
+        ("cboe_vix", exogenous["cboe_vix"]),
+        ("fred", exogenous["fred"]),
     ]
 
 

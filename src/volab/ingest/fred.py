@@ -1,10 +1,15 @@
 """FRED macro series from the keyless ``fredgraph.csv`` endpoint.
 
-``as_of`` is where the care goes. A FRED observation dated ``D`` is not knowable on ``D``:
-Treasury yields land the same afternoon, Moody's corporate yields later. Rather than model each
-release calendar, every series takes a conservative lag in **sessions**, defaulting to one. The
-asymmetry decides it -- too long a lag only withholds information from a model, too short a lag
-leaks it.
+``as_of`` is where the care goes. A FRED observation dated ``D`` is not knowable on ``D``. How
+much later each series lands is **not** established here: the only measurement this repository
+holds is one snapshot, fetched 78 minutes after the close on 2026-10-22, in which T10Y2Y runs
+through 2026-10-22 while *both* DGS10 and BAA10Y stop at 2026-10-21 -- so on that day the
+Treasury constant-maturity yield was no earlier than the Moody's spread, and one snapshot could
+not settle a relative publication lag in any case. Rather than model each release calendar,
+every series takes the same conservative lag in **sessions**, defaulting to one; the asymmetry
+decides it -- too long a lag only withholds information from a model, too short a lag leaks it.
+``FRED_LAG_SESSIONS`` is empty, so no series is treated differently from any other today, and
+the distinction would need a measurement before it became one.
 
 Two observed quirks. The header is ``observation_date,<SERIES_ID>``, so the value column is
 named after the series rather than ``value``. And a missing observation arrives as a row with an
@@ -29,7 +34,6 @@ from volab.ingest._http import Transport
 from volab.sessions import nth_session_after
 
 _HOST = "https://fred.stlouisfed.org/graph/fredgraph.csv"
-SERIES: tuple[str, ...] = ("BAA10Y", "DGS10", "T10Y2Y")
 VALUE_COLUMNS: tuple[str, ...] = ("value",)
 
 # Series id -> publication lag in trading sessions. Anything absent takes the default of 1.
