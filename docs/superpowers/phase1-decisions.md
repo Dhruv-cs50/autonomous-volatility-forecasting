@@ -455,3 +455,25 @@ Standing caveat, now measured twice: **the AST scan is evadable by construction.
 the volume peek both spelled a forward look without `shift`, slice or `center`. It is a ratchet
 against a careless spelling, not a proof. The perturbations are the defence, which is why their
 coverage matters more than their strength.
+
+## US-6.8: `vix_family` readable in one call (c7230fa)
+
+A single `load_panel` over VIX, VIX9D, VIX1D and VVIX now returns **8,079 rows** (2,389 / 2,389 /
+912 / 2,389). VVIX's `open`/`high`/`low` are genuine `float64` nulls, and **raw VVIX still carries
+only `close`** — verified. Raw stays faithful to what Cboe publishes; curated is normalised. That
+is the split the project already draws, which is why `union_by_name` was the wrong fix and this
+was the right one.
+
+The implementer went slightly past its brief in a way worth keeping: `_pad_to_ohlc` pads **only**
+the exact close-only shape. A series that has *lost* a column — VIX arriving without `high` —
+raises `SchemaError` instead of being padded, because padding that would be precisely the silent
+repair R28 rejected. Padding an absence the vendor declares is normalisation; padding an absence
+nobody expected is a repair. The distinction is the whole point and it drew the line correctly
+without being told to.
+
+No feature rebuild needed: features read only `close`, and no close value changed.
+
+Carried forward: `features/__main__.py`'s per-series exogenous read was a workaround for this
+defect and could now be a single call. Left alone deliberately — it also carries the
+latest-observation-per-session collapse from the FRED work, so simplifying it is a real change
+rather than a deletion, and it is not worth a regression risk today.

@@ -115,7 +115,7 @@ closes US-6.6.
 On real data the SPY feature table has 2,312 rows from 2016-10-20 to 2025-12-31, with `iv_h1`
 non-null for 912 of them — the VIX1D inception count, again.
 
-| US-6.8 | Normalise `curated/vix_family`'s schema so one `load_panel` can read it | implementer | todo |
+| US-6.8 | Normalise `curated/vix_family`'s schema so one `load_panel` can read it | implementer | done `c7230fa` — one read returns 8,079 rows |
 
 US-4.2 found that a single `load_panel` over the real `vix_family` **fails**: VIX carries OHLC and
 VVIX only a close, and `store._scan` passes no `union_by_name`. Verified. The CLI works around it
