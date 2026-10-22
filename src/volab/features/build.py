@@ -55,9 +55,12 @@ from volab.features.realized import (
 )
 
 # The one convention for "when a session's value became knowable", shared with the bars this
-# engine reads, so a gap row's stamp cannot drift from a real row's. It costs an import of
-# ``volab.ingest``, whose package body imports the store, which is why the import-graph test
-# asserts that nothing of the store is *bound* here rather than that it is never imported.
+# engine reads, so a gap row's stamp cannot drift from a real row's. It lives in
+# ``volab.sessions``, which aacb10f moved it to; it used to live in ``volab.ingest._frames``,
+# and importing that executed ``volab/ingest/__init__.py``, which imports ``write_raw`` from
+# the store. Nothing of the read path is reachable from here now, and the import-graph test
+# asserts the strong form: neither ``volab.store`` nor ``volab.ingest`` reaches ``sys.modules``
+# when this module is imported, and nothing of the store is bound in it.
 from volab.paths import MANDATORY_COLUMNS
 from volab.sessions import session_close_utc, sessions_between
 

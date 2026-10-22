@@ -545,18 +545,29 @@ def test_gap_sessions_carry_a_distinct_ascending_timestamp() -> None:
 def test_importing_the_build_module_binds_nothing_from_the_store() -> None:
     """The AST scan cannot see a helper that *binds* the store's reader at import time.
 
-    Run in a subprocess, so the suite's own imports cannot mask what this module pulls in. The
-    stronger assertion -- that ``volab.store`` never reaches ``sys.modules`` -- is not available
-    to this story: the canonical session close lives in ``volab.ingest._frames``, and importing
-    it executes ``volab/ingest/__init__.py``, which imports ``write_raw`` from the store.
+    Run in a subprocess, so the suite's own imports cannot mask what this module pulls in.
+
+    Two assertions, the first stronger than the second. ``volab.store`` must never reach
+    ``sys.modules`` at all: that was unavailable while the canonical session close lived in
+    ``volab.ingest._frames``, because importing it executed ``volab/ingest/__init__.py``, which
+    imports ``write_raw`` from the store -- aacb10f moved the close to ``volab.sessions`` and
+    the assertion became available. The binding check stays behind it, because the day someone
+    reintroduces the dependency it is the binding that would turn it into a leak.
+
+    The store is imported only *after* ``sys.modules`` has been inspected, since the binding
+    check needs the module object to compare against.
     """
     script = (
-        "import volab.features.build as build, volab.store as store\n"
+        "import sys\n"
+        "import volab.features.build as build\n"
+        "reached = sorted(n for n in ('volab.ingest', 'volab.store') if n in sys.modules)\n"
+        "import volab.store as store\n"
         "bound = sorted(\n"
         "    name\n"
         "    for name, value in vars(build).items()\n"
         "    if getattr(value, '__module__', None) == 'volab.store' or value is store\n"
         ")\n"
+        "print(reached)\n"
         "print(bound)\n"
     )
     environment = {
@@ -572,7 +583,9 @@ def test_importing_the_build_module_binds_nothing_from_the_store() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "[]", f"build.py binds {result.stdout.strip()} from the store"
+    reached, bound = result.stdout.strip().splitlines()
+    assert reached == "[]", f"importing build.py also imports {reached}"
+    assert bound == "[]", f"build.py binds {bound} from the store"
 
 
 def test_the_exogenous_series_match_the_configured_ones() -> None:

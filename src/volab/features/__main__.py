@@ -64,15 +64,26 @@ def _exogenous(
 ) -> pd.DataFrame | None:
     """One exogenous dataset, read up to ``dev_end``, or ``None`` if the store holds none of it.
 
-    Read **one series at a time**. The curated VIX family is not one schema -- VIX carries
+    Read **one series at a time**, which is no longer forced and is parked rather than load-
+    bearing. It was forced: the curated VIX family is not one schema -- VIX carries
     open/high/low beside its close and VVIX only a close -- and a single ``load_panel`` over
-    both fails inside DuckDB with a schema mismatch. Only the ``close`` is needed, so each
-    series is projected to the same columns before the frames are joined.
+    both used to fail inside DuckDB with a schema mismatch. US-6.8 fixed that. Measured since:
+    one read over the real ``vix_family`` returns the same 8,079 rows as this loop, row for
+    row, and a read naming a series the store holds nothing for returns the others rather than
+    raising, so the per-series ``DatasetNotFound`` tolerance is not buying anything either.
 
-    Absent is a state the repository is genuinely in -- FRED has never been ingested -- and the
-    feature table is defined for it: those columns come out null. So a series with no rows is
-    reported and skipped rather than aborting the build. Only absence is tolerated; a dataset
-    that exists and is malformed still raises, because that is a fault and not a gap.
+    What this function is still for is everything around the read: projecting each series to
+    the same columns, reporting which ones the store has nothing for, and the
+    latest-observation-per-session collapse below. Those are the reasons it exists, and
+    rewriting the read inside it would change working code to no measured end. A single read
+    is the simpler shape if a reason to touch this ever appears.
+
+    A series with no rows is reported and skipped rather than aborting the build, because the
+    feature table is defined for an absent exogenous series: those columns come out null. Both
+    families are ingested today -- ``fred_daily`` has 7,111 curated partitions -- so this is
+    tolerance for a state the repository is not in, kept because an exogenous source can be
+    added before it is backfilled. Only absence is tolerated; a dataset that exists and is
+    malformed still raises, because that is a fault and not a gap.
     """
     frames: list[pd.DataFrame] = []
     for name in series:
