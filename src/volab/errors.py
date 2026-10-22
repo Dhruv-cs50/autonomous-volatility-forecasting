@@ -13,7 +13,10 @@ class VolabError(Exception):
 class HoldoutViolation(VolabError):
     """Raised on any attempted or detected read past dev_end without both keys.
 
-    This includes the post-read assertion.
+    This includes the post-read assertion, and ``load_settings`` raising it with no read in
+    sight: an environment that moves ``splits.dev_end`` later than the literal in
+    ``config/base.yaml`` is the seal being moved rather than a setting being mistyped, so it
+    is this rather than a ``ConfigError``.
     """
 
 

@@ -13,8 +13,8 @@ holdout's rows. An ``--end`` argument accepting a later date would quietly defea
 
 Nor can the boundary itself be moved *later* -- the direction that would open the seal -- by
 configuration or environment: ``VOLAB_SPLITS_DEV_END`` may only bring it forward, and
-``load_settings`` refuses a value past the literal committed in ``config/base.yaml``. Editing
-that literal is the only way, and it is a reviewed change to a tracked file.
+``load_settings`` refuses a value past the literal in ``config/base.yaml``. Editing that literal
+is the only way.
 """
 
 from __future__ import annotations

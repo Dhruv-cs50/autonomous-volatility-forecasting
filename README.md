@@ -71,11 +71,11 @@ splits:
 ```
 
 2,312 bar sessions in development against a 200-session holdout that accrues as the project runs.
-Both dates are literals in `config/base.yaml`; nothing computes a boundary from the clock. They
-can be moved **earlier** from the environment — `VOLAB_SPLITS_DEV_END` exists so a developer can
-work to a tighter boundary — and `load_settings` refuses a value later than the committed
-literal, which is the direction that would open the seal. So moving the boundary later means
-editing a tracked file under review, not exporting a variable. The boundary moved once,
+Both dates are literals in `config/base.yaml`; nothing computes a boundary from the clock.
+`VOLAB_SPLITS_DEV_END` can move `dev_end` **earlier**, which only withholds data, and
+`load_settings` refuses a value later than the file's literal — the direction that would open
+the seal. So moving the boundary later means editing `config/base.yaml`, not exporting a
+variable. The boundary moved once,
 deliberately, in Phase 1 before any score existed to be influenced by the choice — the
 reasoning is in `docs/superpowers/phase1-decisions.md`.
 
@@ -104,8 +104,8 @@ separate times**, and every one was found by running something rather than by re
 
 Two classes are measured and remain open, so the claim is deliberately narrow: **the suite
 catches the spellings the AST scan enumerates — a `shift`/`diff` offset that is not a
-non-negative integer literal, a `bfill`/`backfill`/`interpolate`, a `method=` that is not
-`ffill`/`pad`, a non-false `center=`, any slice — plus every leak the perturbation images can
+non-negative integer literal, a `bfill`/`backfill`/`interpolate`, a `method=` other than
+`ffill`/`pad`/`None`, a non-false `center=`, any slice — plus every leak the perturbation images can
 distinguish, and nothing stronger.** A forward peek spelled outside that list is not
 hypothetical: the first class below is one, written in source, and it passes 607 of 608 tests.
 

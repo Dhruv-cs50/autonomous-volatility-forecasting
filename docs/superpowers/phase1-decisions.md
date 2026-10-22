@@ -660,9 +660,10 @@ recorded here because it is the kind of partial coverage that reads as full cove
 **On the state this leaves the story in**, because the first version of this heading said "the
 story reopens again" and that was wrong. The board's reopen rule is about the *dispatched*
 mutations: if one of those survives, the suite is weaker than the story claimed and the story
-goes back. All five fired, each reconstructed independently here. E1 and E2 are escapes this
-review **invented** beyond the brief, and they are class-level limits of the approach rather
-than defects in the deliverable — no change to `src/` would close them that is in this story's
+goes back. None did: round 2 above records 16 mutations with none surviving, and this
+re-review reconstructed each mutant independently, with failure sets matching the implementer's
+report exactly. E1 and E2 are escapes this review **invented** beyond the brief, and they are
+class-level limits of the approach rather than defects in the deliverable — no change to `src/` would close them that is in this story's
 scope. So US-5.1 is **done with carried limits**: deliverable complete and reviewed, two
 classes knowingly deferred to Phase 2 and written into the README's limitations.
 
@@ -726,7 +727,7 @@ itself.
 
 The exit criterion holds against the spellings the AST scan enumerates — a `shift`/`diff`
 offset that is not a non-negative integer literal, a `bfill`/`backfill`/`interpolate`, a
-`method=` that is not `ffill`/`pad`, a non-false `center=`, any slice — and against every leak
+`method=` other than `ffill`/`pad`/`None`, a non-false `center=`, any slice — and against every leak
 the perturbation images can distinguish. It does **not** hold against a forward peek spelled
 outside that list, which is not hypothetical: E1 above is one, written in source, and it passes
 607 of 608 tests. It does **not** hold against a predicate constant across those images,

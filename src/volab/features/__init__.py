@@ -10,8 +10,9 @@ The defence for that is the perturbation suite in ``tests/test_point_in_time.py`
 data after a cutoff and requires the table at the cutoff to come back byte-identical. The AST
 scan in the same file is a cheap ratchet beside it, **not** a defence: it fails on the
 constructs it enumerates — a ``shift``/``diff`` offset that is not a non-negative integer
-literal, a ``bfill``/``backfill``/``interpolate``, a ``method=`` that is not ``ffill``/``pad``,
-a non-false ``center=``, any slice — and is blind to every forward peek spelled another way.
+literal, a ``bfill``/``backfill``/``interpolate``, a ``method=`` other than
+``ffill``/``pad``/``None``, a non-false ``center=``, any slice — and is blind to every forward
+peek spelled another way.
 Four such evasions are measured and recorded in ``docs/superpowers/phase1-decisions.md``. The
 perturbations catch more, but not everything either: a predicate constant across the
 perturbation images, and cross-call state, defeat them both, and both classes are open.

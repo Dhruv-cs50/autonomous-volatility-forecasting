@@ -9,8 +9,8 @@ configuration is never repaired or clipped.
 (any other ``VOLAB_*`` variable is ignored), then validates. Almost every failure is a
 ``ConfigError``. The one exception is ``HoldoutViolation``: an environment that moves
 ``splits.dev_end`` *later* than the file's own literal is not a mistyped setting, it is the
-seal being pushed on from outside the committed configuration, and it is refused here because
-here is where the value is accepted. See ``_refuse_a_later_dev_end``.
+seal being moved from outside the file, and it is refused here because here is where the value
+is accepted. See ``_refuse_a_later_dev_end``.
 """
 
 from __future__ import annotations
@@ -237,8 +237,9 @@ def _refuse_a_later_dev_end(literal: object, effective: dt.date, config_path: Pa
     the file and the override, which is why the refusal lives in the configuration layer.
 
     Not a ``ConfigError``: a later ``dev_end`` is not a setting someone mistyped, it is the
-    holdout seal being moved from outside the committed file, and it belongs to the same class
-    of refusal as a keyless read.
+    holdout seal being moved from outside the file, and it belongs to the same class of refusal
+    as a keyless read. What is compared is the file on disk, so a local edit to ``base.yaml``
+    moves the boundary; that edit is visible in a diff, and an exported variable is not.
 
     A file pinning no literal is refused too, so the rule is total rather than "no later than
     the literal, when there is one" -- otherwise deleting the key would sidestep it.

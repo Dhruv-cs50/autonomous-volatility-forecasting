@@ -11,7 +11,7 @@ both keys and an audit line, to derive the holdout's curated rows from raw.
 
 The boundary cannot be moved *later* by configuration or environment either:
 ``VOLAB_SPLITS_DEV_END`` may only bring it forward, and ``load_settings`` refuses a value past
-the literal committed in ``config/base.yaml``.
+the literal in ``config/base.yaml``.
 """
 
 from __future__ import annotations
