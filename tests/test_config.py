@@ -5,8 +5,8 @@ from pathlib import Path
 import pytest
 
 import volab
-from volab.config import DEFAULT_CONFIG_PATH, Settings, load_settings
-from volab.errors import ConfigError, DatasetNotFound, UnknownSymbol
+from volab.config import DEFAULT_CONFIG_PATH, Settings, Splits, load_settings
+from volab.errors import ConfigError, DatasetNotFound, HoldoutViolation, UnknownSymbol
 from volab.store import load_panel
 
 VALID = """
@@ -353,3 +353,103 @@ def test_load_panel_still_rejects_an_unknown_symbol(synthetic_store) -> None:
             end=dt.date(2023, 6, 15),
             settings=synthetic_store.settings,
         )
+
+
+# --- The seal cannot be moved later from outside the committed file ------------------------
+#
+# ``VOLAB_SPLITS_DEV_END`` exists so a developer can work to an *earlier* boundary than the
+# repository's. Moving it the other way would open the sealed window with no key and no audit
+# line, and ``load_panel``'s own check cannot see it: that compares a caller's ``Settings``
+# against ``load_settings()``, which applies the same variable, so both sides move together.
+# The refusal therefore has to live where the value is accepted.
+#
+# Every case below sets ``VOLAB_SPLITS_HOLDOUT_START`` as well, so the pair stays internally
+# consistent and the only thing under test is the direction the boundary moved. Without it an
+# env ``dev_end`` past the file's ``holdout_start`` raises the ordinary split ConfigError and
+# the test would pass for the wrong reason.
+
+
+def test_an_env_dev_end_later_than_the_file_literal_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VOLAB_SPLITS_DEV_END", "2024-06-28")
+    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_START", "2024-07-01")
+
+    with pytest.raises(HoldoutViolation, match="later than the 2023-12-31 pinned in"):
+        load_settings(_write(tmp_path, VALID))
+
+
+def test_an_env_dev_end_later_than_the_repository_literal_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same refusal for the configuration every unqualified ``load_settings()`` reads."""
+    monkeypatch.setenv("VOLAB_SPLITS_DEV_END", "2026-06-30")
+    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_START", "2026-07-01")
+
+    with pytest.raises(HoldoutViolation, match="later than the 2025-12-31 pinned in"):
+        load_settings()
+
+
+def test_an_env_dev_end_earlier_than_the_file_literal_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The conservative direction stays open; it is the whole point of the override."""
+    monkeypatch.setenv("VOLAB_SPLITS_DEV_END", "2023-12-29")
+
+    assert load_settings(_write(tmp_path, VALID)).splits.dev_end == dt.date(2023, 12, 29)
+
+
+def test_an_env_dev_end_equal_to_the_file_literal_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VOLAB_SPLITS_DEV_END", "2023-12-31")
+
+    assert load_settings(_write(tmp_path, VALID)).splits.dev_end == dt.date(2023, 12, 31)
+
+
+NO_DEV_END = """
+universe: [SPY, QQQ, IWM]
+exogenous: [VIX]
+calendar: XNYS
+splits:
+  holdout_start: "2024-01-02"
+storage:
+  root: "data"
+"""
+
+
+def test_an_env_dev_end_is_refused_when_the_file_pins_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file with no literal has no boundary to be more conservative than.
+
+    Without this the refusal above would be sidestepped by deleting the key, and the invariant
+    would be "no later than the literal, when there is one" rather than a total one.
+    """
+    monkeypatch.setenv("VOLAB_SPLITS_DEV_END", "2023-12-31")
+
+    with pytest.raises(HoldoutViolation, match="pins no splits.dev_end"):
+        load_settings(_write(tmp_path, NO_DEV_END))
+
+
+def test_the_env_cannot_move_the_boundary_to_read_a_sealed_row(
+    synthetic_store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The end-to-end shape of the hole: a curated row inside the sealed window, no key.
+
+    ``load_panel``'s step 0 is vacuous here -- the ``Settings`` handed in and the configuration
+    it is compared against carry the same moved ``dev_end``, because the variable moves both.
+    The read must still be refused, and it is refused by ``load_settings`` before step 0 can
+    compare anything.
+    """
+    sealed = dt.date(2026, 3, 2)  # inside the repository's sealed window
+    synthetic_store.write("bars_daily", "SPY", [sealed])
+    monkeypatch.setenv("VOLAB_SPLITS_DEV_END", "2026-06-30")
+    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_START", "2026-07-01")
+    moved = dataclasses.replace(
+        synthetic_store.settings,
+        splits=Splits(dev_end=dt.date(2026, 6, 30), holdout_start=dt.date(2026, 7, 1)),
+    )
+
+    with pytest.raises(HoldoutViolation, match="later than the 2025-12-31 pinned in"):
+        load_panel("bars_daily", symbols=["SPY"], end=dt.date(2026, 6, 30), settings=moved)

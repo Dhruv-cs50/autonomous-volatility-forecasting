@@ -10,6 +10,11 @@ the boundary elsewhere in this project -- ingestion must, or the holdout could n
 but every read here, and therefore every feature and target row, stops at
 ``settings.splits.dev_end``. Phase 6 unlocks once, with both keys and an audit line, to derive the
 holdout's rows. An ``--end`` argument accepting a later date would quietly defeat that.
+
+Nor can the boundary itself be moved *later* -- the direction that would open the seal -- by
+configuration or environment: ``VOLAB_SPLITS_DEV_END`` may only bring it forward, and
+``load_settings`` refuses a value past the literal committed in ``config/base.yaml``. Editing
+that literal is the only way, and it is a reviewed change to a tracked file.
 """
 
 from __future__ import annotations

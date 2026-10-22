@@ -56,7 +56,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 import volab
-from volab.config import Settings, load_settings
+from volab.config import HOLDOUT_UNLOCK_ENV, Settings, load_settings
 from volab.errors import (
     DatasetNotFound,
     HoldoutViolation,
@@ -75,7 +75,9 @@ from volab.paths import (
 
 AUDIT_FILENAME: str = "holdout_access.jsonl"
 
-_UNLOCK_ENV = "VOLAB_HOLDOUT_UNLOCK"
+# Re-bound under the private name this module has always used; ``config`` owns the string,
+# because its own refusal has to point at the same unlock.
+_UNLOCK_ENV = HOLDOUT_UNLOCK_ENV
 # Supplied by DuckDB's Hive partitioning, not by the file: step 9 compares the two.
 _PARTITION_COLUMN = "date"
 _REQUIRED_COLUMNS: tuple[str, ...] = (*MANDATORY_COLUMNS, _PARTITION_COLUMN)

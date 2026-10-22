@@ -71,8 +71,12 @@ splits:
 ```
 
 2,312 bar sessions in development against a 200-session holdout that accrues as the project runs.
-Both dates are pinned literals; nothing computes a boundary from the clock. The boundary moved
-once, deliberately, in Phase 1 before any score existed to be influenced by the choice — the
+Both dates are literals in `config/base.yaml`; nothing computes a boundary from the clock. They
+can be moved **earlier** from the environment — `VOLAB_SPLITS_DEV_END` exists so a developer can
+work to a tighter boundary — and `load_settings` refuses a value later than the committed
+literal, which is the direction that would open the seal. So moving the boundary later means
+editing a tracked file under review, not exporting a variable. The boundary moved once,
+deliberately, in Phase 1 before any score existed to be influenced by the choice — the
 reasoning is in `docs/superpowers/phase1-decisions.md`.
 
 Writes may go past the boundary, and must: ingestion has to capture holdout rows or Phase 6 could
