@@ -78,11 +78,11 @@ def _fetch(settings: Settings, only: str | None) -> int:
         for symbol in symbols:
             try:
                 path = fetch_source(source, symbol, settings=settings)
-            except (VolabError, ValueError) as exc:
-                # ValueError is how every parser says "this body is not what I expect"
-                # (JSONDecodeError, UnicodeDecodeError and pandas' parse errors are subclasses),
-                # and it is raised by the parse inside ``fetch_source``, never by the transport,
-                # which raises RuntimeError. So it means the response arrived and was rejected.
+            except VolabError as exc:
+                # ParseRefused (a body the parser could not read, however it broke) and the other
+                # VolabErrors are raised by this code after the response arrived. A fetch that
+                # did not complete raises something else -- the transport raises RuntimeError --
+                # and falls through to FAILED below.
                 failures += 1
                 print(f"  {source}/{symbol}: REFUSED {type(exc).__name__}: {exc}")
                 continue

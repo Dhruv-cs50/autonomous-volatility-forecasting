@@ -36,7 +36,7 @@ from pathlib import Path
 import pandas as pd
 
 from volab.config import Settings, load_settings
-from volab.errors import RawOverwrite
+from volab.errors import ParseRefused, RawOverwrite
 from volab.ingest import bars, fred, vix
 from volab.ingest._http import Transport, default_transport
 from volab.paths import Tier, validate_segment
@@ -277,7 +277,15 @@ def fetch_source(
     # build_raw replays every payload for a symbol, one unparseable body would abort that replay
     # for good, taking every later valid payload with it. For a monthly source it would occupy
     # the month's slot as well. This check is what stops a bad response poisoning the archive.
-    _parse(source, body, symbol=symbol, fetched_at=stamp, source_url=url, settings=resolved)
+    #
+    # Whatever the parser raises becomes ParseRefused, chained to the original: a body can break a
+    # parser as a KeyError or an AttributeError as readily as a ValueError, and all of them mean
+    # the response arrived and was rejected. Only this call is wrapped -- not the transport above,
+    # whose faults mean the fetch did not complete, and not the archive write below.
+    try:
+        _parse(source, body, symbol=symbol, fetched_at=stamp, source_url=url, settings=resolved)
+    except Exception as exc:
+        raise ParseRefused(f"unreadable response from {url}: {type(exc).__name__}: {exc}") from exc
     extension = "json" if source.startswith("nasdaq") else "csv"
     return archive_payload(
         body,

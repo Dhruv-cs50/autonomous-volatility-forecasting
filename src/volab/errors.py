@@ -56,3 +56,19 @@ class RawOverwrite(VolabError):
     deterministic derivations and are overwritten instead, which is what makes a rebuild
     idempotent.
     """
+
+
+class ParseRefused(VolabError, ValueError):
+    """Raised when a vendor response arrived and this code could not read it.
+
+    The expected cause is an HTML maintenance page where a CSV was due, a truncated body, or a
+    payload whose shape has changed. The response arrived and was rejected *before* anything was
+    archived, so the archive is intact and nothing was written. Retrying now will refuse again;
+    look at what the vendor served. Contrast a fetch that did not complete (a timeout, a
+    connection error, a non-200 status), which says nothing about the payload and is worth
+    retrying later.
+
+    Also a ``ValueError``, because ``fetch_source`` raised a bare one for an unparseable body
+    before this type existed, and a caller catching that must keep working. The exception that
+    the parser actually raised is chained as ``__cause__``.
+    """

@@ -34,7 +34,7 @@ from fixture_transport import FIXTURES
 
 import volab.ingest.__main__ as cli
 from volab.config import Settings
-from volab.errors import SchemaError
+from volab.errors import ParseRefused, SchemaError
 from volab.ingest import SOURCES, archive_payload, build_raw, fetch_source
 from volab.ingest.curate import BARS_DATASET, FRED_DATASET, VIX_DATASET
 from volab.paths import Tier
@@ -277,7 +277,7 @@ def test_fetch_exits_zero_and_says_so_when_there_is_nothing_new(
     ("error", "label"),
     [
         (SchemaError("the payload is not what was expected"), "REFUSED SchemaError"),
-        (ValueError("body is not JSON"), "REFUSED ValueError"),
+        (ParseRefused("body is not JSON"), "REFUSED ParseRefused"),
         (ConnectionError("vendor is down"), "FAILED ConnectionError"),
         (RuntimeError("fetching the url failed after 3 attempts"), "FAILED RuntimeError"),
     ],
@@ -679,7 +679,7 @@ def test_fetch_refuses_fred_maintenance_page_and_archives_nothing(
     for symbol in FRED_FAMILY:
         refused = [line for line in output if line.startswith(f"fred/{symbol}:")]
         assert len(refused) == 1
-        assert "REFUSED ValueError" in refused[0]
+        assert "REFUSED ParseRefused" in refused[0]
         assert "FAILED" not in refused[0], "the response arrived; the fetch did not fail"
     assert not (Path(synthetic_store.root) / "vendor_payloads").exists()
 
@@ -707,7 +707,7 @@ def test_fetch_tells_a_refused_response_from_a_fetch_that_did_not_complete(
 
     output = _lines(capsys)
     for symbol in FRED_FAMILY:
-        assert any(line.startswith(f"fred/{symbol}: REFUSED ValueError") for line in output)
+        assert any(line.startswith(f"fred/{symbol}: REFUSED ParseRefused") for line in output)
     for symbol in VIX_FAMILY:
         assert any(line.startswith(f"cboe_vix/{symbol}: FAILED RuntimeError") for line in output)
     assert len([line for line in output if "REFUSED" in line]) == len(FRED_FAMILY)
@@ -715,6 +715,85 @@ def test_fetch_tells_a_refused_response_from_a_fetch_that_did_not_complete(
     # The healthy sources are still fetched, and the refused one archived nothing.
     assert any(line.startswith("nasdaq_bars/SPY: archived") for line in output)
     assert not (Path(synthetic_store.root) / "vendor_payloads" / "fred").exists()
+
+
+# Parsers signal a body they cannot read in whatever way the body breaks them, not only with
+# ValueError: a row without a key, or a document of the wrong shape, escapes as these.
+NOT_VALUE_ERRORS = [
+    (
+        b'{"data": {"tradesTable": {"rows": [{"close": "1.00"}]}}, "status": {"rCode": 200}}',
+        "KeyError",
+    ),
+    (b'["not", "the", "document", "we", "asked", "for"]', "AttributeError"),
+]
+
+
+@pytest.mark.parametrize(("body", "original"), NOT_VALUE_ERRORS, ids=["missing-key", "wrong-shape"])
+def test_fetch_refuses_a_payload_that_breaks_the_parser_without_a_value_error(
+    body: bytes,
+    original: str,
+    synthetic_store: SyntheticStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The response arrived and cannot be read: retrying cannot help, so it is REFUSED.
+
+    Keyed on ``ValueError`` alone, these printed ``FAILED KeyError`` and told the operator to
+    retry something that can never succeed. The original exception is named in the line.
+    """
+    transport = _routed_transport()
+
+    def routed(url: str) -> bytes:
+        return body if "/historical" in url else transport(url)
+
+    _install_real_fetch(monkeypatch, routed)
+
+    assert cli.main(["fetch", "--source", "nasdaq_bars"]) == 1
+
+    lines = [line for line in _lines(capsys) if line.startswith("nasdaq_bars/")]
+    assert len(lines) == len(UNIVERSE)
+    for line in lines:
+        assert "REFUSED ParseRefused" in line
+        assert original in line, "the original exception must not be lost"
+        assert "FAILED" not in line
+    assert not (Path(synthetic_store.root) / "vendor_payloads").exists()
+
+
+def test_a_value_error_from_the_transport_is_a_failed_fetch_not_a_refused_payload(
+    synthetic_store: SyntheticStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Only the parse is wrapped. Were the transport inside it, a fault there would read REFUSED."""
+
+    def transport(url: str) -> bytes:
+        raise ValueError(f"unknown url type: {url!r}")
+
+    _install_real_fetch(monkeypatch, transport)
+
+    assert cli.main(["fetch", "--source", "fred"]) == 1
+
+    lines = [line for line in _lines(capsys) if line.startswith("fred/")]
+    assert len(lines) == len(FRED_FAMILY)
+    assert all("FAILED ValueError" in line for line in lines)
+
+
+@pytest.mark.parametrize(("body", "original"), NOT_VALUE_ERRORS, ids=["missing-key", "wrong-shape"])
+def test_fetch_source_chains_the_parse_failure_and_archives_nothing(
+    body: bytes, original: str, synthetic_store: SyntheticStore
+) -> None:
+    """The parse still happens before the archive write, and the wrapper keeps the cause."""
+    with pytest.raises(ParseRefused) as raised:
+        fetch_source(
+            "nasdaq_bars",
+            "SPY",
+            transport=lambda url: body,
+            fetched_at=FETCHED,
+            settings=synthetic_store.settings,
+        )
+
+    assert type(raised.value.__cause__).__name__ == original
+    assert not (Path(synthetic_store.root) / "vendor_payloads").exists()
 
 
 def test_a_run_with_only_refusals_still_exits_one(
