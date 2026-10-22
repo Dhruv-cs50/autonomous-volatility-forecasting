@@ -67,7 +67,7 @@ Both dispatched concurrently. `features/__init__.py` was created by the controll
 (`6f92f34`) so neither story owns a shared file, and each commits with an explicit pathspec
 rather than `git add`, because the git index is shared state two agents can otherwise collide on.
 
-## Sprint 4 — The feature table
+## Sprint 4 — The feature table · CLOSED
 
 | Story | Goal | Role | Depends on | Acceptance | State |
 |---|---|---|---|---|---|
@@ -103,7 +103,32 @@ rather than deriving returns twice; `COLUMNS`, `FEATURE_COLUMNS`, `HAR_COLUMNS`,
 concatenated long-form** — bars on `close`/`has_distribution`, VIX family on `close`, FRED on
 `value` — with `_subject()` picking the symbol that is not a named exogenous series. `log_return`
 is **not** an output column.
-| US-4.2 | `python -m volab.features build` writing the table and the four target sets | implementer | 4.1 | real table on disk per symbol; **time a 4-horizon `load_panel`** against the §12 budget | todo |
+| US-4.2 | `python -m volab.features build` writing the table and the four target sets | implementer | 4.1 | real table on disk per symbol; **time a 4-horizon `load_panel`** against the §12 budget | done `b35b79a` |
+
+Closed at 445 tests, gates green. **§12's missing second number is now measured, not extrapolated:**
+the full build for all three symbols took **70.1s against a 5-minute budget**, reading 15,015
+files and writing 34,398 (6,936 `har_daily` plus 27,462 targets); a `load_panel` over the four
+target datasets took **4.07s against 30s**, about 7x headroom. Both recorded with their commands
+and file counts, which the Sprint 3 audit had faulted the earlier gate entry for lacking. That
+closes US-6.6.
+
+On real data the SPY feature table has 2,312 rows from 2016-10-20 to 2025-12-31, with `iv_h1`
+non-null for 912 of them — the VIX1D inception count, again.
+
+| US-6.8 | Normalise `curated/vix_family`'s schema so one `load_panel` can read it | implementer | todo |
+
+US-4.2 found that a single `load_panel` over the real `vix_family` **fails**: VIX carries OHLC and
+VVIX only a close, and `store._scan` passes no `union_by_name`. Verified. The CLI works around it
+by reading each series separately, with a test pinning that.
+
+**Ruling: `_scan` stays strict; the schema gets normalised at curation instead.** Adding
+`union_by_name := true` would silently fill absent columns with NULL — exactly the silent repair
+this layer exists to refuse, and a bars file that lost `volume` to a parse bug would unify rather
+than raise `SchemaError`. The actual defect is that a curated *dataset* has a symbol-dependent
+schema. Raw is faithful to the vendor, so VVIX genuinely has two columns there; curated is
+normalised, so padding VVIX's `open`/`high`/`low` with explicit nulls is consistent with the
+raw-faithful / curated-typed split the spec already establishes rather than a violation of it.
+Not blocking: the pipeline works per-series today.
 
 Carried into Sprint 4 from Sprint 3's review:
 
