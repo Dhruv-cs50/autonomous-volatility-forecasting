@@ -177,9 +177,9 @@ only one test catches means the other is too weak.
 
 | Story | Goal | Role | State |
 |---|---|---|---|
-| US-6.5 | Tests for `python -m volab.ingest` — the four verbs have none, so "done" rested on a manual run | implementer | todo |
-| US-6.6 | Measure the **feature build** against §12's 5-minute budget. Only the `load_panel` half was measured; the build half was extrapolated, and §12 requires both | controller | todo (needs 4.2) |
-| US-6.7 | Reconcile the decisions log: R8–R12, R23, R24 exist only in the gitignored ledger | controller | todo |
+| US-6.5 | Tests for `python -m volab.ingest` — the four verbs have none, so "done" rested on a manual run | implementer | in progress |
+| US-6.6 | Measure the **feature build** against §12's 5-minute budget. Only the `load_panel` half was measured; the build half was extrapolated, and §12 requires both | controller | done — 70.1s vs 5 min, in `b35b79a` |
+| US-6.7 | Reconcile the decisions log: R8–R12, R23, R24 exist only in the gitignored ledger | controller | done — all 28 rulings now recorded |
 
 Audit corrections already applied: the merge base is re-pointed to `origin/main` (it had moved to
 `a4027d4`, making `399c4fd` stale); three committed `.DS_Store` files are untracked; R15's

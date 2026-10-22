@@ -8,11 +8,11 @@ Phase 1 ran as a hybrid: independent review seats only where look-ahead could hi
 feature engine, the point-in-time suite), one batched seat for the three vendor fetchers, and the
 config change, write path and curation implemented directly under the final whole-branch review.
 
-Numbering is the order the decisions were made. **This log is incomplete, and says so
-deliberately**: R8–R12, R23 and R24 live in the session's working ledger and are not yet here,
-and reconciling them is story US-6.7. A delivery audit caught an earlier version of this line
-claiming to hold the full set while the body already ran past it — visibly partial is better
-than falsely complete.
+Numbering is the order the decisions were made. **R1–R28 are all recorded here**, reconciled
+from the session's working ledger under story US-6.7 after a delivery audit found eleven of them
+missing and an earlier version of this line claiming to hold the full set while the body already
+ran past it. Visibly partial would have been better than falsely complete; complete is better
+still.
 
 ## Pre-flight rulings
 
@@ -34,6 +34,35 @@ than falsely complete.
   calendar and none owned building one, and XNYS construction is slow enough to matter.
 - **R7** The final whole-branch review uses merge base `399c4fd` (origin/main), since the spec
   commit is on local main but unpushed and will appear in the PR.
+
+## Execution shape
+
+- **R8** Task 1 was already dispatched to a subagent when the execution method changed to
+  hybrid; it was allowed to land with **no separate review seat**. The code is the same either
+  way, the hybrid saving is the review seat rather than the implementer, and killing a running
+  agent wastes work already paid for. Its diff was verified by the controller instead.
+  *Cost if wrong:* one unreviewed config diff reaches the final review, which is where hybrid
+  intends it to be reviewed anyway.
+- **R9** Seat allocation. Native, no review seat: the split and `exogenous` key, the write path,
+  session arithmetic, curation, the docs. One batched dispatch plus one reviewer: the three
+  fetchers. Own implementer and reviewer: targets, the feature engine, the point-in-time suite.
+  Review seats go where look-ahead can hide and nowhere else. Session arithmetic and curation
+  went native although nobody named them, because neither is such a place — four calendar
+  wrappers, and a parse-loudly rule.
+- **R10** The fetcher batch implemented and tested against committed fixtures only, with **no
+  network**; the controller ran the live backfill and the §12 measurement gate. The gate carries
+  a stop-and-escalate decision about abandoning a storage invariant, which is not a subagent's
+  call to make.
+- **R11** Targets were dispatched **before** the feature-engine seat, because the feature CLI
+  writes target datasets through `HORIZONS` and `build_targets`, so that interface had to exist
+  first. The grouping that named three feature files as one seat did not fix their order against
+  targets.
+- **R12** `next_session_after` and `nth_session_after` must accept a **non-session** `day`, and
+  the plan's tests already pinned it. Verified empirically first:
+  `exchange_calendars`' own `next_session` **raises** `NotSessionError` on a non-session
+  argument, so a naive wrapper could not satisfy the test. Callers hand these helpers vendor
+  observation dates, which are not all sessions. *Cost if wrong:* a FRED value dated on a
+  holiday would crash ingestion instead of being lagged.
 
 ## Write path
 
@@ -71,6 +100,47 @@ than falsely complete.
   copy in git history forever. Compared by content, so the rule needs no per-source calendar.
   Immediately justified: 7 of the first 17 payloads were byte-identical duplicates — 41% of the
   archive on day one — pruned with no loss.
+
+## The read path, naming, and the leakage proof
+
+- **R23** `load_panel` normalises `ts` and `ingested_at` to **UTC** before returning. DuckDB
+  renders a TIMESTAMP WITH TIME ZONE in its session timezone, which defaults to the host's, so
+  the same read returned `datetime64[us, America/Los_Angeles]` locally and would return
+  `datetime64[us, UTC]` on CI. The instants were always correct; the **dtype** was not
+  reproducible, and in this project that is the same class of defect. A naive column is left
+  alone rather than localised, because assuming naive means UTC is the silent repair this layer
+  refuses. Found by the targets story, which had worked around it per-test.
+- **R24** Spec §9 contradicted itself: the naming rule requires every daily-return estimator to
+  carry `_proxy`, and the same section's table listed bare `har_d`/`har_w`/`har_m`. They are
+  means of the squared-daily-return proxy and carry exactly the confusion the rule prevents.
+  **Persisted column names take the suffix; `har_components()`'s dict keys stay bare**, because
+  those are internal to a function whose docstring says what they are made of, and the confusion
+  happens where a column is read back months later.
+- **R25** Spec §11's perturbation must **change the sign structure** of future returns, not only
+  their magnitudes — a requirement, not one option in a menu. Scaling future closes leaves log
+  returns almost unchanged, because they are scale-invariant, so only the boundary return moves.
+  §11's own mutation 1 (`semivar_neg_proxy` peeking forward) therefore **escaped** the
+  perturbation test until it became a decaying path. An implementer following the old wording
+  literally would have produced exactly the vacuous test §3 names as an anti-goal, on the
+  phase's own exit criterion.
+- **R26** The perturbation must also **cover every input group**. US-4.1's covered one of five —
+  the bars' `close` and FRED's `value` — so a forward peek planted in `has_distribution`
+  (`flag | flag.shift(-3)`) passed **both** leakage tests, caught only incidentally by a value
+  test. Verified by mutation, not inferred. A perturbation that misses an input misses every
+  forward peek that input could host, however strong it is elsewhere. **Sprint 5 would have
+  inherited the blind spot wholesale.**
+- **R27** `session_close_utc` moved from `ingest/_frames.py` to `sessions.py`. Importing it from
+  the ingestion package executed `from volab.store import write_raw`, so importing the feature
+  engine pulled in `volab.store`, `duckdb` **and** `pyarrow` — the whole Parquet stack loaded to
+  compute a feature. The deeper reason holds regardless of any test: the feature engine was
+  importing from the ingestion layer, and that dependency runs the wrong way. Features consume
+  curated data and have no business knowing how it got there.
+- **R28** `store._scan` stays **strict** — no `union_by_name`. A single `load_panel` over the
+  real `vix_family` fails, because VIX carries OHLC and VVIX only a close, but `union_by_name`
+  would silently fill absent columns with NULL: precisely the silent repair this layer refuses,
+  and a bars file that lost `volume` to a parse bug would unify instead of raising `SchemaError`.
+  The real defect is a curated *dataset* with a symbol-dependent schema, so the fix belongs at
+  curation (story US-6.8), where raw-faithful becomes curated-normalised.
 
 ## Two factual errors corrected in the spec and plan
 
