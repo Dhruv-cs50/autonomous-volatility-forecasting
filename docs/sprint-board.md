@@ -149,7 +149,7 @@ Carried into Sprint 4 from Sprint 3's review:
 
 | Story | Goal | Role | Depends on | Acceptance | State |
 |---|---|---|---|---|---|
-| US-5.1 | Point-in-time suite + AST forward-look scan | implementer + code-reviewer | 4.1 | perturbing post-`T₀` data leaves features byte-identical | in progress — round-2 re-review dispatched on Opus; no verdict was ever recorded from the first attempt |
+| US-5.1 | Point-in-time suite + AST forward-look scan | implementer + code-reviewer | 4.1 | perturbing post-`T₀` data leaves features byte-identical | done `d2321d1` — all 8 findings addressed; 2 new escapes (E1, E2) recorded as class-level limits, deferred to Phase 2 |
 
 US-5.1 carries both spec corrections earlier stories forced — the perturbation must change the
 sign structure of future returns **and** cover every input group — plus the AST scan exempting
