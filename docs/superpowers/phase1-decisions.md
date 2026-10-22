@@ -176,3 +176,66 @@ sprints, and found five further records wrong or unevidenced. What it corrected:
 - The final review's merge base `399c4fd` was stale: `origin/main` has moved to `a4027d4`. The
   board now points at `origin/main`.
 - Three `.DS_Store` files had been committed by careless `git add` and are now untracked.
+
+## Measurement gate (spec §12), second number: the full feature build
+
+Recorded 2026-10-21 on the development laptop (macOS, Apple silicon, repo on iCloud-synced
+`~/Desktop`), `HEAD` before this story `aacb10f`, warm `.venv`. FRED absent (see above), so the
+`baa10y`/`dgs10`/`t10y2y` columns are null and no FRED file is read.
+
+Reproduce, from the repository root:
+
+```bash
+time uv run --locked python -m volab.features build
+```
+
+| Measure | Result | Budget |
+|---|---|---|
+| **Full build, all three symbols** (read + features + 4 target horizons + all writes) | **70.1s** in-process (`built in`), **72.8s** wall incl. `uv run` start | < 5 min |
+| Files read | 6,936 bars (3 × 2,312) + 8,079 VIX family (3 × 2,389 + 912 for VIX1D) = 15,015 | |
+| Files written | 34,398: 6,936 `har_daily` (3 × 2,312) + 27,462 targets (h1 6,933, h5 6,921, h22 6,870, h66 6,738) | |
+
+About 4x headroom, and the dominant cost is the 34,398 single-row writes, not the reads. **Passed;
+no escalation, and §12 lever (b) is unused.**
+
+`load_panel` over the four target datasets (all three symbols, `end=dev_end`, `Tier.FEATURES`),
+via this script, run as `uv run --locked python <script>`:
+
+```python
+import time
+from volab.config import load_settings
+from volab.features.targets import HORIZONS, targets_dataset
+from volab.paths import Tier
+from volab.store import load_panel
+
+settings = load_settings()
+begin = time.perf_counter()
+for horizon in HORIZONS:
+    name = targets_dataset(horizon)
+    started = time.perf_counter()
+    frame = load_panel(name, end=settings.splits.dev_end, tier=Tier.FEATURES, settings=settings)
+    print(f"{name}: {len(frame)} rows in {time.perf_counter() - started:.2f}s")
+print(f"all four: {time.perf_counter() - begin:.2f}s")
+```
+
+| Dataset | Files | Rows | Time |
+|---|---|---|---|
+| `targets_rv_h1` | 6,933 | 6,933 | 0.95s |
+| `targets_rv_h5` | 6,921 | 6,921 | 0.84s |
+| `targets_rv_h22` | 6,870 | 6,870 | 0.79s |
+| `targets_rv_h66` | 6,738 | 6,738 | 1.49s |
+| **All four** | **27,462** | **27,462** | **4.07s** (6.1s wall incl. `uv run`) |
+
+Against the 30s single-`load_panel` budget this is roughly 7x headroom, for 12x the file count of
+the one-symbol bars read (2,312 files, 0.49s) that the first gate entry recorded.
+
+Two things this run found, neither of which changed the verdict:
+
+- **The curated VIX family is not one schema.** VIX carries open/high/low beside its close; VVIX
+  carries only a close. A single `load_panel` over the four series fails inside DuckDB with
+  `schema mismatch in glob: column "open" ... could not be found`, which the first real run hit.
+  The CLI reads each exogenous series separately. `store._scan` has no `union_by_name`; that is a
+  `store.py` matter and is reported rather than changed here.
+- The first attempt at the real run took 15m48s of wall-clock with 1.6s of CPU: that was `uv run`
+  stalling on the iCloud-synced `.venv`, the known cold-start quirk, and it failed before reaching
+  the build. The 72.8s above is a warm run.
