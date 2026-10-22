@@ -332,7 +332,7 @@ def test_growing_the_panel_does_not_change_the_features() -> None:
     narrow = build_features(_full_panel(short), through=through, calendar=CAL)
     wide = build_features(_full_panel(), through=through, calendar=CAL)
 
-    pd.testing.assert_frame_equal(narrow, wide)
+    pd.testing.assert_frame_equal(narrow, wide, check_exact=True)
 
 
 # Every group of values the engine reads. One test per group, because a perturbation that
@@ -379,7 +379,7 @@ def test_perturbing_one_input_group_after_the_cutoff_leaves_features_unchanged(g
 
     after = build_features(_perturb(panel, group, through), through=through, calendar=CAL)
 
-    pd.testing.assert_frame_equal(before, after)
+    pd.testing.assert_frame_equal(before, after, check_exact=True)
 
 
 def test_perturbing_every_input_group_at_once_leaves_features_unchanged() -> None:
@@ -391,7 +391,9 @@ def test_perturbing_every_input_group_at_once_leaves_features_unchanged() -> Non
     for group in INPUT_GROUPS:
         perturbed = _perturb(perturbed, group, through)
 
-    pd.testing.assert_frame_equal(before, build_features(perturbed, through=through, calendar=CAL))
+    pd.testing.assert_frame_equal(
+        before, build_features(perturbed, through=through, calendar=CAL), check_exact=True
+    )
 
 
 def test_deleting_and_appending_sessions_after_the_cutoff_leaves_features_unchanged() -> None:
@@ -405,8 +407,12 @@ def test_deleting_and_appending_sessions_after_the_cutoff_leaves_features_unchan
         *_vix_family(extra),
     )
 
-    pd.testing.assert_frame_equal(before, build_features(trimmed, through=through, calendar=CAL))
-    pd.testing.assert_frame_equal(before, build_features(grown, through=through, calendar=CAL))
+    pd.testing.assert_frame_equal(
+        before, build_features(trimmed, through=through, calendar=CAL), check_exact=True
+    )
+    pd.testing.assert_frame_equal(
+        before, build_features(grown, through=through, calendar=CAL), check_exact=True
+    )
 
 
 def test_rv_proxy_is_the_hand_computed_trailing_sum() -> None:
