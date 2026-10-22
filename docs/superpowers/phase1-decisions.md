@@ -32,8 +32,12 @@ still.
   point-in-time suite, per spec §11, not to the targets task.
 - **R6** Session arithmetic also exposes a memoised `get_calendar(settings)`; four tasks need a
   calendar and none owned building one, and XNYS construction is slow enough to matter.
-- **R7** The final whole-branch review uses merge base `399c4fd` (origin/main), since the spec
-  commit is on local main but unpushed and will appear in the PR.
+- **R7** The final whole-branch review uses the merge base `origin/main`, since the spec commit
+  is on local main but unpushed and will appear in the PR. **Superseded in place:** this ruling
+  originally pinned the literal `399c4fd`, and main has since moved to `a4027d4` (the spec commit
+  was pushed). Pinning a sha rather than a ref was the error; the ruling now names the ref.
+  Verified at the final review: `git merge-base --is-ancestor origin/main HEAD` succeeds and
+  `git log HEAD..origin/main` is empty, so the branch is a clean fast-forward with no divergence.
 
 ## Execution shape
 
@@ -150,10 +154,14 @@ Found by probing live payloads before dispatching the parser.
 - Nasdaq bars carry **no currency symbol**: prices arrive as bare strings (`"766.48"`) and the
   thousands separators are in **volume** (`"38,680,060"`). The `$` is on dividend amounts, a
   different endpoint. The spec asserted `$`-prefixed prices.
-- FRED's `fredgraph.csv` **omits** missing observations rather than sending the `.` marker its
-  other interfaces use — zero occurrences across `BAA10Y` (10,642 rows) and `DGS10` (16,904). The
-  guard against an unparseable value stays, because a silent `0.0` in a credit spread is a real
-  hazard, but it is now labelled defensive rather than observed.
+- FRED's `fredgraph.csv` does not send the `.` marker its other interfaces use — zero
+  occurrences across `BAA10Y` (10,642 rows) and `DGS10` (16,904). The guard against an
+  unparseable value stays, because a silent `0.0` in a credit spread is a real hazard, but it is
+  labelled defensive rather than observed. **This bullet was itself wrong and is corrected
+  below.** It concluded from the absent `.` that the endpoint *omits* missing observations
+  altogether. The live backfill showed it sends them as rows with an **empty** value field: 444
+  of `BAA10Y`'s 10,645, every one a market holiday. Counting the absence of one marker is not
+  evidence about the shape that replaced it — see "US-6.1: FRED landed" below.
 
 ## Measurement gate (spec §12): passed
 
@@ -204,7 +212,11 @@ Bars 2,312 partitions per symbol. VIX, VIX9D and VVIX 2,389 each, covering the 7
 before the bars floor. **VIX1D 912 — exactly the dev-session count computed in §5 when arguing to
 move the split**, which is the arithmetic behind that decision confirmed against real data.
 
-## External blocker: FRED
+## External blocker: FRED (resolved — see "US-6.1: FRED landed" below)
+
+Recorded while it was live, and kept because the guard proof below is worth keeping. The
+blockage was also never purely an outage: three defects of mine were in the way, and they are
+recorded in the US-6.1 section.
 
 `fred.stlouisfed.org` is serving an HTML "We'll be back soon!" maintenance page, so the three
 FRED series are not yet ingested. Nothing before Task 5's `curate_fred` depends on them.
@@ -215,7 +227,7 @@ This became an unplanned end-to-end test of the parse-before-archive guard, and 
 archived nothing. Before that guard the page would have been gzipped into an append-only,
 committed archive and would have broken every future FRED replay permanently.
 
-## Where execution stands
+## Where execution stands (as of the Sprint 3 boundary — superseded by the closing section)
 
 Branch `phase-1-data-and-targets`. **382 tests passing**; `ruff check`, `ruff format --check` and
 `mypy src` all clean; the import ratchet green with `ALLOWED` unchanged at `{"store.py"}`.
@@ -506,3 +518,136 @@ Accepted with the implementer's own caveat: `except Exception` around the parse 
 parser bug also reports as REFUSED. The chained cause and the original exception name in the
 printed line keep it traceable, and the alternative — enumerating the exception types a parser may
 raise — would be wrong the first time a vendor changed shape.
+
+## US-6.1: FRED landed (5ba4814), and the three defects of mine that were blocking it
+
+The maintenance page above was real, but it was not the whole reason FRED took three attempts.
+Three defects of my own were in the way, and each is a different species of the same error —
+trusting a claim that had not been measured.
+
+**1. The User-Agent was backwards per host.** Nasdaq's historical endpoint *refuses* a request
+without a browser User-Agent; FRED *tarpits* one. Measured: the same FRED URL returns 168,568
+bytes in 1.8s with no User-Agent or a curl-like one, and times out with a browser string. So the
+User-Agent cannot be a single global, and `_headers_for(url)` now decides per host, sending FRED
+no User-Agent at all rather than a fake one. A fake would be a guess about what the host wants;
+urllib's own default is the honest statement of what this client is.
+
+**2. The spec said the endpoint omits missing observations. It sends them empty.** 444 of
+`BAA10Y`'s 10,645 rows carry an empty value field, every one a market holiday — MLK Day,
+Presidents' Day, Good Friday, Memorial Day, Independence Day, Labor Day. The original probe had
+counted occurrences of the `.` placeholder, found none, and concluded the rows were absent. They
+were not; they had a different shape. **Counting the absence of one marker is not evidence about
+what replaced it.** The parser now skips an empty field deliberately — an empty field is the
+vendor stating there was no observation, which differs in kind from a value it cannot read — and
+still raises on anything else. `fred.py`'s module docstring carried the wrong claim until the
+US-6.2 pass, seventy lines above the comment recording the measurement that disproved it.
+
+**3. Two observations can become knowable on the same session.** FRED's publication calendar and
+XNYS are different calendars, so when the NYSE closes on a day FRED still publishes, the
+preceding business day and that day both lag onto the same next session. Observed once in
+`BAA10Y`'s 2,370 curated rows: 2025-01-09, the national day of mourning, when the exchange shut
+and the bond market did not, so 2025-01-08 and 2025-01-09 both became knowable on Friday the
+10th. `build_features` refuses a panel carrying two rows for one session, correctly, so the
+collapse lives in `features/__main__.py` instead: keep the **latest**, because standing on Friday
+the newest value known is Thursday's, and the earlier one is superseded rather than lost. The
+engine's guard stays strict on purpose — curated data legitimately holds both observations, and
+choosing between them is the caller's decision, not something the engine should quietly absorb.
+
+**Ruling R31: FRED's `as_of` is a conservative assumption, not an observation.** The keyless
+`fredgraph.csv` endpoint serves only the latest vintage, so a release's true publication instant
+is not recoverable from it. Every series therefore takes a lag in **sessions**, defaulting to
+one, configured by editing `FRED_LAG_SESSIONS` rather than by a config key. The asymmetry decides
+the direction: too long a lag only withholds information from a model, too short a lag leaks it.
+*Cost if wrong:* a series whose true lag exceeds one session is read earlier than it was
+knowable, which is a leak this harness would not catch, because the harness can only test that
+the code honours the `as_of` it was given — not that the `as_of` is true. **This is the one
+point-in-time claim in Phase 1 that rests on an assumption rather than on a measurement, and it
+must be stated as such wherever the data is described.**
+
+## US-6.2: the final accuracy pass
+
+Checking every claim in this log against the code and the disk as they now stand. Seven records
+were wrong, stale, or recorded nowhere but the board. Four are corrected in place above (R7's
+merge base, the FRED-omission bullet, the FRED blocker heading, the "where execution stands"
+heading); the FRED work and R31 are the section above; the remaining two are here.
+
+### The mutation evidence was measured against a 66-test file
+
+The recorded "6 failed, 60 passed" for both mutations is accurate for `f4e4c92`, which is where
+it was measured and where it is labelled. But the file that merges has **100 tests**, so those
+numbers understate the suite that ships. Both mutations were re-run against a pristine
+`git archive` copy of the final HEAD, in a scratch directory, `src/` in the repository untouched.
+Baseline there and after each revert: **100 passed**.
+
+**Mutation 1 — a forward offset.** `realized.py`, `squared = returns**2` →
+`squared = returns.shift(-1) ** 2`:
+
+```
+7 failed, 93 passed in 3.45s
+```
+
+```
+FAILED test_perturbing_one_input_group_...byte_identical[returns_sign_and_scale-whole]
+FAILED test_perturbing_one_input_group_...byte_identical[shrinking_returns-whole]
+FAILED test_perturbing_one_input_group_...byte_identical[shuffled_closes-whole]
+FAILED test_perturbing_one_input_group_...byte_identical[null_closes-whole]
+FAILED test_perturbing_every_input_group_at_once_leaves_the_table_byte_identical[whole]
+FAILED test_the_panels_extent_does_not_change_the_table[whole]
+FAILED test_no_feature_module_looks_forward[realized.py]
+```
+
+`-k looks_forward` alone: `1 failed, 4 passed`, naming the construct —
+`AssertionError: realized.py: ['offsets with shift(-1)']; every window in this package is trailing`.
+
+**Mutation 2 — a full-sample statistic.** `har.py`, the per-window divisor replaced by
+`(returns**2).mean()` over the whole series:
+
+```
+14 failed, 86 passed in 3.42s
+```
+
+Both the `-whole` and `-holed` panel variants of all four perturbation groups, the combined
+perturbation, the panel-extent test and the delete-and-append test. `-k looks_forward` alone:
+**`5 passed, 95 deselected`** — the scan is still blind to it, as it must be, because there is no
+forward syntax to find. The pair's complementarity, which is the actual claim, is unchanged and
+now measured on the file that ships.
+
+One asymmetry worth recording rather than smoothing over: mutation 1 fires only on the `-whole`
+variants, while mutation 2 fires on both. The `-holed` panel NaNs away part of the return
+structure a one-session offset perturbs, so the holed fixture is weaker against a forward offset
+and stronger against nothing in particular. It was added for back-fill escapes, which it does
+catch. Seven failures is ample detection; the point is that fixture variants are not uniformly
+stronger, and the combined perturbation already showed the same thing.
+
+### The suite does not cover the features CLI's own exogenous read
+
+`build_features` is called directly by the point-in-time suite, deliberately — routing through
+`load_panel` would strip every post-cutoff row and leave nothing to perturb. The consequence,
+recorded here because it is a real coverage boundary rather than a defect: `features/__main__.py`
+performs its own per-series exogenous read **and** the latest-observation-per-session collapse
+described in the US-6.1 section, and no perturbation in the suite reaches either. A forward peek
+planted in that collapse — taking the newest observation regardless of knowability rather than
+the newest *knowable* one — would be invisible to `tests/test_point_in_time.py`. The collapse's
+correctness today rests on reading it and on `tests/test_features_cli.py`, not on the
+perturbation harness. **Stated rather than discovered later**, which is the standard the rest of
+this phase has been held to.
+
+### Verified at HEAD, not carried forward
+
+| Claim | Measured |
+|---|---|
+| Test suite | **634 passed** |
+| `ruff check` / `ruff format --check` / `mypy src` | clean; 47 files formatted, 20 source files |
+| Import ratchet | green, `ALLOWED` unchanged at `{"store.py"}` |
+| Raw partitions | **24,218** — `cboe_vix` 8,919, `fred` 7,718, `nasdaq_bars` 7,539, `nasdaq_dividends` 42 |
+| Curated partitions | **22,126** — `bars_daily` 6,936, `fred_daily` 7,111, `vix_family` 8,079 |
+| Feature + target files | **34,398** — `har_daily` 6,936; targets 6,933 / 6,921 / 6,870 / 6,738 |
+| Merge base | `origin/main` = `a4027d4`, a strict ancestor of HEAD; no divergence |
+
+The earlier "16,500 raw / 15,015 curated" figures were correct **before FRED** and are left in
+place where they are dated; FRED added 7,718 raw and 7,111 curated.
+
+`has_distribution` is served for **QQQ only** — 42 dividend partitions. SPY and IWM return no
+dividend rows from the Nasdaq endpoint at all, so for those two symbols the unadjusted-close bias
+is present and documented rather than detected. That split is in the README's limitations and is
+recorded here because it is the kind of partial coverage that reads as full coverage later.

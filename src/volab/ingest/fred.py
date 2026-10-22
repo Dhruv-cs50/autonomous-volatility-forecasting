@@ -7,11 +7,12 @@ asymmetry decides it -- too long a lag only withholds information from a model, 
 leaks it.
 
 Two observed quirks. The header is ``observation_date,<SERIES_ID>``, so the value column is
-named after the series rather than ``value``. And this endpoint **omits** missing observations
-rather than sending the ``.`` placeholder FRED's other interfaces use: zero occurrences across
-BAA10Y's 10,642 rows and DGS10's 16,904. The refusal to coerce an unrecognised value is kept
-anyway, because a silent ``0.0`` in a credit spread would be a real hazard, but it is defensive
-rather than a response to something seen here.
+named after the series rather than ``value``. And a missing observation arrives as a row with an
+**empty value field**, not as the ``.`` placeholder FRED's other interfaces use and not as an
+omitted row: measured on BAA10Y, 444 of 10,645 rows, every one a market holiday. An earlier
+version of this docstring claimed the endpoint omitted them entirely, on a probe that had only
+counted ``.`` markers; the live backfill disproved it. See the comment at the skip below for how
+an empty field is distinguished from a value this parser cannot read, which still raises.
 """
 
 from __future__ import annotations
