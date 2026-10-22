@@ -654,3 +654,69 @@ place where they are dated; FRED added 7,718 raw and 7,111 curated.
 dividend rows from the Nasdaq endpoint at all, so for those two symbols the unadjusted-close bias
 is present and documented rather than detected. That split is in the README's limitations and is
 recorded here because it is the kind of partial coverage that reads as full coverage later.
+
+## US-5.1 re-review: all eight findings ADDRESSED, and TWO NEW ESCAPES — the story reopens again
+
+All eight earlier findings verified ADDRESSED, each mutant reconstructed independently with
+failure sets matching the implementer's report exactly. No new breakage; 66 → 100 test ids with
+nothing dropped. The Friday/holiday-eve fix is confirmed: escape A is caught at **70 of 70** swept
+cutoffs, 59 of them followed by a calendar gap.
+
+**It also corrected my own brief.** I told it `src/` was unchanged in `f4e4c92..808a239`. Wrong —
+the range holds **8 commits, not 2**, and `5ba4814` (the FRED work) changed `fred.py`,
+`features/__main__.py` and `_http.py`. It verified instead of relying on me. The engine under
+test is not stale, but `_latest_observation_per_session` is production code the PIT file never
+executes.
+
+### E1 — a band-threshold peek on the future return. Passes 607 of 608 tests.
+
+In `semivariance_proxy`, build `later` as escape B did (`drop`/`set_axis`/`reindex`, so no
+`shift`, no slice, no `center`) and OR a band into the sign mask:
+`wrong_sign | ((later > 0.03) & (later < 0.10))`. Measured: **100/100 PIT pass**, 43/43
+`test_features_build`, 19/19 `test_features_cli`, AST scan silent. The only catcher anywhere is
+one hand-written unit value test whose returns happen to land in the band — incidental, which is
+this phase's signature failure mode for the fifth time.
+
+**Why it works, and why enumeration cannot fix it:** at the cutoff the suite can only present
+`|r_next|` from the finite set `{0.0013, 0.0039, 0.009, 0.027, 0.2199, 0.513, NaN}`. **Any
+predicate thresholded into a gap of that set is invariant under every perturbation.** Adding
+more perturbation groups raises the attacker's cost without closing the class; only **dense or
+property-based magnitudes** would. And a 3–10% next-day move is a credible crash-eve signal, so
+this is not contrived.
+
+### E2 — a memoised full-sample statistic. 0 of 100 PIT failures.
+
+A module-level `_SCALE` filled on the first `build_features` call and reused defeats
+`test_the_panels_extent_does_not_change_the_table` — the file's **only** detector of the
+full-sample class, the one that caught round 1's M6 — because both tables being compared are
+built in the same process. **Class: any cross-call state — a global, a dict, `functools.cache`.
+No in-process comparison can see it.** Latent until Phase 2's walk-forward, which runs in one
+process.
+
+### Three other results worth keeping
+
+- **A cross-sectional peek is unreachable in production, not merely inexpressible**: `build.py`'s
+  `_subject` raises `SchemaError` on more than one non-exogenous symbol. But the PIT file never
+  mentions a second subject, so if `_subject` were relaxed, nothing in the exit-criterion file
+  would notice.
+- **The all-at-once perturbation is redundant.** Across all ten mutants, none is caught *only* by
+  it. Its failure on escape B has two causes, not the one claimed: `null_closes` NaNing the
+  structure, and `shuffled_closes` restoring a large boundary return that gives the base answer.
+- **The reviewer corrected its own measurement.** Its first sweep suggested B was blind at 28/70;
+  that was an artifact of measuring a single group. As the union of all groups it is 70/70, with
+  which detector fires rotating by cutoff.
+
+### Standing judgement on the AST scan
+
+Keep it as a cheap ratchet against a careless spelling; **never cite it as a defence.** Measured
+evasions now number **four** — escape B, the volume peek, E1, and a back-fill spelled
+invisibly. On the report's own table only one mutant is scan-only, and that one mutates the scan
+itself.
+
+### What this means for the PR
+
+The exit criterion holds against every *syntactic* forward peek and every leak the perturbation
+images can distinguish. It does **not** hold against a predicate constant across those images,
+nor against cross-call state. **The PR must say so.** Claiming the suite catches leakage in
+general would be exactly the overclaim this project was built to refuse — and we would be making
+it in the document that argues the harness is honest.
