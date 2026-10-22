@@ -30,6 +30,20 @@ Four decisions are load-bearing, and each was found by mutating the code rather 
   strong it is elsewhere, so the coverage is asserted structurally rather than trusted.
 * **The AST scan exempts ``targets.py`` as a whole file, by name.** See ``EXEMPT``.
 
+Three further classes were found by a review that built working peeks this file had let through,
+two of which passed the whole suite. Each is closed by the *fixture*, not by a new assertion,
+which is the general lesson: a leakage test can only see a leak the panel makes expressible.
+
+* **The exogenous join key.** ``ts`` and ``as_of`` must differ on an exogenous row, or a join that
+  reads the observation stamp instead of the session the value became knowable -- every FRED
+  release read one session early -- is byte-invisible. See ``EXOGENOUS_TS_LAG``.
+* **Order-only peeks.** "Was tomorrow's move bigger than today's?" survives any perturbation that
+  merely grows the future, and can be spelled with no ``shift``, slice or ``center`` at all, so
+  the scan cannot help. Hence non-monotone ``MAGNITUDES`` and the ``shrinking_returns`` group.
+* **Back-fill.** A gap bridged from the *next* session feeds a future price straight into
+  ``log_returns``, and a panel with no gaps and no nulls cannot tell. Hence ``HOLED``, and the
+  scan's vocabulary for ``bfill``, ``interpolate`` and ``method=``.
+
 Comparison is byte-exact and there is no float tolerance anywhere in this file: a leak the size
 of a rounding error is still a leak. ``_canonical_bytes`` says how each dtype is reduced to bytes
 and why ``to_numpy().tobytes()`` cannot be used literally for every column.
@@ -48,7 +62,7 @@ from __future__ import annotations
 import ast
 import datetime as dt
 import math
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -87,20 +101,48 @@ SUBJECT = "SPY"
 IV_FAMILY: tuple[str, ...] = tuple(sorted(EXOGENOUS_SERIES - set(FRED_SERIES.values())))
 FRED_FAMILY: tuple[str, ...] = tuple(sorted(FRED_SERIES.values()))
 
-# Every payload column the engine reads, bars and exogenous together.
+VOLUME_COLUMN = "volume"
+# The two stamps every row carries. Passed straight through to the table for the bars, and the
+# join key for everything else, so they are inputs like any other.
+STAMP_COLUMNS: tuple[str, ...] = ("ts", "ingested_at")
+# Every payload column the engine is handed, bars and exogenous together. Spelled out rather than
+# read off the panel: ``open``, ``high`` and ``low`` are handed over too, and requiring a
+# perturbation to move them would add an at-cutoff case for a column the engine does not read,
+# which would be red on an honest engine. ``volume`` *is* here, though the engine does not read it
+# either -- see the ``stamps_and_volume`` group.
 INPUT_COLUMNS: tuple[str, ...] = (
     CLOSE_COLUMN,
     VALUE_COLUMN,
     DISTRIBUTION_COLUMN,
-    "ts",
-    "ingested_at",
+    VOLUME_COLUMN,
+    *STAMP_COLUMNS,
+)
+# Every ``(symbol, column)`` pair the engine is handed, which is what the coverage test asserts.
+EXPECTED_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    {(SUBJECT, column) for column in (CLOSE_COLUMN, DISTRIBUTION_COLUMN, VOLUME_COLUMN)}
+    | {(name, CLOSE_COLUMN) for name in IV_FAMILY}
+    | {(name, VALUE_COLUMN) for name in FRED_FAMILY}
+    | {(name, column) for name in (SUBJECT, *IV_FAMILY, *FRED_FAMILY) for column in STAMP_COLUMNS}
 )
 
+# An exogenous row's ``ts`` is the vendor's observation stamp and its ``as_of`` is the session the
+# value first became knowable. For a lagged series those are different days: ``ingest/fred.py``
+# writes ``ts = midnight_utc(observation)`` and ``as_of = nth_session_after(calendar, day, lag)``.
+# Held a day apart here deliberately. If the two keys coincide -- as they did in the first version
+# of this fixture -- then a join reading ``ts`` instead of ``as_of``, which is every FRED release
+# read one session early and the exact leak ``_exogenous_column``'s docstring claims to prevent,
+# produces byte-identical output and nothing in this repository can see it.
+EXOGENOUS_TS_LAG = dt.timedelta(days=1)
+
 SESSIONS = sessions_between(CAL, dt.date(2024, 1, 2), dt.date(2025, 6, 30))
-# ``r_k = 0.001 * (k + 1)``, negated every third session: every squared return in a window is
-# distinct, both signs appear, and a window shifted by one session changes the answer.
+# Magnitudes that do **not** increase monotonically, cycling with period 8 beneath a sign that
+# cycles with period 3. Monotone magnitudes make "was tomorrow's move bigger than today's?" --
+# an order-only forward peek -- answer the same on every row, and then no perturbation that
+# merely scales the future can flip it. Both signs appear and none is zero, which the
+# sign-flip assertions below require.
+MAGNITUDES: tuple[float, ...] = (0.004, 0.011, 0.002, 0.007, 0.013, 0.005, 0.009, 0.003)
 RETURNS: tuple[float, ...] = tuple(
-    0.001 * (k + 1) * (-1 if k % 3 == 2 else 1) for k in range(len(SESSIONS) - 1)
+    MAGNITUDES[k % len(MAGNITUDES)] * (-1 if k % 3 == 2 else 1) for k in range(len(SESSIONS) - 1)
 )
 # Session 150, so every window -- including the 66-session one -- is already complete at the
 # cutoff. A forward peek then has somewhere to show up in every column instead of hiding in a
@@ -127,6 +169,10 @@ def _returns_of(closes: Sequence[float]) -> tuple[float, ...]:
     return tuple(math.log(b / a) for a, b in zip(closes[:-1], closes[1:], strict=True))
 
 
+def _midnight(day: dt.date) -> dt.datetime:
+    return dt.datetime(day.year, day.month, day.day, tzinfo=dt.UTC)
+
+
 def _levels(base: float, count: int) -> tuple[float, ...]:
     """An exogenous level path: strictly increasing, and never zero.
 
@@ -151,10 +197,15 @@ class Inputs:
     days: tuple[dt.date, ...]
     closes: tuple[float, ...]
     flags: tuple[bool, ...]
+    volumes: tuple[float, ...]
     iv: dict[str, tuple[float, ...]]
     fred: dict[str, tuple[float, ...]]
     ts_shift: tuple[dt.timedelta, ...]
     ingest_shift: tuple[dt.timedelta, ...]
+    # Sessions on which the exogenous series have no row at all, and sessions whose bar carries a
+    # null close. Empty by default; ``HOLED`` is the variant that uses them.
+    holes: frozenset[dt.date] = frozenset()
+    blanks: frozenset[dt.date] = frozenset()
 
     def panel(self) -> pd.DataFrame:
         """The three curated reads concatenated long-form, as ``load_panel`` would hand them."""
@@ -166,43 +217,56 @@ class Inputs:
 
     def _bars(self) -> pd.DataFrame:
         """A curated-bars-shaped frame: raw OHLCV, the distribution flag, no return column."""
-        closes = list(self.closes)
+        # ``blanks`` nulls the close of a session whose path value is otherwise intact, which is
+        # how a session with no usable bar reaches the engine. Applied here and not in ``closes``
+        # so the null cannot propagate through ``_closes_from``, and so the perturbations' own
+        # assertions -- which read ``closes`` -- still see a real path. ``open``/``high``/``low``
+        # keep their values: the engine does not read them.
+        ohlc = list(self.closes)
+        closes = [
+            float("nan") if day in self.blanks else value
+            for day, value in zip(self.days, self.closes, strict=True)
+        ]
         return pd.DataFrame(
             {
                 "symbol": [SUBJECT] * len(self.days),
                 "ts": self._stamps(self.ts_shift),
                 "as_of": list(self.days),
-                "ingested_at": self._ingested(),
-                "open": closes,
-                "high": closes,
-                "low": closes,
+                "ingested_at": self._ingested(range(len(self.days))),
+                "open": ohlc,
+                "high": ohlc,
+                "low": ohlc,
                 CLOSE_COLUMN: closes,
-                "volume": [1_000_000.0] * len(self.days),
+                VOLUME_COLUMN: list(self.volumes),
                 DISTRIBUTION_COLUMN: list(self.flags),
             }
         )
 
     def _series(self, name: str, values: tuple[float, ...], column: str) -> pd.DataFrame:
-        plain = tuple(dt.timedelta() for _ in self.days)
+        """One exogenous series, its ``ts`` a day before the ``as_of`` it is knowable on.
+
+        A series with ``holes`` simply has no row on those sessions, which is the normal case --
+        a vendor that published nothing that day -- and the engine must reindex over it rather
+        than reach across it.
+        """
+        keep = [k for k, day in enumerate(self.days) if day not in self.holes]
+        points = [_midnight(self.days[k]) - EXOGENOUS_TS_LAG + self.ts_shift[k] for k in keep]
         return pd.DataFrame(
             {
-                "symbol": [name] * len(self.days),
-                "ts": self._stamps(plain),
-                "as_of": list(self.days),
-                "ingested_at": pd.Series(pd.to_datetime([INGESTED] * len(self.days), utc=True)),
-                column: list(values),
+                "symbol": [name] * len(keep),
+                "ts": pd.Series(pd.to_datetime(points, utc=True)),
+                "as_of": [self.days[k] for k in keep],
+                "ingested_at": self._ingested(keep),
+                column: [values[k] for k in keep],
             }
         )
 
     def _stamps(self, shifts: tuple[dt.timedelta, ...]) -> pd.Series:
-        points = [
-            dt.datetime(day.year, day.month, day.day, tzinfo=dt.UTC) + shift
-            for day, shift in zip(self.days, shifts, strict=True)
-        ]
+        points = [_midnight(day) + shift for day, shift in zip(self.days, shifts, strict=True)]
         return pd.Series(pd.to_datetime(points, utc=True))
 
-    def _ingested(self) -> pd.Series:
-        points = [INGESTED + shift for shift in self.ingest_shift]
+    def _ingested(self, rows: Iterable[int]) -> pd.Series:
+        points = [INGESTED + self.ingest_shift[k] for k in rows]
         return pd.Series(pd.to_datetime(points, utc=True))
 
 
@@ -212,11 +276,27 @@ BASE = Inputs(
     days=tuple(SESSIONS),
     closes=_closes_from(100.0, RETURNS),
     flags=tuple(k % 7 == 0 for k in range(len(SESSIONS))),
+    # Varying per session, and never zero. A constant volume column is one a forward or centred
+    # window could read without changing anything, so the peek would be invisible.
+    volumes=tuple(1_000_000.0 + 1_000.0 * k for k in range(len(SESSIONS))),
     iv={name: _levels(10.0 * (k + 1), len(SESSIONS)) for k, name in enumerate(IV_FAMILY)},
     fred={name: _levels(1.5 + k, len(SESSIONS)) for k, name in enumerate(FRED_FAMILY)},
     ts_shift=tuple(dt.timedelta() for _ in SESSIONS),
     ingest_shift=tuple(dt.timedelta() for _ in SESSIONS),
 )
+
+# A second variant, and deliberately **not** a change to ``BASE``. Without a gap anywhere, the
+# whole back-fill class is inert: ``_on_sessions(close, ...).bfill()`` bridges a gap session's
+# close from the session *after* it, feeding a future price straight into ``log_returns``, and a
+# panel with no nulls and no holes cannot tell. It has to be separate because a null inside
+# ``BASE.closes`` would propagate through ``_closes_from`` and break the perturbations' own sign
+# and null assertions, and because an exogenous hole at the cutoff makes the ``iv_levels`` and
+# ``fred_levels`` at-cutoff cases red on an honest engine -- there is then no exogenous row at the
+# cutoff left to perturb.
+HOLED = replace(BASE, holes=frozenset({CUTOFF}), blanks=frozenset({CUTOFF}))
+
+# The panel shapes every leakage test below runs over.
+VARIANTS: dict[str, Inputs] = {"whole": BASE, "holed": HOLED}
 
 
 def _truncated(inputs: Inputs, count: int) -> Inputs:
@@ -226,6 +306,7 @@ def _truncated(inputs: Inputs, count: int) -> Inputs:
         days=inputs.days[:count],
         closes=inputs.closes[:count],
         flags=inputs.flags[:count],
+        volumes=inputs.volumes[:count],
         iv={name: values[:count] for name, values in inputs.iv.items()},
         fred={name: values[:count] for name, values in inputs.fred.items()},
         ts_shift=inputs.ts_shift[:count],
@@ -242,6 +323,7 @@ def _grown(inputs: Inputs, extra: Sequence[dt.date]) -> Inputs:
         days=inputs.days + tuple(extra),
         closes=inputs.closes + tail,
         flags=inputs.flags + tuple(k % 2 == 0 for k in range(count)),
+        volumes=inputs.volumes + tuple(-3.0 * (k + 1) for k in range(count)),
         iv={name: values + _levels(-7.0, count) for name, values in inputs.iv.items()},
         fred={name: values + _levels(-9.0, count) for name, values in inputs.fred.items()},
         ts_shift=inputs.ts_shift + tuple(dt.timedelta() for _ in extra),
@@ -271,7 +353,10 @@ def _canonical_bytes(series: pd.Series) -> bytes:
     and also catches a date silently becoming a ``Timestamp``.
     """
     if isinstance(series.dtype, pd.DatetimeTZDtype):
-        return series.dt.tz_localize(None).to_numpy().tobytes()
+        # ``tz_convert``, never ``tz_localize``: the latter yields *wall-clock* time, so two
+        # instants an hour apart inside a DST fall-back hour would compare byte-equal under an
+        # identical dtype. ``build_features`` only requires ``ts`` to be timezone-aware, not UTC.
+        return series.dt.tz_convert(None).to_numpy().tobytes()
     if series.dtype == "boolean":
         values = series.to_numpy(dtype=bool, na_value=False)
         return values.tobytes() + series.isna().to_numpy().tobytes()
@@ -301,12 +386,13 @@ def _moved(left: pd.Series, right: pd.Series) -> pd.Series:
 
 PERTURBATIONS: tuple[str, ...] = (
     "returns_sign_and_scale",
+    "shrinking_returns",
     "shuffled_closes",
     "null_closes",
     "iv_levels",
     "fred_levels",
     "distribution_flags",
-    "stamps",
+    "stamps_and_volume",
 )
 
 
@@ -336,6 +422,15 @@ def _perturb(inputs: Inputs, group: str, through: dt.date) -> Inputs:
             # return even though its first close is the last pre-cutoff one.
             returns[k - 1] = -3.0 * returns[k - 1]
         out = replace(inputs, closes=_closes_from(inputs.closes[0], returns))
+    elif group == "shrinking_returns":
+        returns = list(_returns_of(inputs.closes))
+        for k in after:
+            # Seven, not three. Dividing by the factor ``returns_sign_and_scale`` multiplies by
+            # would restore the original magnitudes exactly, so the two groups would annihilate
+            # under composition and the all-at-once test would perturb nothing in return space.
+            # ``_assert_it_bit`` caught precisely that when this was ``/ 3``.
+            returns[k - 1] = -returns[k - 1] / 7.0
+        out = replace(inputs, closes=_closes_from(inputs.closes[0], returns))
     elif group == "shuffled_closes":
         first = after[0]
         out = replace(inputs, closes=inputs.closes[:first] + inputs.closes[first:][::-1])
@@ -355,9 +450,16 @@ def _perturb(inputs: Inputs, group: str, through: dt.date) -> Inputs:
             inputs,
             flags=tuple((not flag) if k in moved else flag for k, flag in enumerate(inputs.flags)),
         )
-    elif group == "stamps":
-        # ``ts`` and ``ingested_at`` are passed straight through to the table, so they are inputs
-        # like any other. An hour keeps the ts order ascending, which the engine requires.
+    elif group == "stamps_and_volume":
+        # ``ts`` and ``ingested_at`` are passed straight through to the table for the bars and are
+        # the join key for the exogenous rows, so they are inputs like any other. One shift tuple
+        # drives both kinds of row, which is what makes the exogenous stamps perturbable at all.
+        # An hour keeps the ts order ascending, which the engine requires.
+        #
+        # ``volume`` rides along here. The engine is handed it and chooses not to read it, so a
+        # centred or forward window over it would be a leak no other group could see; and because
+        # this group's at-cutoff case still fires through ``ts``, folding it in adds no case that
+        # is red on an honest engine.
         hour, day = dt.timedelta(hours=1), dt.timedelta(days=1)
         out = replace(
             inputs,
@@ -366,6 +468,9 @@ def _perturb(inputs: Inputs, group: str, through: dt.date) -> Inputs:
             ),
             ingest_shift=tuple(
                 shift + day if k in moved else shift for k, shift in enumerate(inputs.ingest_shift)
+            ),
+            volumes=tuple(
+                -7.0 * value if k in moved else value for k, value in enumerate(inputs.volumes)
             ),
         )
     else:
@@ -397,6 +502,7 @@ def _assert_it_bit(before: Inputs, after: Inputs, group: str, rows: tuple[int, .
     assert after.days == before.days, "a perturbation may not move the session index"
     assert after.closes[:first] == before.closes[:first], f"{group} reached before the cutoff"
     assert after.flags[:first] == before.flags[:first], f"{group} reached before the cutoff"
+    assert after.volumes[:first] == before.volumes[:first], f"{group} reached before the cutoff"
     assert after.ts_shift[:first] == before.ts_shift[:first], f"{group} reached before the cutoff"
     assert after.ingest_shift[:first] == before.ingest_shift[:first], f"{group} reached back"
     for name, values in after.iv.items():
@@ -410,6 +516,16 @@ def _assert_it_bit(before: Inputs, after: Inputs, group: str, rows: tuple[int, .
             old, new = was[k - 1], now[k - 1]
             assert (old > 0) != (new > 0), f"the return into session {k} kept its sign"
             assert abs(old) != abs(new), f"the return into session {k} kept its magnitude"
+    elif group == "shrinking_returns":
+        # Every post-cutoff return flips its sign and *shrinks*. The ordering flip this exists to
+        # produce is a property of one particular boundary rather than of every ``through``, so it
+        # is asserted in ``test_the_shrinking_group_flips_the_ordering_an_order_only_peek_reads``
+        # instead of here, where ``through`` varies.
+        was, now = _returns_of(before.closes), _returns_of(after.closes)
+        for k in rows:
+            old, new = was[k - 1], now[k - 1]
+            assert (old > 0) != (new > 0), f"the return into session {k} kept its sign"
+            assert abs(new) < abs(old), f"the return into session {k} did not shrink"
     elif group == "shuffled_closes":
         assert after.closes != before.closes, "the permutation left the path where it was"
         assert sorted(after.closes) == sorted(before.closes), "this must be a permutation"
@@ -422,9 +538,13 @@ def _assert_it_bit(before: Inputs, after: Inputs, group: str, rows: tuple[int, .
         _assert_levels_moved(before.fred, after.fred, rows)
     elif group == "distribution_flags":
         assert all(after.flags[k] != before.flags[k] for k in rows), "a flag survived the flip"
-    elif group == "stamps":
+    elif group == "stamps_and_volume":
         assert all(after.ts_shift[k] != before.ts_shift[k] for k in rows)
         assert all(after.ingest_shift[k] != before.ingest_shift[k] for k in rows)
+        for k in rows:
+            old, new = before.volumes[k], after.volumes[k]
+            assert (old > 0) != (new > 0), f"the volume of session {k} kept its sign"
+            assert abs(old) != abs(new), f"the volume of session {k} kept its magnitude"
     else:
         raise AssertionError(f"unknown perturbation {group!r}")
 
@@ -442,22 +562,28 @@ def test_two_builds_of_the_same_panel_are_byte_identical() -> None:
     )
 
 
+@pytest.mark.parametrize("variant", VARIANTS)
 @pytest.mark.parametrize("group", PERTURBATIONS)
 def test_perturbing_one_input_group_after_the_cutoff_leaves_the_table_byte_identical(
-    group: str,
+    group: str, variant: str
 ) -> None:
-    before = build_features(BASE.panel(), through=CUTOFF, calendar=CAL)
+    inputs = VARIANTS[variant]
+    before = build_features(inputs.panel(), through=CUTOFF, calendar=CAL)
 
-    perturbed = _perturb(BASE, group, CUTOFF).panel()
+    perturbed = _perturb(inputs, group, CUTOFF).panel()
 
     after = build_features(perturbed, through=CUTOFF, calendar=CAL)
     _assert_byte_identical(before, after)
 
 
-def test_perturbing_every_input_group_at_once_leaves_the_table_byte_identical() -> None:
-    before = build_features(BASE.panel(), through=CUTOFF, calendar=CAL)
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_perturbing_every_input_group_at_once_leaves_the_table_byte_identical(
+    variant: str,
+) -> None:
+    inputs = VARIANTS[variant]
+    before = build_features(inputs.panel(), through=CUTOFF, calendar=CAL)
 
-    perturbed = BASE
+    perturbed = inputs
     for group in PERTURBATIONS:
         perturbed = _perturb(perturbed, group, CUTOFF)
 
@@ -483,47 +609,90 @@ def test_the_comparison_detects_a_group_perturbed_at_the_cutoff_itself(group: st
         _assert_byte_identical(before, after)
 
 
-def test_the_perturbations_cover_every_symbol_and_every_payload_column() -> None:
+def test_the_shrinking_group_flips_the_ordering_an_order_only_peek_reads() -> None:
+    """Why a perturbation that only ever *grows* the future is not enough.
+
+    "Was tomorrow's move bigger than today's?" is a forward peek that needs no ``shift``, no slice
+    and no ``center`` to write, so the scan cannot see it, and it survives every growing
+    perturbation: ``-3r`` scales both sides of the comparison, a reversal still leaves a larger
+    neighbour, and a null answers ``NaN > x`` with False, which was already the answer. Only
+    shrinking the future flips it, and only at the cutoff row -- the one emitted row whose forward
+    look reaches a perturbed return at all.
+    """
+    index = SESSIONS.index(CUTOFF)
+    # The return into the cutoff session, and the return into the session after it.
+    current, following = index - 1, index
+
+    was = _returns_of(BASE.closes)
+    assert abs(was[following]) > abs(was[current]), "the base pair must start out 'bigger'"
+
+    shrunk = _returns_of(_perturb(BASE, "shrinking_returns", CUTOFF).closes)
+    assert abs(shrunk[following]) < abs(shrunk[current]), "the ordering did not flip"
+
+    # The growing group cannot do it, which is the whole reason both groups exist.
+    grown = _returns_of(_perturb(BASE, "returns_sign_and_scale", CUTOFF).closes)
+    assert abs(grown[following]) > abs(grown[current])
+
+
+def test_the_perturbations_cover_every_symbol_and_column_pair_the_engine_is_handed() -> None:
     """A perturbation that misses an input misses every forward peek that input could host.
 
-    Asserted against the panel rather than against the list of groups: the engine reads one
-    symbol's bars and every configured exogenous series, and every one of them must be touched.
+    Asserted as ``(symbol, column)`` **pairs**. Accumulating the symbols and the columns into two
+    independent sets asserts only the marginals, and an earlier version of this test did exactly
+    that: fourteen pairs -- every exogenous series' ``ts`` and its ``ingested_at`` -- were never
+    perturbed and the test passed anyway. A join reading ``ts`` instead of ``as_of`` hides in
+    precisely those pairs.
     """
     panel = BASE.panel()
     assert set(panel["symbol"]) == {SUBJECT} | set(EXOGENOUS_SERIES)
 
-    symbols: set[str] = set()
-    columns: set[str] = set()
+    touched: set[tuple[str, str]] = set()
     for group in PERTURBATIONS:
         perturbed = _perturb(BASE, group, CUTOFF).panel()
         for column in INPUT_COLUMNS:
             differs = _moved(perturbed[column], panel[column])
-            if bool(differs.any()):
-                columns.add(column)
-                symbols.update(panel.loc[differs, "symbol"])
+            touched.update((symbol, column) for symbol in set(panel.loc[differs, "symbol"]))
 
-    assert symbols == set(panel["symbol"])
-    assert columns == set(INPUT_COLUMNS)
+    assert touched == set(EXPECTED_PAIRS)
 
 
-def test_the_panels_extent_does_not_change_the_table() -> None:
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_the_panels_extent_does_not_change_the_table(variant: str) -> None:
     # The leak this guards is not a per-row one: a full-sample statistic in place of a trailing
     # window changes every row a little and no row's inputs at all, so only the extent catches it.
-    narrow = build_features(_truncated(BASE, 151).panel(), through=CUTOFF, calendar=CAL)
-    wide = build_features(BASE.panel(), through=CUTOFF, calendar=CAL)
+    inputs = VARIANTS[variant]
+    narrow = build_features(_truncated(inputs, 151).panel(), through=CUTOFF, calendar=CAL)
+    wide = build_features(inputs.panel(), through=CUTOFF, calendar=CAL)
 
     assert max(narrow["as_of"]) == CUTOFF
     _assert_byte_identical(narrow, wide)
 
 
-def test_deleting_and_appending_sessions_after_the_cutoff_leaves_the_table_byte_identical() -> None:
-    before = build_features(BASE.panel(), through=CUTOFF, calendar=CAL)
+@pytest.mark.parametrize("variant", VARIANTS)
+def test_deleting_and_appending_sessions_after_the_cutoff_leaves_the_table_byte_identical(
+    variant: str,
+) -> None:
+    inputs = VARIANTS[variant]
+    before = build_features(inputs.panel(), through=CUTOFF, calendar=CAL)
 
-    trimmed = build_features(_truncated(BASE, 200).panel(), through=CUTOFF, calendar=CAL)
-    grown = build_features(_grown(BASE, EXTRA).panel(), through=CUTOFF, calendar=CAL)
+    trimmed = build_features(_truncated(inputs, 200).panel(), through=CUTOFF, calendar=CAL)
+    grown = build_features(_grown(inputs, EXTRA).panel(), through=CUTOFF, calendar=CAL)
 
     _assert_byte_identical(before, trimmed)
     _assert_byte_identical(before, grown)
+
+
+def test_the_holed_variant_really_does_carry_a_gap_and_a_null() -> None:
+    """The back-fill class is only reachable while this is true, so it is asserted, not assumed."""
+    panel = HOLED.panel()
+    exogenous = panel[panel["symbol"] != SUBJECT]
+    bars = panel[panel["symbol"] == SUBJECT]
+
+    assert CUTOFF not in set(exogenous["as_of"]), "the exogenous hole closed"
+    assert set(exogenous["symbol"]) == set(EXOGENOUS_SERIES), "a series vanished entirely"
+    assert bars.loc[bars["as_of"] == CUTOFF, CLOSE_COLUMN].isna().all(), "the null close filled in"
+    # The bar itself is still there; it is the close that is unusable.
+    assert len(bars) == len(SESSIONS)
 
 
 # The comparison's own red-before-fix cases: each of these differences must be caught.
@@ -539,6 +708,23 @@ def test_the_comparison_catches_a_one_bit_float_difference() -> None:
 
     with pytest.raises(AssertionError):
         _assert_byte_identical(frame, nudged)
+
+
+def test_the_comparison_catches_two_instants_an_hour_apart_in_a_dst_fall_back() -> None:
+    """``tz_localize(None)`` would collapse these two, because it yields wall-clock time.
+
+    Not reachable through ``build_features`` today -- every stamp in this project is UTC -- but the
+    engine requires ``ts`` to be timezone-*aware*, not UTC, so a panel carrying an exchange-local
+    stamp is expressible, and 01:00 EDT and 01:00 EST are the same wall clock on 2025-11-02.
+    """
+    instants = pd.Series(
+        pd.to_datetime(["2025-11-02 05:00:00+00:00", "2025-11-02 06:00:00+00:00"])
+    ).dt.tz_convert("America/New_York")
+    first, second = instants.iloc[:1], instants.iloc[1:]
+
+    assert first.dtype == second.dtype
+    assert first.iloc[0] != second.iloc[0], "these must be two different instants"
+    assert _canonical_bytes(first) != _canonical_bytes(second)
 
 
 def test_the_comparison_catches_a_changed_session_date() -> None:
@@ -591,6 +777,17 @@ EXEMPT = {"targets.py"}
 
 # The two calls whose argument is an offset in rows.
 OFFSET_CALLS = {"shift", "diff"}
+# Calls that take a value from a *later* row. ``ffill`` and ``pad`` take one from an earlier row,
+# which is all a trailing feature may do, so they are deliberately absent.
+BACKWARD_FILL_CALLS = {"bfill", "backfill", "interpolate"}
+# Calls whose ``method=`` chooses which direction a fill runs in.
+FILL_METHOD_CALLS = {"fillna", "reindex", "asfreq", "align", "resample"}
+# The only two ``method=`` values that fill from the past. ``build_features`` passes no method at
+# all -- its ``reindex`` leaves a gap session null and its ``fillna`` takes an explicit series.
+TRAILING_METHODS = {"ffill", "pad"}
+# ``rolling(window, min_periods, center, ...)``: ``center`` is reachable positionally, so a
+# keyword-only rule waves ``rolling(5, 5, True)`` straight through. Measured on pandas 3.0.6.
+_ROLLING_CENTER_POSITION = 2
 
 
 def _modules(root: Path = FEATURES) -> list[Path]:
@@ -629,6 +826,13 @@ def _is_false(value: ast.expr) -> bool:
     return isinstance(value, ast.Constant) and not value.value
 
 
+def _is_trailing_method(value: ast.expr) -> bool:
+    """Whether a ``method=`` provably fills from earlier rows, or does not fill at all."""
+    return isinstance(value, ast.Constant) and (
+        value.value is None or value.value in TRAILING_METHODS
+    )
+
+
 def _forward_looks(source: str) -> list[str]:
     """Every syntactic way ``source`` could read a value from after the row being computed."""
     found: list[str] = []
@@ -642,9 +846,28 @@ def _forward_looks(source: str) -> list[str]:
         if not isinstance(node, ast.Call):
             continue
         name = _callee(node)
+        if name in BACKWARD_FILL_CALLS:
+            # A back-fill is the subtlest forward peek of all: it reads a *later* row's value and
+            # presents it as this row's own, so a gap session's close would be bridged from the
+            # session after it and a future price would reach log_returns directly.
+            found.append(f"fills from later rows with {name}()")
+        if name == "rolling" and len(node.args) > _ROLLING_CENTER_POSITION:
+            positional = node.args[_ROLLING_CENTER_POSITION]
+            if not _is_false(positional):
+                found.append(
+                    f"centres a window with rolling's third argument {ast.unparse(positional)}"
+                )
         for keyword in node.keywords:
             if keyword.arg == "center" and not _is_false(keyword.value):
                 found.append(f"centres a window with center={ast.unparse(keyword.value)}")
+            if (
+                keyword.arg == "method"
+                and name in FILL_METHOD_CALLS
+                and not _is_trailing_method(keyword.value)
+            ):
+                found.append(
+                    f"fills from later rows with {name}(method={ast.unparse(keyword.value)})"
+                )
             if (
                 keyword.arg == "periods"
                 and name in OFFSET_CALLS
@@ -679,6 +902,19 @@ def test_the_scan_actually_has_modules_to_scan() -> None:
         ("x.rolling(5, center=True).mean()\n", "centres a window with center=True"),
         ("x.rolling(5, center=1).mean()\n", "centres a window with center=1"),
         ("x.rolling(5, center=flag).mean()\n", "centres a window with center=flag"),
+        ("x.rolling(5, 5, True).mean()\n", "centres a window with rolling's third argument True"),
+        ("x.rolling(5, 5, 1).mean()\n", "centres a window with rolling's third argument 1"),
+        ("x.bfill()\n", "fills from later rows with bfill()"),
+        ("x.backfill()\n", "fills from later rows with backfill()"),
+        ("x.interpolate()\n", "fills from later rows with interpolate()"),
+        ("x.interpolate(method='time')\n", "fills from later rows with interpolate()"),
+        ("_on_sessions(v, d, s).bfill()\n", "fills from later rows with bfill()"),
+        ("x.fillna(method='bfill')\n", "fills from later rows with fillna(method='bfill')"),
+        (
+            "x.reindex(s, method='nearest')\n",
+            "fills from later rows with reindex(method='nearest')",
+        ),
+        ("x.reindex(s, method=how)\n", "fills from later rows with reindex(method=how)"),
         ("x.shift(-1)\n", "offsets with shift(-1)"),
         ("x.shift(-horizon)\n", "offsets with shift(-horizon)"),
         ("x.shift(0 - 1)\n", "offsets with shift(0 - 1)"),
@@ -707,6 +943,14 @@ def test_the_forward_scan_detects_a_forward_slice_as_well_as_a_reversing_one() -
     [
         "x.rolling(5, min_periods=5).sum()\n",
         "x.rolling(5, center=False).mean()\n",
+        "x.rolling(5, 5, False).mean()\n",
+        "x.ffill()\n",
+        "x.fillna(0.0)\n",
+        "x.fillna(canonical)\n",
+        "x.fillna(method='ffill')\n",
+        "x.reindex(sessions)\n",
+        "x.reindex(sessions, method=None)\n",
+        "values.set_axis(days).reindex(sessions)\n",
         "x.rolling(window, min_periods=window).sum()\n",
         "x.shift(1)\n",
         "x.shift(periods=2)\n",
