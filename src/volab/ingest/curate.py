@@ -37,6 +37,8 @@ from volab.store import load_panel, write_curated
 BARS_DATASET = "bars_daily"
 VIX_DATASET = "vix_family"
 FRED_DATASET = "fred_daily"
+# The payload every ``vix_family`` partition carries, in the order the vendor lays it out.
+_VIX_PAYLOAD: tuple[str, ...] = ("open", "high", "low", "close")
 
 
 # Separators and symbols a vendor may wrap a number in. Stripped, never guessed at: anything
@@ -181,15 +183,61 @@ def curate_bars(symbol: str, *, end: dt.date, settings: Settings | None = None) 
     return _write_partitions(frame, dataset=BARS_DATASET, symbol=symbol, settings=resolved)
 
 
+def _pad_to_ohlc(frame: pd.DataFrame, *, series: str) -> pd.DataFrame:
+    """Give a close-only series explicit null ``open``/``high``/``low``.
+
+    Raw is faithful to the vendor and curated is normalised, and this is the normalisation.
+    Cboe publishes only a close for VVIX, so its raw files rightly carry two payload columns
+    where VIX, VIX9D and VIX1D carry four. Left alone that would make a curated *dataset* whose
+    schema depends on which symbol a file belongs to, and a single ``load_panel`` over the family
+    would hit a schema mismatch. The store's scan refuses to paper over that by unifying columns
+    by name, because the same leniency would let a bars file that lost its ``volume`` column to a
+    parse bug quietly unify instead of raising. So the schema is made uniform here, where the
+    fact -- "the vendor publishes no open for this series" -- is actually known.
+
+    The nulls are genuine floats, never zeros and never filled from the close: a reader must be
+    able to tell "Cboe publishes no open for VVIX" from "the open was 0".
+
+    Only the exact close-only shape is padded. A series with some but not all of the four, or
+    with no close at all, has lost a column rather than never had it, and is refused.
+    """
+    present = tuple(name for name in _VIX_PAYLOAD if name in frame.columns)
+    if "close" not in present:
+        raise SchemaError(
+            f"cboe_vix/{series} carries no close column (found {list(present)}); a series with "
+            "no close is not a volatility index series, so curation refuses it"
+        )
+    if present == _VIX_PAYLOAD:
+        return frame
+    if present != ("close",):
+        missing = [name for name in _VIX_PAYLOAD if name not in present]
+        raise SchemaError(
+            f"cboe_vix/{series} carries {list(present)} but not {missing}; only a close-only "
+            "series is padded, because padding a series that lost a column would hide the loss"
+        )
+    padded = frame.copy()
+    for name in _VIX_PAYLOAD:
+        if name != "close":
+            padded[name] = pd.Series(float("nan"), index=padded.index, dtype="float64")
+    # The same column order for every series: a dataset's files must agree on position as well as
+    # name, and the OHLC block sits last in the vendor's own layout.
+    leading = [name for name in padded.columns if name not in _VIX_PAYLOAD]
+    return padded[[*leading, *_VIX_PAYLOAD]]
+
+
 def curate_vix(series: str, *, end: dt.date, settings: Settings | None = None) -> int:
-    """Type one Cboe index series. A close-only series keeps only ``close``, as served."""
+    """Type one Cboe index series into the ``vix_family`` dataset.
+
+    Every partition leaves here with the same four payload columns. A close-only series (VVIX)
+    gets explicit null ``open``/``high``/``low``; see ``_pad_to_ohlc`` for why.
+    """
     resolved = load_settings() if settings is None else settings
     raw = load_panel("cboe_vix", symbols=[series], end=end, tier=Tier.RAW, settings=resolved)
     raw = _drop_non_sessions(raw, symbol=series, settings=resolved)
     if raw.empty:
         raise DatasetNotFound(f"cboe_vix/{series} has no rows on an XNYS session up to {end}")
-    present = tuple(name for name in ("open", "high", "low", "close") if name in raw.columns)
-    frame = _typed(raw, present, symbol=series)
+    present = tuple(name for name in _VIX_PAYLOAD if name in raw.columns)
+    frame = _pad_to_ohlc(_typed(raw, present, symbol=series), series=series)
     return _write_partitions(frame, dataset=VIX_DATASET, symbol=series, settings=resolved)
 
 

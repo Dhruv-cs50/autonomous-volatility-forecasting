@@ -186,14 +186,111 @@ def test_curate_vix_types_the_closes(synthetic_store) -> None:
     assert frame["open"].iloc[0] == pytest.approx(14.5)
 
 
-def test_curate_vix_handles_a_close_only_series(synthetic_store) -> None:
+def test_curate_vix_pads_a_close_only_series_with_null_ohlc(synthetic_store) -> None:
+    """VVIX is close-only at the vendor; curated gives it the family's four columns, as nulls.
+
+    Raw stays faithful to Cboe and curated is normalised, so the padding is a curation fact. The
+    nulls are genuine and float-typed -- not zeros, which would read as "the open was 0" -- so a
+    reader can tell "Cboe publishes no open for VVIX" from a real value.
+    """
     _seed(synthetic_store, "cboe_vvix.csv", source="cboe_vix", symbol="VVIX")
 
     curate_vix("VVIX", end=END, settings=synthetic_store.settings)
     frame = _curated(synthetic_store, "vix_family", "VVIX")
 
     assert frame["close"].iloc[0] == pytest.approx(78.12)
-    assert "open" not in frame.columns
+    assert frame["close"].dtype.kind == "f"
+    for name in ("open", "high", "low"):
+        assert name in frame.columns
+        assert frame[name].dtype.kind == "f", f"{name} must be float, not object"
+        assert frame[name].isna().all(), f"{name} must be null, never zero or filled"
+        assert not (frame[name] == 0).any()
+
+
+def test_one_load_panel_spans_series_of_different_vendor_shapes(synthetic_store) -> None:
+    """The acceptance criterion: VIX (OHLC) and VVIX (close-only) read back in a single call.
+
+    Before curation normalised the schema this raised a DuckDB schema mismatch across the
+    dataset's files, because the curated schema depended on which symbol a file belonged to.
+    """
+    _seed(synthetic_store, "cboe_vix.csv", source="cboe_vix", symbol="VIX")
+    _seed(synthetic_store, "cboe_vvix.csv", source="cboe_vix", symbol="VVIX")
+    curate_vix("VIX", end=END, settings=synthetic_store.settings)
+    curate_vix("VVIX", end=END, settings=synthetic_store.settings)
+
+    panel = load_panel(
+        "vix_family",
+        symbols=["VIX", "VVIX"],
+        end=END,
+        tier=Tier.CURATED,
+        settings=synthetic_store.settings,
+    )
+
+    assert sorted(panel["symbol"].unique()) == ["VIX", "VVIX"]
+    assert len(panel) == 6
+    vix = panel[panel["symbol"] == "VIX"]
+    vvix = panel[panel["symbol"] == "VVIX"]
+    assert vix["open"].notna().all()
+    assert vvix["open"].isna().all()
+    assert vvix["close"].notna().all()
+
+
+def test_the_raw_tier_keeps_a_close_only_series_close_only(synthetic_store) -> None:
+    """Padding is a curated-tier concern: raw must stay exactly what Cboe served."""
+    _seed(synthetic_store, "cboe_vvix.csv", source="cboe_vix", symbol="VVIX")
+
+    curate_vix("VVIX", end=END, settings=synthetic_store.settings)
+    raw = load_panel(
+        "cboe_vix",
+        symbols=["VVIX"],
+        end=END,
+        tier=Tier.RAW,
+        settings=synthetic_store.settings,
+    )
+
+    assert {"open", "high", "low", "close"} & set(raw.columns) == {"close"}
+
+
+def _write_raw_vix(store, columns: dict[str, list[str]]) -> None:
+    day = dt.date(2023, 6, 15)
+    frame = pd.DataFrame(
+        {
+            "symbol": ["VIX"],
+            "ts": [pd.Timestamp(f"{day} 20:00", tz="UTC")],
+            "as_of": [day],
+            "ingested_at": [pd.Timestamp(FETCHED)],
+            "source_url": ["x"],
+            "vendor_date_text": ["06/15/2023"],
+            **columns,
+        }
+    )
+    write_raw(
+        frame,
+        source="cboe_vix",
+        symbol="VIX",
+        as_of=day,
+        ingested_at=FETCHED,
+        settings=store.settings,
+    )
+
+
+def test_curate_vix_refuses_to_pad_a_series_that_lost_a_column(synthetic_store) -> None:
+    """Only the genuinely close-only shape is padded.
+
+    A VIX file that lost ``high`` to a parse bug must raise, not be unified with the rest: padding
+    it would be the silent repair the store's strict schema check exists to refuse.
+    """
+    _write_raw_vix(synthetic_store, {"open": ["1.0"], "low": ["1.0"], "close": ["14.0"]})
+
+    with pytest.raises(SchemaError, match="high"):
+        curate_vix("VIX", end=END, settings=synthetic_store.settings)
+
+
+def test_curate_vix_refuses_a_series_with_no_close(synthetic_store) -> None:
+    _write_raw_vix(synthetic_store, {"open": ["1.0"], "high": ["1.0"], "low": ["1.0"]})
+
+    with pytest.raises(SchemaError, match="close"):
+        curate_vix("VIX", end=END, settings=synthetic_store.settings)
 
 
 def test_curate_fred_types_the_value(synthetic_store) -> None:
