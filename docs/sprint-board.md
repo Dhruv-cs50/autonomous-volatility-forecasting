@@ -168,7 +168,7 @@ only one test catches means the other is too weak.
 
 | Story | Goal | Role | Depends on | State |
 |---|---|---|---|---|
-| US-6.1 | FRED backfill | controller | **blocked** — fred.stlouisfed.org is serving a maintenance page | blocked |
+| US-6.1 | FRED backfill | controller | done `5ba4814` — 7,718 raw partitions; macro columns live |
 | US-6.2 | Finish the decisions log | controller | 5.x | todo |
 | US-6.3 | Final whole-branch review, strongest model, merge base **`origin/main`** | code-reviewer | 6.2 | todo |
 | US-6.4 | Open the PR against main | controller | 6.3 | todo |
@@ -210,3 +210,26 @@ made it a test that proved nothing there.
   will be null until it lands. Retry at each sprint boundary.
 - **Sprint 5 is the phase's exit criterion.** If US-5.2 shows test 1 passing while only the AST
   scan fires, test 1 is too weak and US-5.1 reopens rather than the mutation being accepted.
+
+
+## Resume state (2026-10-22, context at 90%)
+
+Branch `phase-1-data-and-targets`, pushed. HEAD `5ba4814`. Gates clean; 508 passing excluding
+`tests/test_point_in_time.py`, which a live agent is still refining after its commit `167c18e`.
+
+**Done since the last resume note:** the README rewrite (`2538e0b`); US-5.1's fix round closing
+the three forward-peek escapes (`167c18e`); both mutation proofs recorded (`3b90a1d`); the
+older leakage comparisons made exact after a 1e-9 leak was shown to pass them (`0da1085`,
+`65b465b`); all 29 rulings reconciled (`30df855`); and FRED ingested along with the three real
+defects that were blocking it (`5ba4814`).
+
+**FRED is no longer blocked, and was never purely an outage.** Three of my own defects were in
+the way: a browser User-Agent that FRED tarpits while Nasdaq requires it; a spec claim that the
+endpoint omits missing observations when it actually sends 444 empty-valued holiday rows; and
+two observations sharing one knowable session because FRED's calendar and XNYS differ.
+
+**Next, in order:**
+1. US-5.1 re-review — owed, because it failed its first review.
+2. US-6.8 `vix_family` schema, US-6.9 the two CLI defects — both dispatched.
+3. US-6.2 final decisions-log pass, US-6.3 final whole-branch review (merge base `origin/main`),
+   US-6.4 the PR.
