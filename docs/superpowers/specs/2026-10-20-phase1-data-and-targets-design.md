@@ -271,9 +271,16 @@ absent from `_ENV_OVERRIDES`, so a `fred_lags:` section would need a second addi
 and section 8's single key is worth keeping. "Configurable" here means editing that dict, stated
 rather than quietly assumed.
 
-`fredgraph.csv` also **omits** missing observations rather than marking them: neither `BAA10Y`
-(10,642 rows) nor `DGS10` (16,904 rows) holds a single `.` placeholder, which is the marker
-FRED's other interfaces use. Parsing still refuses to coerce an unrecognised value, so a `.`
+`fredgraph.csv` emits a row for **every business day** and leaves the value **empty** on a
+market holiday. It sends no `.` placeholder, which is the marker FRED's other interfaces use.
+
+An earlier version of this paragraph said the endpoint "omits missing observations", which was
+wrong and wrong in an instructive way: the `.` count was measured and found to be zero, and
+absence of the marker was then read as absence of the row. Nobody checked for an empty field.
+Measured properly, `BAA10Y` carries **444 empty values in 10,645 rows**, every one a market
+holiday. The parser skips those rows -- an empty field is an explicit statement that there was
+no observation, which differs in kind from a value it cannot read -- and still raises on
+anything else. Parsing still refuses to coerce an unrecognised value, so a `.`
 arriving from a series not sampled here fails loudly rather than becoming `0.0` — but that
 handling is defensive, not a response to anything this endpoint was observed to do.
 

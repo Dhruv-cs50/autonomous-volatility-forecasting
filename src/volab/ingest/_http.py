@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 
@@ -24,6 +25,25 @@ _ATTEMPTS = 3
 _BACKOFF_SECONDS = 2.0
 
 
+# Hosts that must NOT receive a browser User-Agent. FRED tarpits such requests: measured, the
+# same URL returns 168,568 bytes in 1.8s with no User-Agent or a curl-like one, and times out
+# after 21s with a browser one. Nasdaq is the opposite -- it refuses a request without one. So
+# the User-Agent cannot be a single global, and a source that wants neither default gets an
+# explicit transport.
+_NO_BROWSER_AGENT: frozenset[str] = frozenset({"fred.stlouisfed.org"})
+
+
+def _headers_for(url: str) -> dict[str, str]:
+    accept = "application/json, text/csv, */*"
+    host = urllib.parse.urlsplit(url).hostname or ""
+    if host in _NO_BROWSER_AGENT:
+        # Deliberately no User-Agent at all rather than a fake one: urllib's own default is what
+        # the host answers quickly, and inventing a curl string to dodge a filter is the kind of
+        # thing that breaks silently when the filter changes.
+        return {"Accept": accept}
+    return {"User-Agent": _USER_AGENT, "Accept": accept}
+
+
 def default_transport(url: str) -> bytes:
     """Fetch ``url`` and return its body, retrying a transient failure a few times.
 
@@ -32,7 +52,7 @@ def default_transport(url: str) -> bytes:
     silently returns nothing would look identical to a vendor with no data.
     """
     request = urllib.request.Request(  # noqa: S310 - https URLs only, built by the fetchers
-        url, headers={"User-Agent": _USER_AGENT, "Accept": "application/json, text/csv, */*"}
+        url, headers=_headers_for(url)
     )
     last: Exception | None = None
     for attempt in range(1, _ATTEMPTS + 1):

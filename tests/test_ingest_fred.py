@@ -53,3 +53,34 @@ def test_fetch_fred_refuses_an_unparseable_value() -> None:
     """
     with pytest.raises(ValueError, match="could not parse"):
         _fred("fred_with_dot.csv", "DGS10")
+
+
+def test_fred_requests_carry_no_browser_user_agent() -> None:
+    """FRED tarpits a browser User-Agent; Nasdaq refuses a request without one.
+
+    Measured against the live host: the same URL returns 168,568 bytes in 1.8s with no
+    User-Agent, and times out after 21s with a browser one. A single global User-Agent therefore
+    cannot serve both sources, and this test is what keeps the two apart.
+    """
+    from volab.ingest._http import _headers_for
+
+    assert "User-Agent" not in _headers_for("https://fred.stlouisfed.org/graph/fredgraph.csv?id=X")
+    assert "User-Agent" in _headers_for("https://api.nasdaq.com/api/quote/SPY/historical")
+    assert "User-Agent" in _headers_for(
+        "https://cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv"
+    )
+
+
+def test_fetch_fred_skips_a_holiday_row_with_an_empty_value() -> None:
+    """FRED emits every business day and blanks the value on a market holiday.
+
+    Measured on BAA10Y: 444 empty values in 10,645 rows, every one a holiday. An empty field
+    states that there was no observation, which differs in kind from a value the parser cannot
+    read -- so the row is skipped while anything else still raises.
+    """
+    body = b"observation_date,BAA10Y\n2023-06-15,1.78\n2023-06-19,\n2023-06-20,1.75\n"
+
+    frame = fetch_fred("BAA10Y", transport=lambda url: body, calendar=CAL, fetched_at=FETCHED)
+
+    assert len(frame) == 2, "the blank Juneteenth row is skipped, not refused"
+    assert list(frame["value"]) == ["1.78", "1.75"]

@@ -76,6 +76,14 @@ def parse_fred(
             continue
         day = parse_iso_date(text)
         raw = (record.get(value_column) or "").strip()
+        # FRED emits a row for every business day and leaves the value EMPTY on a market
+        # holiday: measured on BAA10Y, 444 of 10,645 rows, every one a holiday -- MLK Day,
+        # Presidents' Day, Good Friday, Memorial Day, Independence Day, Labor Day. An empty
+        # field is an explicit statement that there was no observation, which is different in
+        # kind from a value this parser cannot read, so the row is skipped rather than refused.
+        # Anything else unparseable still raises below.
+        if not raw:
+            continue
         rows.append(
             {
                 "ts": midnight_utc(day),

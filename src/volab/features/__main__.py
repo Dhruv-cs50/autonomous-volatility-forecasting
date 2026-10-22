@@ -92,7 +92,40 @@ def _exogenous(
     absent = sorted(set(series) - {str(frame["symbol"].iloc[0]) for frame in frames})
     if absent:
         print(f"  {dataset}: {absent} not in the store, those columns will be null")
-    return pd.concat(frames, ignore_index=True)
+    return _latest_observation_per_session(pd.concat(frames, ignore_index=True), dataset)
+
+
+def _latest_observation_per_session(frame: pd.DataFrame, dataset: str) -> pd.DataFrame:
+    """Collapse a series to one observation per knowable session, keeping the latest.
+
+    Two observations can share an ``as_of`` because FRED's publication calendar and XNYS are
+    different calendars. When the NYSE closes on a day FRED still publishes, the preceding
+    business day and that day both lag onto the same next session. Observed once in BAA10Y's
+    2,370 curated rows: 2025-01-09, the national day of mourning, when the exchange shut and the
+    bond market did not, so 2025-01-08 and 2025-01-09 both became knowable on Friday the 10th.
+
+    Keeping the **latest** observation is the point-in-time reading: standing on Friday, the
+    newest value known is Thursday's. The earlier one is not lost information so much as
+    superseded information.
+
+    This is done here rather than in ``build_features``, which still refuses a panel carrying two
+    rows for one session. That guard is worth keeping strict: curated data legitimately holds
+    both observations, and choosing between them is the caller's decision, not something the
+    engine should quietly absorb.
+    """
+    counts = frame.groupby(["symbol", "as_of"], sort=False)["ts"].transform("size")
+    if not bool((counts > 1).any()):
+        return frame
+    collapsed = (
+        frame.sort_values(["symbol", "as_of", "ts"], kind="stable")
+        .drop_duplicates(["symbol", "as_of"], keep="last")
+        .reset_index(drop=True)
+    )
+    print(
+        f"  {dataset}: collapsed {len(frame) - len(collapsed)} superseded observation(s) that "
+        "shared a knowable session, keeping the latest of each"
+    )
+    return collapsed
 
 
 def _bars(settings: Settings, symbol: str) -> pd.DataFrame:

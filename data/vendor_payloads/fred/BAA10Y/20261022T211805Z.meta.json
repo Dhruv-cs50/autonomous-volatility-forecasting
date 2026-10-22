@@ -1,0 +1,6 @@
+{
+  "source": "fred",
+  "symbol": "BAA10Y",
+  "fetched_at": "2026-10-22T21:18:05.276497+00:00",
+  "source_url": "https://fred.stlouisfed.org/graph/fredgraph.csv?id=BAA10Y"
+}

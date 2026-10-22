@@ -381,3 +381,41 @@ def test_the_run_says_what_it_wrote(
         assert symbol in output
     assert FEATURE_SET in output
     assert str(len(DEV_SESSIONS)) in output
+
+
+def test_exogenous_collapses_two_observations_sharing_a_session(synthetic_store, capsys) -> None:
+    """FRED's calendar and XNYS differ, so two observations can share one knowable session.
+
+    Observed once in real BAA10Y data: the NYSE shut on 2025-01-09 for the national day of
+    mourning while the bond market did not, so 2025-01-08 and 2025-01-09 both became knowable on
+    Friday the 10th. The latest observation wins -- standing on Friday, Thursday's value is the
+    newest one known -- and `build_features` still refuses a panel carrying both.
+    """
+    knowable = dt.date(2023, 6, 20)
+    # Both observations share one partition, which is the production shape: the curated writer
+    # groups by as_of, so two rows that became knowable on the same session land in one file.
+    write_curated(
+        pd.DataFrame(
+            {
+                "symbol": ["BAA10Y", "BAA10Y"],
+                "ts": [
+                    pd.Timestamp(dt.date(2023, 6, 15), tz="UTC"),
+                    pd.Timestamp(dt.date(2023, 6, 16), tz="UTC"),
+                ],
+                "as_of": [knowable, knowable],
+                "ingested_at": [pd.Timestamp("2026-01-05", tz="UTC")] * 2,
+                "value": ["1.70", "1.80"],
+            }
+        ),
+        dataset="fred_daily",
+        symbol="BAA10Y",
+        as_of=knowable,
+        settings=synthetic_store.settings,
+    )
+
+    frame = cli._exogenous(synthetic_store.settings, "fred_daily", ("BAA10Y",), "value")
+
+    assert frame is not None
+    assert len(frame) == 1, "one row per knowable session"
+    assert frame["value"].iloc[0] == "1.80", "the later observation supersedes the earlier"
+    assert "collapsed 1 superseded observation" in capsys.readouterr().out
