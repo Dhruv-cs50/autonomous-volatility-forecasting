@@ -646,10 +646,27 @@ A leakage test nobody has watched fail is not evidence. Before the PR, the build
 A mutation that only test 4 catches means test 1 is too weak and must be strengthened. A
 mutation that only test 1 catches is acceptable but worth noting.
 
-Run a **second** mutation against test 2, since the two tests catch different defects and test
-2's is the easier one to write by accident: replace a trailing `.rolling(22).mean()` with a
-full-sample `.mean()`. Test 1 will not catch it — no individual row changed — and test 2 must.
-Record that output too. If test 2 misses it, the test is wrong, not the mutation.
+Run a **second** mutation of a different *kind*, not merely against a different test: replace a
+trailing window with a **full-sample statistic**, such as normalising by the mean of the whole
+series. Record that output too.
+
+An earlier draft of this paragraph predicted that test 1 would not catch it, "no individual row
+changed". **That reasoning is wrong and the measurement says so**: a full-sample statistic
+includes the perturbed future rows, so test 1 catches it along with tests 2 and 3.
+
+What makes this mutation worth running is the thing the draft missed. It contains **no forward
+syntax at all**, so the AST scan is structurally blind to it — confirmed: the scan's five cases
+all pass under it while six behavioural tests fail. The two mutations therefore demonstrate that
+the two layers are complementary rather than redundant:
+
+| Mutation | Behavioural tests | AST scan |
+|---|---|---|
+| forward offset (`shift(-1)`) | catch it | catches it |
+| full-sample statistic | catch it | **blind to it** |
+
+A suite with only the scan would miss every leak of the second kind, which is the commoner one
+in real research code. That is the argument for keeping both, and it is why the second mutation
+is required rather than optional.
 
 
 ## 12. Physical layout cost, and the performance budget

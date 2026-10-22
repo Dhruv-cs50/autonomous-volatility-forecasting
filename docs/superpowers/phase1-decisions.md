@@ -309,3 +309,71 @@ Two things this run found, neither of which changed the verdict:
 - The first attempt at the real run took 15m48s of wall-clock with 1.6s of CPU: that was `uv run`
   stalling on the iCloud-synced `.venv`, the known cold-start quirk, and it failed before reaching
   the build. The 72.8s above is a warm run.
+
+
+## Mutation evidence: the exit criterion, proven
+
+Both mutations were run against a **pristine `git archive` copy of `f4e4c92`** in a scratch
+directory, so the repository's own `src/` was never modified. Baseline there: 66 passed.
+Reverted and re-verified at 66 passed after each.
+
+### Mutation 1 — a forward offset (US-5.2)
+
+`src/volab/features/realized.py`, in `semivariance_proxy`:
+
+```python
+-    squared = returns**2
++    squared = returns.shift(-1) ** 2   # peek one session forward
+```
+
+`uv run --locked pytest tests/test_point_in_time.py -q` → **6 failed, 60 passed**:
+
+```
+FAILED test_perturbing_one_input_group_after_the_cutoff_leaves_the_table_byte_identical[returns_sign_and_scale]
+FAILED test_perturbing_one_input_group_after_the_cutoff_leaves_the_table_byte_identical[shuffled_closes]
+FAILED test_perturbing_one_input_group_after_the_cutoff_leaves_the_table_byte_identical[null_closes]
+FAILED test_perturbing_every_input_group_at_once_leaves_the_table_byte_identical
+FAILED test_the_panels_extent_does_not_change_the_table
+FAILED test_no_feature_module_looks_forward[realized.py]
+```
+
+with the scan naming the construct exactly:
+
+```
+AssertionError: realized.py: ['offsets with shift(-1)']; every window in this package is trailing
+```
+
+Acceptance required the behavioural test **and** the AST scan to fire. Both did.
+
+### Mutation 2 — a full-sample statistic (US-5.3)
+
+`src/volab/features/har.py`, replacing the per-window divisor with a whole-series one:
+
+```python
+-    return {name: rv_proxy(returns, window=window) / window for name, window in HAR_WINDOWS.items()}
++    full_sample = (returns**2).mean()
++    return {name: rv_proxy(returns, window=window) / full_sample for ...}
+```
+
+→ **6 failed, 60 passed**: the three perturbation variants, the combined perturbation, the
+panel-extent test, and the delete-and-append test.
+
+And the result that matters: **the AST scan does not catch it** — `-k looks_forward` gives
+`5 passed`. There is no forward syntax to find.
+
+### What the pair proves
+
+| Mutation | Behavioural tests | AST scan |
+|---|---|---|
+| forward offset | catch it | catches it |
+| full-sample statistic | catch it | **blind to it** |
+
+The two layers are complementary, not redundant. A suite with only the structural scan would
+miss every leak of the second kind — which is the commoner kind in real research code, because
+it looks like ordinary normalisation. A suite with only the behavioural tests would depend
+entirely on the perturbation being well chosen, and this phase has already shown twice that a
+badly chosen one lets a real peek through.
+
+This also corrected the spec a fourth time. §11 predicted test 1 would *not* catch mutation 2,
+"no individual row changed" — wrong, because a full-sample statistic includes the perturbed
+future rows. The prediction was never run before being written down.

@@ -158,8 +158,8 @@ must demonstrate firing, including the two that escaped earlier suites: a sign-d
 (`semivar_neg_proxy`) and a sign-blind one (`bipower_proxy`, which is `|r_t| · |r_{t-1}|`, so
 only a magnitude change catches it). **If any mutation survives, that is the finding, and the
 story reopens rather than being reported green.**
-| US-5.2 | Mutation 1: `semivar_neg_proxy_d5` → `.shift(-1)`; record verbatim failure | controller | 5.1 | tests 1 **and** 4 both fire | todo |
-| US-5.3 | Mutation 2: trailing `.rolling(22).mean()` → full-sample `.mean()` | controller | 5.1 | test 2 fires; test 1 does **not** | todo |
+| US-5.2 | Mutation 1: `semivar_neg_proxy_d5` → `.shift(-1)`; record verbatim failure | controller | 5.1 | tests 1 **and** 4 both fire | done — 6 failed, both fired |
+| US-5.3 | Mutation 2: full-sample statistic | controller | 5.1 | behavioural tests fire; **AST scan is blind** | done — 6 failed, scan passed 5 |
 
 US-5.2 and US-5.3 are deliberately separate stories: they prove different tests, and a mutation
 only one test catches means the other is too weak.
