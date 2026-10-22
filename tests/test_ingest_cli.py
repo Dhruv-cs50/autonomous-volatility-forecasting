@@ -277,9 +277,11 @@ def test_fetch_exits_zero_and_says_so_when_there_is_nothing_new(
     ("error", "label"),
     [
         (SchemaError("the payload is not what was expected"), "REFUSED SchemaError"),
+        (ValueError("body is not JSON"), "REFUSED ValueError"),
         (ConnectionError("vendor is down"), "FAILED ConnectionError"),
+        (RuntimeError("fetching the url failed after 3 attempts"), "FAILED RuntimeError"),
     ],
-    ids=["a-refused-payload", "a-vendor-outage"],
+    ids=["a-rejected-payload", "an-unparseable-payload", "a-vendor-outage", "exhausted-retries"],
 )
 @pytest.mark.parametrize(
     "broken",
@@ -552,6 +554,90 @@ def test_source_limits_build_raw_and_curate_to_that_source(
     assert _curated(synthetic_store, BARS_DATASET, "SPY") == []
 
 
+# -- a source that is curated elsewhere ---------------------------------------------------------
+
+DIVIDENDS_NOTE = (
+    "nasdaq_dividends: curated as part of nasdaq_bars, which reads it;"
+    " it has no curated dataset of its own"
+)
+
+
+def test_curating_dividends_says_where_it_is_curated_and_does_no_work(
+    synthetic_store: SyntheticStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Dividends have no curated dataset: ``curate_bars`` reads them to set ``has_distribution``.
+
+    The request is coherent, so it exits 0, but it must not do so in silence.
+    """
+    _seed_raw(synthetic_store, "nasdaq_bars", "nasdaq_dividends")
+    reads = _record_reads(monkeypatch)
+
+    assert cli.main(["curate", "--source", "nasdaq_dividends"]) == 0
+
+    assert _lines(capsys)[2:] == [DIVIDENDS_NOTE]
+    assert reads == [], "explaining must not read, let alone curate, anything"
+    assert not (Path(synthetic_store.root) / Tier.CURATED.value).exists()
+
+
+def test_a_full_curate_accounts_for_dividends_too(
+    synthetic_store: SyntheticStore, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Without ``--source`` the note appears alongside the real work, and bars still curate."""
+    _seed_raw(synthetic_store, "nasdaq_bars", "nasdaq_dividends")
+
+    assert cli.main(["curate"]) == 0
+
+    output = _lines(capsys)
+    assert output.count(DIVIDENDS_NOTE) == 1
+    assert "bars/SPY: 2 partitions" in output
+    assert _curated(synthetic_store, BARS_DATASET, "SPY") == DEV_BARS
+
+
+@pytest.mark.parametrize("source", SOURCES)
+def test_no_source_can_be_curated_in_silence(
+    source: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The class, not the instance: every valid ``--source`` says something when curated.
+
+    On an empty store the three curated sources each print a skip, so this does not depend on
+    any data. A source added to the plan with no curation rule would print nothing here.
+    """
+    assert cli.main(["curate", "--source", source]) == 0
+
+    assert _lines(capsys)[2:], f"curate --source {source} exited 0 and said nothing"
+
+
+def test_a_source_with_no_curation_rule_is_an_error_not_a_silent_no_op(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Forgetting to teach ``_curate`` about a new source must be loud."""
+    monkeypatch.setattr(cli, "_plan", lambda settings: [("mystery", ("X",))])
+
+    with pytest.raises(RuntimeError, match="mystery"):
+        cli.main(["curate"])
+
+
+def test_backfill_of_dividends_fetches_and_builds_raw_and_explains_the_curate_stage(
+    synthetic_store: SyntheticStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The source is valid to fetch and to build raw; only curate is 'elsewhere'."""
+    _install_real_fetch(monkeypatch, _routed_transport())
+    root = Path(synthetic_store.root)
+
+    assert cli.main(["backfill", "--source", "nasdaq_dividends"]) == 0
+
+    output = _lines(capsys)
+    for symbol in UNIVERSE:
+        assert any(line.startswith(f"nasdaq_dividends/{symbol}: archived") for line in output)
+    assert "nasdaq_dividends: 0 partitions" in output
+    assert DIVIDENDS_NOTE in output
+    assert not (root / Tier.CURATED.value).exists()
+
+
 # -- fetch against the real archive -------------------------------------------------------------
 
 
@@ -591,8 +677,68 @@ def test_fetch_refuses_fred_maintenance_page_and_archives_nothing(
 
     output = _lines(capsys)
     for symbol in FRED_FAMILY:
-        assert any(line.startswith(f"fred/{symbol}:") and "FAILED" in line for line in output)
+        refused = [line for line in output if line.startswith(f"fred/{symbol}:")]
+        assert len(refused) == 1
+        assert "REFUSED ValueError" in refused[0]
+        assert "FAILED" not in refused[0], "the response arrived; the fetch did not fail"
     assert not (Path(synthetic_store.root) / "vendor_payloads").exists()
+
+
+def test_fetch_tells_a_refused_response_from_a_fetch_that_did_not_complete(
+    synthetic_store: SyntheticStore,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Both states in one real run, through the real parse: the operator reads these lines.
+
+    FRED answers 200 with a page that is not a CSV (arrived, rejected: REFUSED). Cboe never
+    answers (the fetch did not complete: FAILED). Both fail the run; the lines must not swap.
+    """
+    refusing = _routed_transport(fred=MAINTENANCE_PAGE)
+
+    def transport(url: str) -> bytes:
+        if "cboe.com" in url:
+            raise RuntimeError(f"fetching {url} failed after 3 attempts: timed out")
+        return refusing(url)
+
+    _install_real_fetch(monkeypatch, transport)
+
+    assert cli.main(["fetch"]) == 1
+
+    output = _lines(capsys)
+    for symbol in FRED_FAMILY:
+        assert any(line.startswith(f"fred/{symbol}: REFUSED ValueError") for line in output)
+    for symbol in VIX_FAMILY:
+        assert any(line.startswith(f"cboe_vix/{symbol}: FAILED RuntimeError") for line in output)
+    assert len([line for line in output if "REFUSED" in line]) == len(FRED_FAMILY)
+    assert len([line for line in output if "FAILED" in line]) == len(VIX_FAMILY)
+    # The healthy sources are still fetched, and the refused one archived nothing.
+    assert any(line.startswith("nasdaq_bars/SPY: archived") for line in output)
+    assert not (Path(synthetic_store.root) / "vendor_payloads" / "fred").exists()
+
+
+def test_a_run_with_only_refusals_still_exits_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A refusal is not a lesser failure for the exit code: the run is incomplete either way."""
+    _install_real_fetch(monkeypatch, _routed_transport(fred=MAINTENANCE_PAGE))
+
+    assert cli.main(["fetch", "--source", "fred"]) == 1
+    assert not any("FAILED" in line for line in _lines(capsys))
+
+
+def test_the_help_explains_refused_failed_and_the_exit_code(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        cli.main(["--help"])
+
+    assert raised.value.code == 0
+    # argparse wraps to the terminal width, so compare on collapsed whitespace.
+    text = " ".join(capsys.readouterr().out.split())
+    assert "REFUSED means the response arrived and was rejected" in text
+    assert "FAILED means the fetch did not complete" in text
+    assert "Exit status 1 if any fetch was REFUSED or FAILED" in text
 
 
 # -- 5. no network ------------------------------------------------------------------------------

@@ -25,6 +25,19 @@ VIX_SERIES: tuple[str, ...] = ("VIX", "VIX9D", "VIX1D", "VVIX")
 FRED_SERIES: tuple[str, ...] = ("BAA10Y", "DGS10", "T10Y2Y")
 
 
+_EPILOG = (
+    "fetch reports each series as archived, nothing new, REFUSED or FAILED. "
+    "REFUSED means the response arrived and was rejected (it would not parse, or failed "
+    "validation): nothing was archived, retrying now will refuse again, so look at what the "
+    "vendor served. "
+    "FAILED means the fetch did not complete (timeout, connection error, non-200 status): "
+    "retrying later is reasonable. "
+    "Exit status 1 if any fetch was REFUSED or FAILED, because either way the run is "
+    "incomplete; 0 otherwise. build-raw and curate exit 0 when they complete, and a series "
+    "with no raw data yet is skipped rather than failed."
+)
+
+
 def _plan(settings: Settings) -> list[tuple[str, tuple[str, ...]]]:
     """Which symbols each source covers. Bars and dividends follow the configured universe."""
     return [
@@ -46,14 +59,30 @@ def _selected(settings: Settings, only: str | None) -> list[tuple[str, tuple[str
 
 
 def _fetch(settings: Settings, only: str | None) -> int:
+    """Fetch every selected series. Returns how many did not end in an archived or skipped state.
+
+    Two states are counted, and they are different things an operator acts on differently:
+
+    * **REFUSED** -- the response arrived and this code rejected it: an HTML maintenance page, a
+      body that will not parse, a payload that fails validation. ``fetch_source`` parses before
+      it archives, so nothing was written and the archive is intact. Retrying now refuses again;
+      the thing to do is look at what the vendor served.
+    * **FAILED** -- the fetch itself did not complete: a timeout, a connection error, a non-200
+      status (the transport raises once its retries are spent). Retrying later is reasonable.
+
+    Both count toward the return value, and so toward exit code 1: either way the run is
+    incomplete, and the operator needs to know. One series failing never stops the others.
+    """
     failures = 0
     for source, symbols in _selected(settings, only):
         for symbol in symbols:
             try:
                 path = fetch_source(source, symbol, settings=settings)
-            except VolabError as exc:
-                # A refused payload is reported and the run continues: one source being down
-                # must not stop the others, and nothing unparseable reaches the archive.
+            except (VolabError, ValueError) as exc:
+                # ValueError is how every parser says "this body is not what I expect"
+                # (JSONDecodeError, UnicodeDecodeError and pandas' parse errors are subclasses),
+                # and it is raised by the parse inside ``fetch_source``, never by the transport,
+                # which raises RuntimeError. So it means the response arrived and was rejected.
                 failures += 1
                 print(f"  {source}/{symbol}: REFUSED {type(exc).__name__}: {exc}")
                 continue
@@ -74,10 +103,17 @@ def _build_raw(settings: Settings, only: str | None) -> int:
     return total
 
 
+# Sources that are valid to fetch and to build raw but have no curated dataset of their own,
+# mapped to the source whose curation consumes them. Dividends are read by ``curate_bars`` to set
+# ``has_distribution``; curating them "alone" is not a thing, but it is not an error either.
+CURATED_WITH: dict[str, str] = {"nasdaq_dividends": "nasdaq_bars"}
+
+
 def _curate(settings: Settings, only: str | None) -> int:
     end = settings.splits.dev_end
     total = 0
     jobs: list[tuple[str, str, object]] = []
+    elsewhere: list[str] = []
     for source, symbols in _selected(settings, only):
         if source == "nasdaq_bars":
             jobs += [("bars", symbol, curate_bars) for symbol in symbols]
@@ -85,6 +121,15 @@ def _curate(settings: Settings, only: str | None) -> int:
             jobs += [("vix", symbol, curate_vix) for symbol in symbols]
         elif source == "fred":
             jobs += [("fred", symbol, curate_fred) for symbol in symbols]
+        elif source in CURATED_WITH:
+            elsewhere.append(
+                f"  {source}: curated as part of {CURATED_WITH[source]}, which reads it;"
+                " it has no curated dataset of its own"
+            )
+        else:
+            # A source with no rule would otherwise produce no jobs, print nothing and exit 0:
+            # a request that did no work, reported as success.
+            raise RuntimeError(f"no curation rule for source {source!r}; add one to _curate")
     for kind, symbol, function in jobs:
         try:
             written = function(symbol, end=end, settings=settings)  # type: ignore[operator]
@@ -93,11 +138,15 @@ def _curate(settings: Settings, only: str | None) -> int:
             continue
         total += written
         print(f"  {kind}/{symbol}: {written} partitions")
+    for line in elsewhere:
+        print(line)
     return total
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m volab.ingest", description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="python -m volab.ingest", description=__doc__, epilog=_EPILOG
+    )
     parser.add_argument(
         "command", choices=("fetch", "build-raw", "curate", "backfill"), help="what to run"
     )
