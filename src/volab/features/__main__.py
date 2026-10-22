@@ -100,9 +100,14 @@ def _latest_observation_per_session(frame: pd.DataFrame, dataset: str) -> pd.Dat
 
     Two observations can share an ``as_of`` because FRED's publication calendar and XNYS are
     different calendars. When the NYSE closes on a day FRED still publishes, the preceding
-    business day and that day both lag onto the same next session. Observed once in BAA10Y's
-    2,370 curated rows: 2025-01-09, the national day of mourning, when the exchange shut and the
-    bond market did not, so 2025-01-08 and 2025-01-09 both became knowable on Friday the 10th.
+    business day and that day both lag onto the same next session.
+
+    Measured over the full curated dev window, this happens **7 times across 3 dates**, not once:
+    Good Friday 2021-04-02 and 2023-04-07, and 2025-01-09, the national day of mourning. Each
+    collides for DGS10 and T10Y2Y; only the mourning day also collides for BAA10Y, because BAA10Y
+    is one of the series FRED leaves empty on Good Friday. So the recurring case is Good Friday
+    and the freak case is the one-off -- the reverse of how an earlier version of this comment
+    read, which cited only the mourning day and made the collapse look like near-dead code.
 
     Keeping the **latest** observation is the point-in-time reading: standing on Friday, the
     newest value known is Thursday's. The earlier one is not lost information so much as

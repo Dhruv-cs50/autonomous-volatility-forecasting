@@ -544,10 +544,13 @@ US-6.2 pass, seventy lines above the comment recording the measurement that disp
 
 **3. Two observations can become knowable on the same session.** FRED's publication calendar and
 XNYS are different calendars, so when the NYSE closes on a day FRED still publishes, the
-preceding business day and that day both lag onto the same next session. Observed once in
-`BAA10Y`'s 2,370 curated rows: 2025-01-09, the national day of mourning, when the exchange shut
-and the bond market did not, so 2025-01-08 and 2025-01-09 both became knowable on Friday the
-10th. `build_features` refuses a panel carrying two rows for one session, correctly, so the
+preceding business day and that day both lag onto the same next session. Measured over the full
+curated dev window this happens **7 times across 3 dates**: Good Friday 2021-04-02 and
+2023-04-07, and 2025-01-09, the national day of mourning. Each collides for `DGS10` and
+`T10Y2Y`; only the mourning day also collides for `BAA10Y`, because `BAA10Y` is one of the series
+FRED leaves empty on Good Friday. The recurring case is therefore Good Friday and the one-off is
+the freak — the reverse of the first record of this, which cited only 2025-01-09 and made the
+collapse read like near-dead code. It is 7 rows in 7,118. `build_features` refuses a panel carrying two rows for one session, correctly, so the
 collapse lives in `features/__main__.py` instead: keep the **latest**, because standing on Friday
 the newest value known is Thursday's, and the earlier one is superseded rather than lost. The
 engine's guard stays strict on purpose — curated data legitimately holds both observations, and
