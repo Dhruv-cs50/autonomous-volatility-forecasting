@@ -169,7 +169,7 @@ only one test catches means the other is too weak.
 | Story | Goal | Role | Depends on | State |
 |---|---|---|---|---|
 | US-6.1 | FRED backfill | controller | done `5ba4814` — 7,718 raw partitions; macro columns live |
-| US-6.2 | Finish the decisions log | controller | 5.x | todo |
+| US-6.2 | Finish the decisions log | controller | 5.x | done `8298a2e` — 7 records corrected, both mutations re-measured at 100 tests |
 | US-6.3 | Final whole-branch review, strongest model, merge base **`origin/main`** | code-reviewer | 6.2 | todo |
 | US-6.4 | Open the PR against main | controller | 6.3 | todo |
 
