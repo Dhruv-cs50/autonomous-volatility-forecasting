@@ -30,7 +30,8 @@ class DatasetNotFound(VolabError):
 
 
 class UnknownSymbol(VolabError):
-    """Raised when a requested symbol is absent from settings.universe.
+    """Raised when a requested symbol names neither a forecast target nor a market-wide input:
+    it is in neither ``settings.universe`` nor ``settings.exogenous``.
 
     The request was wrong; contrast DatasetNotFound, where the data is missing.
     """
@@ -68,7 +69,14 @@ class ParseRefused(VolabError):
     connection error, a non-200 status), which says nothing about the payload and is worth
     retrying later.
 
-    Also a ``ValueError``, because ``fetch_source`` raised a bare one for an unparseable body
-    before this type existed, and a caller catching that must keep working. The exception that
-    the parser actually raised is chained as ``__cause__``.
+    A ``VolabError`` and nothing else -- deliberately not also a ``ValueError`` (ruling R30).
+    The taxonomy's design property is that one ``except`` clause catches the whole data layer,
+    and a second base weakens it. The accidental-capture surface is real rather than
+    theoretical: ``src/volab/`` holds **eleven** ``except ValueError`` sites, among them the
+    date parsers in ``ingest/_frames.py`` and the numeric guard in ``ingest/fred.py``, so a
+    ``ParseRefused`` passing through any of them would be converted or swallowed. No live path
+    does today -- ``fetch_source`` raises above all of them -- but the hazard is one refactor
+    away. The cost, if that reasoning is wrong, is that an external caller written against
+    ``except ValueError`` stops catching this, which is the point. The exception that the
+    parser actually raised is chained as ``__cause__``.
     """
