@@ -414,3 +414,44 @@ Worth noting how this was found: not by review — the review filed it Minor, co
 evidence it had — but by mutating the fix to check it did what the commit message claimed. The
 phase's record on this is now four for four: every leakage gap was found by running something,
 and none by reading.
+
+## US-5.1 round 2: all three escapes closed, 16 mutations, none surviving
+
+Commits `167c18e` and `808a239`. The file grew 66 → 100 tests; the repository stands at 608.
+
+Each escape and what now catches it:
+
+| Escape | Caught by |
+|---|---|
+| A — exogenous join on the observation stamp | 8 failures, incl. `[iv_levels]` and `[fred_levels]` on both variants |
+| B — order-only peek ("was tomorrow's move bigger") | **exactly one** test, `[shrinking_returns-whole]` |
+| C — back-fill across a gap | 7, every one `[-holed]` |
+| D — the exogenous half of the holed panel, previously unmeasured | 5, every perturbation case `[-holed]` |
+
+Three things from this round worth keeping, because each is a general lesson rather than a fix:
+
+**All three escapes were fixture gaps, not missing assertions.** The suite's assertions were
+sound; it simply could not *express* the shapes a leak needed. That reframes where to look next:
+a reviewer should attack the panel builder, not the test bodies. Two shapes it still cannot
+express, named by the implementer: more than one subject symbol (so cross-sectional peeks are
+unreachable), and an exogenous lag that varies per release.
+
+**Composition is weaker than its parts.** The all-at-once perturbation does **not** catch escape
+B, because `null_closes` runs last and NaNs away the return structure the shrinking group relies
+on. A combined perturbation is not a superset of its components, and escape B is caught by a
+single parametrised case — remove that one group and it is live again.
+
+**The implementer found a hole in its own fix.** Its first version lagged the exogenous `ts` by a
+calendar day, which made escape A's detection depend on the cutoff being followed by a session —
+a Friday or holiday eve and there would be no row to misread, so it would have passed silently on
+a weekday accident. `ts` is now the previous *session's* midnight, a one-session gap whatever the
+weekday, matching what `fred.py` actually writes.
+
+Controller verification, independent of the report: `src/` clean, no commits of mine clobbered,
+and the 1e-9 forward leak the implementer explicitly declined to claim on — **7 of its 100 tests
+fire**, so the no-tolerance design holds at that magnitude.
+
+Standing caveat, now measured twice: **the AST scan is evadable by construction.** Escape B and
+the volume peek both spelled a forward look without `shift`, slice or `center`. It is a ratchet
+against a careless spelling, not a proof. The perturbations are the defence, which is why their
+coverage matters more than their strength.
