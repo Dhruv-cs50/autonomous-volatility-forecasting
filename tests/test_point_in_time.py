@@ -1,4 +1,29 @@
-"""The phase's exit criterion: a feature at ``t`` does not move when the future is rewritten.
+"""Phase 1's exit criterion: a feature at ``t`` does not move when the future is rewritten.
+
+**DEMOTED BY PHASE 2. This file is a per-commit ratchet, not the project's guarantee.** It is
+kept, in full, because it is cheap and it catches a careless regression early -- and it is no
+longer what the claim rests on. Two escapes survive its method as a *class*, both built and run:
+
+* **E1**, a band predicate on the next session's return, passes **100 of 100** tests here and
+  644 of 645 in the whole suite, verified by planting it in ``src/`` rather than by argument. At
+  the cutoff the fixture can only present ``|r_next|`` from a finite set, so a predicate
+  thresholded into a gap of that set is invariant under *every* perturbation image. Enumerating
+  more groups raises the attacker's cost without closing the class.
+* **E2**, a memoised full-sample statistic, fails **0 of 100**, because
+  ``test_the_panels_extent_does_not_change_the_table`` -- the only full-sample detector in this
+  file -- compares two tables built in one process.
+
+The guarantee now lives in ``tests/test_truncation_equivalence.py`` (build at ``t`` from the full
+panel, build again from a panel that physically stops at ``t``, compare: the definition of
+point-in-time correctness rather than a proxy for it) and ``tests/test_process_isolation.py``
+(each side of that comparison in its own interpreter, so no cross-call state can span them).
+
+**The AST scan in this file is never to be cited as a defence.** Four evasions are measured:
+escape B, the volume peek, a back-fill spelled invisibly, and E1.
+
+Everything below is the original file, unchanged in substance. Read it as the ratchet it is.
+
+----
 
 This file is the project's founding premise made executable. A published agent framework had an
 LLM reviewer approve a feature built from future intraday bars, and a deliberately leaky strategy
@@ -69,7 +94,6 @@ from pathlib import Path
 import exchange_calendars as xcals
 import pandas as pd
 import pytest
-from byte_identity import assert_byte_identical, canonical_bytes
 from forward_scan import (
     _forward_looks,
 )
@@ -91,6 +115,7 @@ from volab.features.targets import (
     targets_dataset,
     write_targets,
 )
+from volab.identity import assert_byte_identical, canonical_bytes
 from volab.paths import Tier
 from volab.sessions import is_session, nth_session_after, sessions_between
 from volab.store import load_panel
@@ -350,9 +375,10 @@ def _grown(inputs: Inputs, extra: Sequence[dt.date]) -> Inputs:
 # so nothing here has a tolerance.
 
 
-# Both live in ``tests/byte_identity.py`` now: Phase 2's truncation-equivalence tests compare
-# tables too, and a comparator written twice is a comparator free to be weaker in one place.
-# The red cases below, which prove this one can fail, stay here.
+# Both live in ``volab.identity`` now: Phase 2's truncation-equivalence tests compare tables
+# too, and the walk-forward reports an exhaustive comparison as part of a run, so the
+# comparator is library code. A comparator written twice is one free to be weaker in one
+# place. The red cases below, which prove this one can fail, stay here.
 _canonical_bytes = canonical_bytes
 _assert_byte_identical = assert_byte_identical
 

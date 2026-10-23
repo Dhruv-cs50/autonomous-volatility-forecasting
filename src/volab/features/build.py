@@ -9,12 +9,30 @@ The tempting alternative -- have the engine read the store itself at ``end=t`` a
 point-in-time filter guarantee honesty -- would make the phase's exit criterion vacuous. The
 store drops every row with ``as_of > end`` before any feature code runs, so a feature that
 peeked forward would produce identical output whether or not future rows existed on disk, and
-the perturbation test could never fail. It is also the realistic leak: Phase 2's walk-forward
-loads the dev panel **once**, legitimately, and then refits and evaluates at many earlier
-cutoffs. Every row it holds is one the store was right to hand over, so the store cannot help;
-the only thing between that panel and a leak is whether the feature functions look forward.
+the perturbation test could never fail. Phase 2 confirmed that the hard way: an early repair to
+the span below cut it back to ``through``, and all three of the forward peeks planted in
+``tests/test_truncation_equivalence.py`` went silent at once, because the engine no longer held a
+future to read. So this half stands.
+
 Holding rows it must not use is therefore not a lapse in posture -- it is the condition under
 which this function's honesty means anything. Nothing here reads the store; the CLI does.
+
+**What does not stand is the sentence that used to follow: "so the store cannot help".
+Retracted.** It said that because Phase 2's walk-forward loads the dev panel once, legitimately,
+and then evaluates at many earlier cutoffs, every row it holds is one the store was right to hand
+over -- and concluded that nothing but the feature functions' honesty stands between that panel
+and a leak. The premise is true and the conclusion is false. The store can be asked *again*:
+``volab.panel.truncate`` produces the panel the store would have handed over at ``t``, and
+comparing a build from that against a build from the full panel is point-in-time correctness by
+definition rather than by proxy.
+
+The two are not in tension, which is what the retracted sentence missed. The engine still takes
+a panel that may extend past ``through``, so a forward peek stays expressible and detectable;
+the truncated panel is supplied by the *test*, as the second term of a comparison, not by
+narrowing what the engine is allowed to see. Conceding structural refusal in the one place the
+realistic leak lives is what left the whole weight on perturbation, whose ceiling is now
+measured: see ``tests/test_truncation_equivalence.py``, ``tests/test_process_isolation.py`` and
+``docs/superpowers/phase2-decisions.md``.
 
 Three things this module owns, which the pure functions in ``realized`` and ``har`` cannot:
 

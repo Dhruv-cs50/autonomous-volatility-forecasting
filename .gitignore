@@ -12,6 +12,12 @@ __pycache__/
 # absent while no holdout read has happened, and tracked from the moment one does.
 !data/holdout_access.jsonl
 
+# The trial ledger, for the same reason: a harness that reports a winner without saying how
+# many candidates it considered is the thing this project refuses, and a count `git clean
+# -xdf` erases cannot be the number the write-up reports. Append-only, one line per
+# evaluated configuration, keyed by the git sha of the tree that produced it.
+!data/trials.jsonl
+
 # The vendor payload archive is committed deliberately, so the repository can rebuild its own
 # dataset from a clean checkout: Nasdaq serves only a trailing 10-year window, and anything that
 # falls off it cannot be refetched. Narrow on purpose -- the curated, features and targets tiers

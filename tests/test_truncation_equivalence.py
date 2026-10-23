@@ -51,13 +51,13 @@ from dataclasses import dataclass
 
 import pandas as pd
 import pytest
-from byte_identity import first_difference
 from forward_scan import _forward_looks
 
 import volab.features.build as build_module
 from volab.config import Settings, load_settings
 from volab.errors import DatasetNotFound
 from volab.features.build import build_features
+from volab.identity import first_difference
 from volab.panel import as_of_dates, load_curated_panel, truncate
 from volab.sessions import get_calendar, session_close_utc, sessions_between
 

@@ -120,7 +120,7 @@ def test_the_isolated_build_agrees_with_an_in_process_one_on_clean_code(
     pass by comparing two wrong answers to each other.
     """
     cutoff = _cutoffs(synthetic)[0]
-    from byte_identity import canonical_bytes
+    from volab.identity import canonical_bytes
 
     table = build_module.build_features(
         truncate(synthetic.panel, cutoff), through=cutoff, calendar=get_calendar(load_settings())
@@ -159,7 +159,7 @@ def test_a_memoised_full_sample_statistic_escapes_an_in_process_comparison(
     deliberate: the subprocess test below is only worth its cost while this one holds, and a
     guarantee whose justification has quietly evaporated is the thing this project refuses.
     """
-    from byte_identity import first_difference
+    from volab.identity import first_difference
 
     calendar = get_calendar(load_settings())
     cutoff = _cutoffs(synthetic)[0]

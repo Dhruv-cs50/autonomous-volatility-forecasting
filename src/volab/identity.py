@@ -1,9 +1,16 @@
-"""Byte-exact table comparison, shared by every point-in-time test in this suite.
+"""Byte-exact table comparison: the one place this project decides whether two tables differ.
 
-Not a test module. It lives here rather than in ``test_point_in_time.py`` because Phase 2's
-truncation-equivalence tests compare tables too, and a second comparator written beside them
-would be free to be weaker -- which is the whole failure mode this project exists to refuse. One
-comparator, one set of red cases proving it can fail, in ``test_point_in_time.py``.
+**One comparator, library-grade, and deliberately so.** It began in ``test_point_in_time.py``,
+moved into the test package when Phase 2's truncation-equivalence tests needed it too, and lives
+in ``src/`` now because the walk-forward *reports* an exhaustive truncation-equivalence result as
+part of a run -- and a production report reaching into ``tests/`` for its comparison is both a
+mypy error and a design error. The alternative, a second reduction written beside each caller,
+is worse than either: a comparator written twice is free to be weaker in one place, which is the
+exact failure mode this project exists to refuse.
+
+Its red cases -- the tests proving it can actually fail, on a one-bit float difference, on two
+instants an hour apart inside a DST fall-back, on a dtype that moved under identical values --
+stay in ``tests/test_point_in_time.py``.
 
 Approximate comparison is what lets a leak the size of a rounding error through, so nothing here
 has a tolerance.
@@ -31,16 +38,19 @@ def canonical_bytes(series: pd.Series) -> bytes:
     columns -- ``symbol`` and ``as_of`` -- through ``repr``, which for strings and dates is exact
     and also catches a date silently becoming a ``Timestamp``.
     """
+    # ``bytes(...)`` around every buffer: pandas-stubs types ``tobytes()`` as ``Any``, and under
+    # ``mypy --strict`` returning it would be an unchecked widening in the one function the whole
+    # project's notion of "different" rests on. The call is a no-op on a bytes object.
     if isinstance(series.dtype, pd.DatetimeTZDtype):
         # ``tz_convert``, never ``tz_localize``: the latter yields *wall-clock* time, so two
         # instants an hour apart inside a DST fall-back hour would compare byte-equal under an
         # identical dtype. ``build_features`` only requires ``ts`` to be timezone-aware, not UTC.
-        return series.dt.tz_convert(None).to_numpy().tobytes()
+        return bytes(series.dt.tz_convert(None).to_numpy().tobytes())
     if series.dtype == "boolean":
         values = series.to_numpy(dtype=bool, na_value=False)
-        return values.tobytes() + series.isna().to_numpy().tobytes()
+        return bytes(values.tobytes()) + bytes(series.isna().to_numpy().tobytes())
     if series.dtype == "float64":
-        return series.to_numpy().tobytes()
+        return bytes(series.to_numpy().tobytes())
     return repr(list(series)).encode()
 
 

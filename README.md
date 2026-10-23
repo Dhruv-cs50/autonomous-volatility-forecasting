@@ -29,8 +29,8 @@ demand.
 | Phase | Scope | State |
 |---|---|---|
 | 0 — Skeleton | Parquet layout, config, `load_panel()` and the holdout guard | merged |
-| **1 — Data and targets** | Ingestion, realized measures, forward targets, point-in-time evidence | **in review** |
-| 2 — Baseline shootout | GARCH family, HAR, recalibrated HAR, walk-forward, DM + MCS | not started |
+| 1 — Data and targets | Ingestion, realized measures, forward targets, point-in-time evidence | merged |
+| **2 — Walk-forward** | Truncation equivalence, process isolation, walk-forward, HAR baseline, trial ledger | **in progress** |
 | 3–6 | Implied-vol contestant, scheduler, agent layer, write-up | not started |
 
 ## What Phase 1 contains
@@ -84,46 +84,67 @@ never score them. **Only reads are sealed.**
 
 ## The point-in-time evidence
 
-The phase's exit criterion is that features at `t` do not move when data after `t` changes. A
-leakage suite nobody has watched fail is not evidence, so two defects were planted and run, with
-the output recorded in `docs/superpowers/phase1-decisions.md`. Two mutants caught is evidence
-that the layers fire, not a proof that nothing gets past them — what does get past them is
-below:
+The claim is that the feature table at `t` is the table that would have been built had nothing
+after `t` happened yet. It is tested by **truncation equivalence**: build at cutoff `t` from the
+full panel, build again from a panel that *physically stops* at `t`, compare byte-exactly. That
+is not a proxy for point-in-time correctness; it is the definition of it. A trailing feature
+cannot tell the two panels apart. A forward peek can.
 
-| Planted defect | Behavioural tests | AST scan |
-|---|---|---|
-| forward offset (`shift(-1)`) | catch it | catches it |
-| full-sample statistic | catch it | **blind to it** |
+`tests/test_truncation_equivalence.py` sweeps that over a synthetic panel exhaustively and over
+the real curated panel at a sample of cutoffs including awkward calendar positions — a half-day,
+a holiday eve, the session before a long gap, the last session before `dev_end` — each derived
+from the exchange calendar and asserted to be what it claims.
 
-Two layers, because neither suffices alone. The scan reads syntax, so it cannot see a leak that
-looks like ordinary normalisation; the behavioural tests depend on the perturbation being well
-chosen. During this phase a badly chosen perturbation let a real forward peek through **five
-separate times**, and every one was found by running something rather than by reading it.
+Cross-call state is a separate class, and truncation equivalence cannot see it in one process: a
+memoised full-sample statistic filled on the full-panel build is reused by the truncated build,
+so the two agree by sharing an answer. `tests/test_process_isolation.py` closes it by running
+each side in a fresh interpreter, and carries the discriminating pair — the same plant escapes
+in-process and is caught across processes.
 
-### What it does not catch
+### Why the old method was demoted, measured rather than argued
 
-Two classes are measured and remain open, so the claim is deliberately narrow: **the suite
-catches the spellings the AST scan enumerates — a `shift`/`diff` offset that is not a
-non-negative integer literal, a `bfill`/`backfill`/`interpolate`, a `method=` other than
-`ffill`/`pad`/`None`, a non-false `center=`, any slice — plus every leak the perturbation images can
-distinguish, and nothing stronger.** A forward peek spelled outside that list is not
-hypothetical: the first class below is one, written in source, and it passes 607 of 608 tests.
+Phase 1's exit criterion perturbed the future and asserted the table was byte-identical. Two
+escapes survive that method **as a class**, and both were built and run rather than imagined:
 
-- **A predicate constant across the perturbation images.** At the cutoff the fixture presents
-  `|r_next|` from a finite set, so a band threshold placed in a gap of that set — a credible
-  crash-eve signal — is invariant under every perturbation. Measured at **607 of 608 tests
-  passing**. More perturbation groups raise the attacker's cost without closing the class; dense
-  or property-based magnitudes would.
-- **Cross-call state.** A memoised full-sample statistic defeats the only full-sample detector,
-  because both tables it compares are built in one process. Measured at **0 of 100 failures**.
-  A subprocess-level check would see it.
+| Planted defect | Phase 1 point-in-time suite | Whole Phase 1 suite | Truncation equivalence | Process isolation |
+|---|---|---|---|---|
+| E1 — band predicate on the next return | **100 of 100 pass** | **644 of 645 pass** | **catches it** | — |
+| E2 — memoised full-sample statistic | **0 of 100 fail** | passes | cannot see it | **catches it** |
 
-Both are Phase 2 work. They are named here rather than in a footnote because a leakage suite
-whose limits are not stated invites exactly the trust this project exists to withhold.
+E1 was planted in `src/` and the suites were run; the one test that notices is a hand-written
+value test whose returns happen to land in the band, which is incidental rather than a defence.
+E1 escapes perturbation because at the cutoff a fixture can only present `|r_next|` from a finite
+set, so a predicate thresholded into a gap of that set is invariant under *every* perturbation
+image — more perturbation groups raise the attacker's cost without closing the class. Truncation
+has no image to be constant across: the row is gone.
 
-The AST scan is a ratchet against a careless spelling, never a defence: four evasions of it have
-been measured, and an order-only peek — "was tomorrow's move bigger than today's?" — needs no
-`shift`, slice or `center` at all.
+**The perturbation suite and the AST scan are kept, and demoted.** They are cheap per-commit
+ratchets against a careless spelling or an obvious regression, and they are not the guarantee.
+The scan in particular is **never to be cited as a defence**: four evasions of it have been
+measured — an order-only peek ("was tomorrow's move bigger than today's?"), a volume peek, a
+back-fill spelled invisibly, and E1 — and none of them needs a `shift`, a slice or a `center`.
+
+### What truncation equivalence does not catch
+
+Stated because a leakage suite whose limits are not stated invites exactly the trust this project
+exists to withhold.
+
+- **A sampled sweep is not a proof.** A forward peek is visible at cutoff `t` only if it changes
+  a row at or before `t`. E1 changes one row, so it is visible iff `t`'s next return lands in its
+  band: **52 of 2,312 real sessions, 2.2%**. A 40-cutoff sample expects 0.9 hits. The sampled
+  tier is therefore a ratchet with a stated power, not a proof; exhaustive coverage comes from
+  the walk-forward, which rebuilds the table at every forecast origin from a panel truncated at
+  that origin, and from `VOLAB_PIT_EXHAUSTIVE=1` on the sweep itself.
+- **It is blind where the leak's own input is already missing.** If `r[t+1]` is null — the next
+  session is a gap — the peek reads null from the full panel too and agrees with the truncated
+  one. That is a blind spot of the leak rather than of the method: there is no difference to
+  find. Derived and asserted, not assumed.
+- **A cross-sectional peek is unreachable rather than tested.** `build_features` refuses a panel
+  holding more than one non-exogenous symbol, so the shape cannot be expressed; if that guard
+  were relaxed, nothing here would notice.
+- **Refusal is not equivalence.** The engine still rejects a malformed row dated after the
+  cutoff, where a truncated panel would simply not have it. That is fail-closed — it declines to
+  build rather than carrying a value across — but the two panels do differ in that one behaviour.
 
 ## Getting started
 

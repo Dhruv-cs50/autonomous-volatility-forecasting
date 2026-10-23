@@ -33,10 +33,10 @@ for entry in (str(ROOT / "src"), str(HERE)):
         sys.path.insert(0, entry)
 
 import pandas as pd  # noqa: E402
-from byte_identity import canonical_bytes  # noqa: E402
 
 import volab.features.build as build_module  # noqa: E402
 from volab.config import load_settings  # noqa: E402
+from volab.identity import canonical_bytes  # noqa: E402
 from volab.panel import truncate  # noqa: E402
 from volab.sessions import get_calendar  # noqa: E402
 

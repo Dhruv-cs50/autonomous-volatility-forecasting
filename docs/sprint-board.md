@@ -7,6 +7,9 @@ fix round; a sprint closes before the next opens.
 Tracked in git deliberately — the SDD ledger holding the same state lives in a gitignored
 workspace, and a plan `git clean` erases is not a plan.
 
+**Phase 2's board is `phase2-sprint-board.md`.** One board per phase: this file is Phase 1's
+closed record and is not appended to.
+
 ## Sprint 1 — Data contract · CLOSED
 
 | Story | Goal | Role | State |
