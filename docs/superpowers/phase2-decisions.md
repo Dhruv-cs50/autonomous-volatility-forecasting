@@ -643,6 +643,52 @@ to its origin by definition and is bounded by `dev_end` through `scoreable_origi
 
 ---
 
+## The recorded walk-forward run
+
+`python -m volab.walkforward run --from 2021-01-04 --every 5`, on commit `02eb0e5` with a clean
+tree, 400.4s. Three symbols x four horizons x three models x two losses = **72 trials, 72 ledger
+lines**, every one carrying a sha that resolves to a tree containing the code, `git_dirty: false`,
+and the stride it used.
+
+```
+git 02eb0e5bc419, clean
+SPY h1:
+  251 origin(s) from 2021-01-04 to 2025-12-24
+  251 build(s) and 251 training set(s), every one stopping at its own origin
+  truncation equivalence: 251 of 251 origins identical
+  har_levels   qlike -8.19649 over 250 origin(s), 1 dropped
+  har_semilog  qlike -8.03456 over 250 origin(s), 1 dropped
+  random_walk  qlike +514.083 over 250 origin(s), 1 dropped
+  har_levels   mse   +3.88884e-07 over 251 origin(s), 0 dropped
+  har_semilog  mse   +4.2958e-07 over 251 origin(s), 0 dropped
+  random_walk  mse   +4.45313e-07 over 251 origin(s), 0 dropped
+...
+trials: 72 appended, ledger now 72 line(s), was 0
+models counted: 3, losses: ['mse', 'qlike']
+ran in 400.4s
+```
+
+**Truncation equivalence held at every origin of every configuration** — 251 of 251, 250 of 250,
+247 of 247, 238 of 238, for each of SPY, QQQ and IWM. That is exhaustive over the origins this
+run visited, which is a stride of 5 across 2021-2025 and **not** the dev window; the dev-window
+result is the separate exhaustive sweep.
+
+**Fixing the specification changed the ranking, which is the point of having fixed it.** Before
+the retransformation correction, the review observed that SPY h1 MSE was `har_log` 4.59e-07
+against `random_walk` 4.45e-07 — the HAR model losing to a single squared return. After it,
+`har_levels` is 3.89e-07 against the random walk's 4.45e-07, and it beats `har_semilog` too. A
+model that was 4x miscalibrated had been reported as the winner on QLIKE while losing to the
+benchmark on MSE, and the correction moved both. **This is the clearest argument in the phase for
+why calibration belongs in the harness rather than in a modelling footnote.**
+
+One honest caution about QLIKE here: it is reported as `log(f) + r/f` with no additive constant,
+so its *level* is meaningless — the daily variance proxies are order 1e-5 to 1e-8 and their log
+dominates. Only differences between models on the same configuration mean anything, and the
+random walk's large positive values come from origins where its forecast is far too small, which
+QLIKE punishes hard. Nothing is inferred here from a single number's sign or size.
+
+---
+
 ## Structural decisions
 
 - **R64** `volab.identity` holds the **one** byte-exact comparator, in `src/` rather than in the
