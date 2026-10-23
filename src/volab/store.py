@@ -143,11 +143,21 @@ def _caller_frame() -> tuple[str, int]:
     return "unknown", 0
 
 
-def _git_state() -> tuple[str, bool | None]:
+def _git_state(scope: Path | None = None) -> tuple[str, bool | None]:
     """The commit the read happened at and whether the tree was dirty.
 
     Falls back to ``("unknown", None)``: an audit line that cannot name the commit still beats
     no audit line.
+
+    ``scope`` is the directory the dirtiness question is asked about, defaulting to the package
+    itself -- which is the right scope for this module's audit stamp, where the question is
+    whether the *read path* was modified. It is the wrong scope for a provenance claim about a
+    whole run: a reviewer measured that with the default, an edit to ``config/base.yaml`` (which
+    carries ``splits.dev_end`` and the universe) or to ``tests/`` reads as clean, so a line
+    claiming to identify the code that ran would not. ``volab.walkforward`` passes the repository
+    root for that reason. The parameter exists rather than a second ``git`` call because the two
+    fixes below -- the lock flag and the pathspec -- cost this project an hour and a measurement
+    respectively, and a copy is a place to forget them.
     """
 
     def run(*args: str) -> str | None:
@@ -163,7 +173,7 @@ def _git_state() -> tuple[str, bool | None]:
                 # iCloud-synced directory. That lock cost this project roughly an hour before the
                 # flag was traced as the cause. The flag makes the call read-only.
                 ["git", "--no-optional-locks", *args],
-                cwd=_PACKAGE_DIR,
+                cwd=_PACKAGE_DIR if scope is None else scope,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -192,6 +202,26 @@ def _git_state() -> tuple[str, bool | None]:
         ":(exclude)data/features",
     )
     return sha, None if status is None else bool(status)
+
+
+def git_state(scope: Path | None = None) -> tuple[str, bool | None]:
+    """The commit the caller ran at, and whether the tree was dirty. Public, deliberately.
+
+    ``_git_state`` is this module's own name for it and stays private because the audit stamp
+    uses it with the package scope. This wrapper exists because the import ratchet in
+    ``tests/test_import_discipline.py`` forbids any module outside ``store.py`` from importing a
+    **private** name from here -- on the grounds that a private store helper reads Parquet with
+    none of ``load_panel``'s guard. That rule is right and is not being weakened: the ratchet
+    caught ``volab.walkforward`` importing ``_git_state`` and failed, which is the ratchet
+    working.
+
+    The resolution is a sanctioned public accessor rather than an exemption, because this
+    particular helper touches **no Parquet at all** -- it runs ``git`` -- so the reasoning behind
+    the ban does not reach it. It stays here rather than moving to a module of its own so that
+    the two fixes it carries, ``--no-optional-locks`` and the pathspec, remain in one place
+    beside the tests that pin them.
+    """
+    return _git_state(scope)
 
 
 def _append_audit(

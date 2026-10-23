@@ -29,10 +29,12 @@ disagreement" against a live forward peek about a third of the time. Three conse
 deliberate:
 
 1. The real-data tier here is a **sampled ratchet** whose power is stated, not a proof.
-2. Exhaustive coverage of the real panel is produced by the walk-forward itself, which rebuilds
-   the table at every forecast origin from a panel truncated at that origin; comparing those rows
-   against the persisted full-panel table sweeps every session at no extra cost. See
-   ``tests/test_walkforward.py``.
+2. The dev-window proof is this file's own exhaustive mode, ``VOLAB_PIT_EXHAUSTIVE=1``: 2,245
+   cutoffs, **0 disagreements clean and 52 with E1 planted**, 6m00s, which is why it is not
+   per-commit. The walk-forward adds exhaustive coverage **of its own origins** -- not of the dev
+   window -- by rebuilding at every origin it evaluates from a panel truncated there. An earlier
+   version of this note said the walk-forward swept every session; that is true at ``--every 1``
+   and false of the recorded run, which used a stride of 5.
 3. The synthetic tier is swept **exhaustively**, and its fixture deliberately carries moves
    inside E1's band. That is fixture design, not tuning the test to the plant: Phase 1's repeated
    lesson is that a leakage test can only see a leak the panel makes *expressible*, and the band
@@ -65,8 +67,11 @@ from volab.sessions import get_calendar, session_close_utc, sessions_between
 # nothing but nulls and proves nothing.
 LONGEST_WINDOW = 66
 
-# How many strided cutoffs the real-data tier sweeps. Chosen for wall-clock: a full-vs-truncated
-# pair on the real panel measures ~0.07s, so 60 pairs is ~4s on top of a 27s suite.
+# How many strided cutoffs the real-data tier sweeps. Chosen for wall-clock, and the cost is
+# stated rather than implied: a full-vs-truncated pair on the real panel measures ~0.07s, and the
+# real-data tests in this file are the bulk of the suite's growth: 644 tests in 36.8s before
+# Phase 2, 706 in 69.0s after, both measured on an idle machine. That is the honest price of a
+# per-commit ratchet that touches real data, and it is why the exhaustive mode is opt-in.
 SAMPLED_CUTOFFS = 60
 
 # Opt-in exhaustive real-data sweep. ``VOLAB_`` prefixed in the manner of ``VOLAB_HOLDOUT_UNLOCK``

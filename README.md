@@ -30,7 +30,7 @@ demand.
 |---|---|---|
 | 0 — Skeleton | Parquet layout, config, `load_panel()` and the holdout guard | merged |
 | 1 — Data and targets | Ingestion, realized measures, forward targets, point-in-time evidence | merged |
-| **2 — Walk-forward** | Truncation equivalence, process isolation, walk-forward, HAR baseline, trial ledger | **in progress** |
+| **2 — Walk-forward** | Truncation equivalence, process isolation, walk-forward, HAR baseline, trial ledger | **in review** |
 | 3–6 | Implied-vol contestant, scheduler, agent layer, write-up | not started |
 
 ## What Phase 1 contains
@@ -93,7 +93,8 @@ cannot tell the two panels apart. A forward peek can.
 `tests/test_truncation_equivalence.py` sweeps that over a synthetic panel exhaustively and over
 the real curated panel at a sample of cutoffs including awkward calendar positions — a half-day,
 a holiday eve, the session before a long gap, the last session before `dev_end` — each derived
-from the exchange calendar and asserted to be what it claims.
+from the exchange calendar and asserted to be what it claims. `VOLAB_PIT_EXHAUSTIVE=1` runs the
+real sweep over every cutoff instead: **0 of 2,245 disagree**, in 6m00s.
 
 Cross-call state is a separate class, and truncation equivalence cannot see it in one process: a
 memoised full-sample statistic filled on the full-panel build is reused by the truncated build,
@@ -132,9 +133,11 @@ exists to withhold.
 - **A sampled sweep is not a proof.** A forward peek is visible at cutoff `t` only if it changes
   a row at or before `t`. E1 changes one row, so it is visible iff `t`'s next return lands in its
   band: **52 of 2,312 real sessions, 2.2%**. A 40-cutoff sample expects 0.9 hits. The sampled
-  tier is therefore a ratchet with a stated power, not a proof; exhaustive coverage comes from
-  the walk-forward, which rebuilds the table at every forecast origin from a panel truncated at
-  that origin, and from `VOLAB_PIT_EXHAUSTIVE=1` on the sweep itself.
+  tier is therefore a ratchet with a stated power, not a proof. The dev-window proof is
+  `VOLAB_PIT_EXHAUSTIVE=1` on the sweep itself — 2,245 cutoffs, 6m00s, and not per-commit. The
+  walk-forward adds exhaustive coverage **of its own origins**, which are not the dev window: it
+  rebuilds the table at every origin it evaluates from a panel truncated there, and the recorded
+  run used a stride of 5, so 251 of 1,255 sessions in its window.
 - **It is blind where the leak's own input is already missing.** If `r[t+1]` is null — the next
   session is a gap — the peek reads null from the full panel too and agrees with the truncated
   one. That is a blind spot of the leak rather than of the method: there is no difference to

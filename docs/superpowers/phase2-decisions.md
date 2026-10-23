@@ -83,10 +83,21 @@ hit rate: 0.0082
 have reported "no disagreement" against a live forward peek about a third of the time. The
 prototype's 3-of-38 came from a synthetic panel carrying a deliberate +5% move every 17 sessions.
 
-- **R35** Sampling is kept as the cheap per-commit tier **with its power stated**, and exhaustive
-  coverage comes from the walk-forward, which rebuilds the table at every forecast origin from a
-  panel truncated at that origin — so comparing its rows against the persisted full-panel table
-  sweeps every session at no extra cost. Hand-feeding the sampler the 52 band dates was
+- **R35** Sampling is kept as the cheap per-commit tier **with its power stated**. Two further
+  tiers carry the coverage, and the distinction between them matters because an earlier version
+  of this ruling blurred it and a delivery audit called that out:
+
+  * **The dev-window proof is the recorded exhaustive sweep**, `VOLAB_PIT_EXHAUSTIVE=1`: 2,245
+    cutoffs, 0 disagreements clean and 52 with E1 planted, 6m00s. That is the only evidence
+    covering the whole dev window, and it is not per-commit.
+  * **The walk-forward is exhaustive over its own origins, which are not the dev window.** It
+    rebuilds the table at every origin it evaluates from a panel truncated there, so comparing
+    its rows against the persisted table checks every origin *it visited* — 251 of 1,255
+    sessions in the recorded run, which used a stride of 5, and 251 of the 2,312 dev sessions.
+    Saying it "sweeps every session" was the adjacent-truth shape of C1: true of the code at
+    `--every 1`, false of any run anyone had made.
+
+  Hand-feeding the sampler the 52 band dates was
   considered and **rejected**: that is tuning the test to the plant it is meant to catch blind,
   and a test tuned to one plant is evidence about that plant and nothing else. *Cost if wrong:* a
   per-commit run can miss a narrow peek that the walk-forward then catches, one commit later
@@ -97,6 +108,8 @@ prototype's 3-of-38 came from a synthetic panel carrying a deliberate +5% move e
   session before a long gap, the last session before `dev_end`, the first with a full history —
   are read from the exchange calendar and each asserted to be what its key claims, so a
   hand-listed date that stopped being a half-day fails rather than silently becoming ordinary.
+  Witnesses: `test_the_awkward_cutoffs_are_what_they_claim_to_be`,
+  `test_every_real_cutoff_removes_at_least_one_row`.
   *Cost if wrong:* less coverage variety than a random sample would give across runs.
 
 ### M3 — E2 can hide outside the feature package, so the AST ban cannot close its class
@@ -129,7 +142,17 @@ at all**.
   the "cost at realistic scale" unknown the pivot note left open: the real panel loads in
   **6.6s**; one `build_features` over all 2,312 sessions is **0.07s**; a full-vs-truncated pair is
   **~0.07s**; a 37-cutoff sweep is **2.70s**; the exhaustive 2,245-cutoff sweep is **6m00s**.
-  Compute is not the constraint.
+  Compute is not the constraint for the sweep itself.
+
+  **What it did cost is the suite**, and this number has now been wrong twice, so it is the
+  measured one: **644 tests in 36.8s before Phase 2, 706 in 69.0s after**, both on an idle
+  machine. Not quite double. The real-data tiers are nearly all of the increase — the
+  persisted-table byte comparison, the walk-forward's per-origin comparison and the sampled real
+  sweep, at roughly 13-20s each. The first version of this ruling quoted the pre-Phase-2 figures
+  and a delivery audit caught them as stale; the second said "about 120s", which was a contended
+  measurement taken while two subagents were running. A per-commit ratchet that reads real data
+  is not cheap, and the alternative — not running it per commit — is how a regression reaches a
+  later phase.
 
 ---
 
@@ -260,7 +283,9 @@ selloff, which is the sort of session the band was chosen to look credible on.
   rather than tolerated. If `r[t+1]` is null — the next session is a gap — the peek reads null
   from the full panel too and agrees with the truncated one, so there is no difference to find:
   a blind spot of the leak, not of the method. Measured at 2 of 79 on the synthetic fixture,
-  either side of its deliberate gap.
+  either side of its deliberate gap. Witness: `blind_cutoffs` and
+  `test_the_sweep_catches_a_scan_silent_forward_peek`, which asserts the caught set is
+  exactly the informative cutoffs minus the blind ones.
 
   **One wrong rule along the way, worth recording because it is a pandas trap.** The first
   version of `blind_cutoffs` also treated `r[t]` being null as blind. It is not:
@@ -296,6 +321,9 @@ interpreters does.
 - **R44** The child process is passed `-W error` explicitly. `pyproject.toml`'s
   `filterwarnings = ["error"]` is pytest's, and pytest does not run in the child, so without the
   flag a warning there would pass silently where the same warning in the suite is a failure.
+  Witness: `_build_in_a_child` passes it, and
+  `test_the_isolated_build_agrees_with_an_in_process_one_on_clean_code` fails if the child
+  computes anything other than the suite's own table.
 - **R45** The child **never calls `load_panel`**. `conftest`'s autouse `_forbid_holdout_unlock`
   does not exist in that process, so a read there would be unpoliced. The parent reads under the
   policing and hands the panel over as a pickle in `tmp_path`. Pickle rather than Parquet so
@@ -304,7 +332,9 @@ interpreters does.
 - **R46** The child hashes its columns with **the comparator's own canonicaliser**
   (`volab.identity.canonical_bytes`), not a reduction written for the pipe. A digest that could
   disagree with `assert_byte_identical` about one pair of tables would be a near-miss of exactly
-  the kind this phase keeps finding.
+  the kind this phase keeps finding. Witness:
+  `test_the_isolated_build_agrees_with_an_in_process_one_on_clean_code`, which compares the
+  child's digest against one taken in-process with the same canonicaliser.
 
 ---
 
@@ -317,7 +347,9 @@ interpreters does.
   cited as a defence**: four evasions are measured — an order-only peek, a volume peek, a
   back-fill spelled invisibly, and E1 — and none needs a `shift`, a slice or a `center`.
   *Cost if wrong:* two layers to maintain for a modest marginal catch. Deleting them would lose
-  the cheap early signal, and they cost about 17s of a 2-minute suite.
+  the cheap early signal, and `tests/test_point_in_time.py` costs about 4s of the suite's 69s —
+  re-measured, because the earlier figure here was written before Phase 2's own tests landed and
+  was stale the moment they did.
 - **R48** Spec section 9's *"the store cannot help"* is **retracted**, in place, with the
   reasoning and with what the surrounding paragraph still gets right — the same retraction is in
   `volab/features/build.py`'s module docstring, which carried the sentence too. The store can
@@ -381,32 +413,233 @@ interpreters does.
   from `pyproject.toml`, so importing it is forbidden here as everywhere else (Phase 1's R4).
   Partial pivoting is not decoration — the HAR regressors are squared daily returns of order
   1e-8 — and `test_solve_needs_partial_pivoting_to_be_accurate` carries the red case.
-- **R58** The singularity threshold is **relative**, scaled by the largest magnitude in the
-  system, not absolute. An absolute `1e-14` was a latent refusal of perfectly good windows: HAR
-  cross-products are order 1e-16, so a Gram entry can sit below any fixed epsilon while the
-  system is well conditioned. Found by a test before it could reject a real fit.
-- **R59** **Every trial is counted**, in `data/trials.jsonl`: append-only, one line per evaluated
-  configuration — model × symbol × horizon × loss — each keyed by the git sha of the tree that
-  produced it. Tracked in git by an explicit `.gitignore` exception, as `data/holdout_access.jsonl`
-  is, because a count that `git clean -xdf` erases cannot be the number a write-up reports.
-  `test_a_run_of_n_configurations_appends_exactly_n_ledger_lines` and
-  `test_the_ledger_appends_and_never_rewrites` make "every trial is counted" a fact about the code.
-- **R60** **The ledger's first four lines are a smoke test, and they stay.** A 13-origin toy
-  window over 2024 Q1, written while the CLI was being shaken out. Deleting them was considered
-  and rejected: the ledger exists to count everything, each line is self-describing through its
-  `first_origin`/`last_origin`, and pruning the exploratory runs is precisely the selective
-  reporting the project refuses. *Cost if wrong:* a reader must notice the origin range before
-  comparing two lines, which the fields make possible.
+- **R58** The singularity threshold is relative **per column**, and it took two attempts.
+  An absolute `1e-14` was a latent refusal of perfectly good windows: HAR cross-products are
+  order 1e-16, so a Gram entry can sit below any fixed epsilon while the system is well
+  conditioned. The second attempt scaled by the largest magnitude *anywhere in the system* —
+  **and that was still effectively absolute**, because the largest entry is always the intercept
+  cell, the observation count, while the pivots that matter are orders of magnitude smaller. A
+  review measured the consequence: with HAR-like regressors the fit was refused as singular at
+  every daily volatility at or below 0.2%, against roughly 0.5–0.6% on real calm equity data —
+  a 10x margin in variance, which any low-vol series or change of units crosses. Scaling per
+  column is the scale-free version. Witness:
+  `test_solve_needs_partial_pivoting_to_be_accurate` and
+  `test_solve_refuses_a_singular_system_rather_than_inventing_an_answer`.
+  *Cost if wrong:* a collinear column whose scale is tiny could slip through as non-singular,
+  where the answer is then dominated by rounding. The previous version's failure was the
+  opposite and worse: refusing honest windows silently, as a `skipped` entry.
+- **R59** **Every trial is counted**, in `data/trials.jsonl`: append-only, one line per
+  evaluated configuration — model x symbol x horizon x loss — each carrying the git sha **and a
+  dirty flag**, the origin stride, how many origins were requested, and how many were skipped.
+  Tracked in git by an explicit `.gitignore` exception, as `data/holdout_access.jsonl` is,
+  because a count that `git clean -xdf` erases cannot be the number a write-up reports.
+  Witnesses: `test_a_run_of_n_configurations_appends_exactly_n_ledger_lines`,
+  `test_the_ledger_appends_and_never_rewrites`,
+  `test_every_ledger_line_names_the_tree_that_produced_it`,
+  `test_a_trial_says_what_it_covers_not_only_what_it_managed`,
+  `test_a_nan_value_is_written_as_null_not_as_bare_nan`, and end to end through the CLI,
+  `test_a_run_writes_one_ledger_line_per_configuration_it_evaluated`.
+- **R60 (rewritten; the first version was wrong).** The ledger's four smoke-test lines were
+  originally **kept**, on the stated grounds that each line is self-describing through its
+  `first_origin`/`last_origin`. A delivery audit checked that premise and it is **false**: those
+  lines named sha `21dc15b`, and `git cat-file -e 21dc15b:src/volab/walkforward/__init__.py`
+  fails — the tree they point at does not contain the code that produced them, because the
+  walk-forward was still untracked when they were written. A line that points at the wrong tree
+  is worse than no line: it invites a reader to reconstruct a run from a commit that cannot
+  produce it.
+
+  So the ledger was **emptied before its first commit** and refilled by one run on a committed
+  tree. That is not pruning an inconvenient result — the file had never been committed, no
+  append-only promise was broken, and the four lines were a 13-origin shake-out of the CLI
+  rather than a measurement anyone would report. *Cost if wrong:* the exploratory run is no
+  longer on the record. Recorded here instead, which is the honest form of it.
+- **R70** **The sha and the dirty flag are captured at the start of a run, and the flag asks
+  about the whole repository.** Two defects, both found by review rather than by a test:
+
+  1. `git_sha()` read HEAD when the *ledger was written*, which is minutes after the numbers were
+     produced. The first headline run proved it concretely rather than theoretically: it began at
+     one commit, the working tree was committed while it ran, and its lines therefore named a
+     tree it had never executed. Written 93 seconds after that commit's timestamp.
+  2. There was no dirty flag at all, and the obvious one was blind. `store._git_state` runs git
+     with `cwd` set to the package, so an edit to `config/base.yaml` — which carries
+     `splits.dev_end`, the universe and the storage root — or to `tests/` read as **clean**.
+     Measured from both directories. A provenance line that cannot see the configuration is not
+     provenance.
+
+  `store._git_state` now takes the scope to ask about, defaulting to the package for its own
+  audit stamp, and the walk-forward passes the repository root. *Cost if wrong:* a dirty run is
+  still not reproducible — the flag records that it is not, rather than making it so. A diff hash
+  would close that and is not implemented.
+- **R71** The walk-forward reaches `git_state` through a **public** accessor,
+  `volab.store.git_state`. The import ratchet forbids any module outside `store.py` from
+  importing a private name from it, and **it caught this exact line** and failed the suite when
+  the delegation first reached for `_git_state`. That is the ratchet working, so the resolution is
+  a sanctioned public accessor rather than an exemption: the helper runs `git` and touches no
+  Parquet, so the reasoning behind the ban does not reach it. `ALLOWED` stays `{"store.py"}`.
 - **R61** `git_sha` passes `--no-optional-locks`, always. Phase 1 lost about an hour to
   `index.lock` files its own audit stamp was creating by omitting it on a 24,218-partition tree.
   Asserted on the argv, as Phase 1's own fix is, because reproducing the contention needs a
-  concurrent committer.
+  concurrent committer. Witness: `test_the_git_state_call_never_takes_an_optional_lock`,
+  which asserts the argv of every `git` call the delegation makes.
 - **R62** The CLI has **no `--end` and no unlock flag**, and `--to` past `dev_end` is refused
   loudly rather than clamped silently — a silent clamp would let a caller believe they had
-  evaluated a window they had not. Phase 6 remains the only confirmatory read.
-- **R63** A `PanelAudit` violation makes the run **exit non-zero**, not warn. A panel reaching
+  evaluated a window they had not. Phase 6 remains the only confirmatory read. Witnesses, which
+  did not exist until a delivery audit found that **no test imported the CLI at all**:
+  `test_there_is_no_end_argument_and_no_unlock_flag`,
+  `test_a_to_date_past_dev_end_is_refused_rather_than_clamped`, and
+  `test_holdout_start_is_past_dev_end_so_the_refusal_covers_the_real_boundary`.
+- **R63** A `RunAudit` violation makes the run **exit non-zero**, not warn. A call reaching
   past its own cutoff is the one defect the module exists to prevent, and reporting it as a
-  warning would be the posture this project refuses.
+  warning would be the posture this project refuses, and the trials already counted are
+  flushed before it returns, so a refusal cannot erase numbers that were printed.
+  Witnesses: `test_an_audit_violation_makes_the_run_exit_non_zero` and
+  `test_the_refusal_path_still_flushes_the_trials_already_counted`.
+
+---
+
+## The eighth escape, and what an independent review found
+
+Phase 1's record was that every finding came from running something. Phase 2's additions to that
+record came from two things Phase 2 did not do for itself: an independent code review of the
+walk-forward and a delivery audit of the board against git. **Both found real defects that this
+phase's own tests passed.**
+
+### R72 — a `ts`-based target slice passed all 25 walk-forward tests
+
+The eighth time in this project a leakage test let a real forward peek through.
+
+`test_training_targets_are_knowable_at_the_origin` **re-implemented both slices inside the test
+and compared them to each other**, instead of exercising `evaluate`. So it passed whatever
+`evaluate` did. Verified by planting the wrong slice in source:
+
+```
+PLANTED in source: knowable_targets now slices on ts
+.........................                        [100%]
+25 passed in 17.50s
+```
+
+All 25, the three real-data tests included. At h=1 that slice admits the origin's own base
+session, whose target completes one session *after* the origin — the whole quantity being
+forecast.
+
+**What the leak buys, which is the part worth keeping.** Measured on real SPY data over
+identical windows, clean against planted:
+
+| | clean | planted | change |
+|---|---|---|---|
+| h=1 QLIKE | -4.71022 | -4.90416 | 0.19, about 4% |
+| h=66 QLIKE | -3.82735 | -3.84474 | 0.017, about 0.5% |
+| h=66 MSE | 6.73004e-05 | 6.63023e-05 | 1.5% |
+
+**A real forward peek that moves the reported loss by 0.2% to 1.5%.** That is far below the
+noise any reviewer would question and far below what a statistical test would flag, and it is
+the project's founding premise arriving as a measurement in its own harness: this is exactly why
+refusal has to be structural. A leak worth 1% is invisible to anything that looks at the number.
+
+**Closed by making the property observable rather than inferred.** `knowable_targets` is now a
+named module-level function so a test can replace it, and `RunAudit` records the maximum
+training-target `as_of` per origin. Planting the slice in source now fails:
+
+```
+AssertionError: 13 origin(s) trained on a target that had not completed yet,
+first (datetime.date(2024, 4, 12), datetime.date(2024, 4, 15))
+```
+
+Witnesses: `test_training_targets_are_knowable_at_the_origin` (now through `evaluate`),
+`test_the_audit_catches_a_target_slice_that_reads_the_wrong_column`, and
+`test_the_panel_and_target_audits_are_independent` — which records *why* the existing audit could
+never have caught it: the leak was in the targets, and the panel audit does not see them.
+
+*Cost if wrong:* one more named function and a second audit list.
+
+### R73 — the forecast was the geometric mean wearing the arithmetic mean's name
+
+The model was called `har_log` and was a **semi-log** specification: a logged response on level
+regressors, exponentiated. `exp(fitted log y)` estimates the geometric mean of `y`, and the
+quantity being forecast is the arithmetic mean. Measured on the real SPY panel:
+
+```
+h1   har_log      n= 101 mean realized 7.5138e-05 mean forecast 1.9002e-05  ratio 0.2529
+h1   random_walk  n= 101 mean realized 7.5138e-05 mean forecast 1.3452e-04  ratio 1.7903
+h22  har_log      n=  96 mean realized 2.3063e-03 mean forecast 1.5610e-03  ratio 0.6768
+h22  random_walk  n=  96 mean realized 2.3063e-03 mean forecast 3.0969e-03  ratio 1.3428
+```
+
+**A factor of four low at h=1.** Not a leak, but a validity problem for any ranking built on it,
+and nothing in this phase's tests looked at calibration at all.
+
+Three changes, and the third is the one that matters most:
+
+1. **Duan's smearing estimator** — the mean of `exp(residual)` — corrects the retransformation.
+   Nonparametric, so it assumes nothing about residuals that are not Gaussian in logs, and it is
+   a named estimator rather than a factor chosen to make the numbers look calibrated. That
+   distinction is the one R54 drew when it refused a forecast floor.
+2. **Renamed `har_semilog`**, because that is what it is. Corsi's log-HAR logs the components
+   too. Logging them here was considered and rejected: `har_d_proxy` is a squared daily return
+   and is legitimately **zero** on a session whose close did not move, so `log` of it needs
+   either a dropped row (selection on a regressor) or an added epsilon (a free parameter).
+3. **`har_levels` is now run** — Corsi's HAR, the baseline the literature actually means.
+   R54 originally declined to run it because it can forecast a non-positive variance where QLIKE
+   is undefined, and dodged that by running only the log variant. **That was the wrong trade**:
+   not running the standard baseline is a worse sin than reporting that it sometimes forecasts a
+   non-positive number, and the machinery to handle it already existed —
+   `Evaluation.comparable` drops such an origin for every model on that loss and reports how
+   many. So R54 is amended: the levels variant is run, with no floor.
+
+Witness: `test_the_smearing_factor_corrects_the_retransformation_bias`.
+*Cost if wrong:* three models and two losses is 6 trials per symbol-horizon, 72 for the full
+run, and the semi-log specification still fits a log scale while the loss is on the variance
+scale. Both are on the ledger rather than in a footnote.
+
+### R74 — trials are appended per configuration, not once at the end
+
+`append_trials` ran after the whole loop. A run that printed SPY's results and then tripped the
+refusal branch on QQQ, raised, or was interrupted reached **no ledger at all** — a number seen
+but not counted, which is precisely the forking-paths hole the ledger exists to close. Trials are
+now appended as each configuration finishes, the refusal path flushes before returning, and a
+configuration that produced no forecast still yields trials with `origins=0` rather than an empty
+list. Witnesses: `test_the_refusal_path_still_flushes_the_trials_already_counted`,
+`test_a_configuration_that_forecast_nothing_is_still_counted`.
+
+### R75 — a trial now says what it covers, not only what it managed
+
+`origins` alone cannot distinguish a trial covering 250 of 251 requested origins from one
+covering 250 of 1,250: the number is identical. Every line now carries `requested`, `skipped` and
+the origin **stride**, because a trial over every fifth session is not the same experiment as one
+over every session and the ledger has to be able to say which it was. A NaN value is written as
+`null`, since `json.dumps` emits a bare `NaN` that no strict parser reads back. Witnesses:
+`test_a_trial_says_what_it_covers_not_only_what_it_managed`,
+`test_a_nan_value_is_written_as_null_not_as_bare_nan`.
+
+### R76 — the dead second loop is deleted, not kept
+
+`features_at_origins` was a second per-origin loop that nothing called, and it **diverged** from
+`evaluate`'s: it raised on an empty truncation where `evaluate` skips. Two loops with different
+behaviour, one of them never exercised, is a place for the tested one and the believed one to
+come apart. Deleted rather than wired up.
+
+### R77 — training values come from the truncated frame, not from a dict over the whole one
+
+`evaluate` built one dict of target values over the *entire* target frame and used it for both
+training and scoring. Under the store's dedupe on `(symbol, ts)` that is equivalent to reading
+from the truncated frame, so it was not a live defect — but it made correctness depend on the
+dedupe rather than on the slice. Training values now come from `knowable_targets`' own output;
+only the realized value used for *scoring* is read from the whole frame, which is future relative
+to its origin by definition and is bounded by `dev_end` through `scoreable_origins`.
+
+### What the review found that is recorded and not fixed
+
+- **`QLIKE`'s overflow clamp.** `(realized - forecast) ** 2` can raise `OverflowError` for a
+  forecast near the 1e304 clamp, which contradicts the comment claiming the loss "should see" a
+  diverged fit as a large number. Left as a raise: an overflow on a diverged fit is loud, and the
+  alternative is a cap that is another free parameter.
+- **The skip message overstates usable rows.** It reports the count before `dropna`, so "only N
+  knowable rows" is an upper bound. Cosmetic, in a message, and recorded rather than silently
+  adjusted.
+- **`evaluate` does not reject duplicate or unsorted origins.** Nothing reachable passes them —
+  `origins_in` and `scoreable_origins` both produce sorted unique dates — but it is unguarded.
+- **A dirty run records no diff hash**, so a dirty line says it is not reproducible rather than
+  making it so.
 
 ---
 
@@ -436,7 +669,9 @@ interpreters does.
 - **R68** `VOLAB_PIT_EXHAUSTIVE` is `VOLAB_`-prefixed in the manner of `VOLAB_HOLDOUT_UNLOCK` — a
   key, not a setting — so `conftest`'s `_clean_volab_environment`, which clears only the names in
   `_ENV_OVERRIDES`, leaves it alone. *Cost if wrong:* a reader may mistake it for configuration;
-  the comment at its definition says it is not.
+  the comment at its definition says it is not. Witness: `conftest`'s
+  `_clean_volab_environment` clears only `_ENV_OVERRIDES`, which
+  `tests/test_conftest_policy.py` pins.
 
 ---
 
@@ -451,7 +686,9 @@ Neither is Phase 2's doing, and both were met while byte-comparing a fresh build
 - **R69** Both are normalised at the two comparison sites rather than by loosening the
   comparator, and the boolean cast runs the **narrow** way — `bool` up to `boolean` — so the null
   mask is still compared and a null appearing in a fresh build is still a difference rather than
-  being normalised away. *Cost if wrong:* two casts to keep in step with the store's write path.
+  being normalised away. Witnesses: `test_the_span_fix_did_not_move_the_persisted_feature_table`
+  and `test_the_per_origin_rows_are_byte_identical_to_the_persisted_table`, the two sites that
+  do the casting. *Cost if wrong:* two casts to keep in step with the store's write path.
 
 ---
 

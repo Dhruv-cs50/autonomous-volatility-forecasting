@@ -9,11 +9,18 @@ configuration.
 Phase 6 is the only confirmatory read of the holdout, with both keys and an audit line; an
 argument here accepting a later date would quietly make this the thing that opened it.
 
-**It also prints the exhaustive truncation-equivalence result**, because it gets it for free. Each
-feature row it builds comes from a panel stopping at that row's own session, and the persisted
-``har_daily`` table was built once from the whole panel, so comparing them byte-exactly sweeps
-*every* origin in the window. The sampled sweep in ``tests/test_truncation_equivalence.py`` is a
-ratchet with a stated power -- E1 is visible at 2.2% of real cutoffs -- and this is the proof.
+**It also prints a truncation-equivalence result**, because it gets it for free: each feature row
+it builds comes from a panel stopping at that row's own session, and the persisted ``har_daily``
+table was built once from the whole panel, so comparing them byte-exactly checks every origin
+**the run visited**.
+
+That last phrase is load-bearing and an earlier version of this docstring got it wrong. "Every
+origin in the window" is true only at ``--every 1``; with a stride of 5 the run checks every
+fifth session and says nothing about the rest, and the recorded run used 5. The dev-window-wide
+result is ``VOLAB_PIT_EXHAUSTIVE=1`` on ``tests/test_truncation_equivalence.py``, which is where
+the 0-of-2,245 number comes from. Claiming the broader coverage here would be the same
+adjacent-truth shape as Phase 1's C1: the sentence would be true of the code and false of every
+run anyone had made.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ import datetime as dt
 import sys
 import time
 from collections.abc import Sequence
+from pathlib import Path
 
 import pandas as pd
 
@@ -37,17 +45,24 @@ from volab.store import load_panel
 from volab.walkforward import (
     LOSSES,
     MODELS,
-    PanelAudit,
+    Evaluation,
+    RunAudit,
     Trial,
     append_trials,
     count_trials,
     evaluate,
-    git_sha,
+    git_state,
     load_for,
     scoreable_origins,
 )
 
 FEATURE_SET = "har_daily"
+
+# The repository root, which is the scope the dirty flag must ask about: the default scope of
+# ``store._git_state`` is the package, and a measurement showed that an edit to
+# ``config/base.yaml`` -- which carries ``splits.dev_end`` and the universe -- then reads as
+# clean. A provenance line that cannot see the configuration is not provenance.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _persisted(settings: Settings, symbol: str) -> pd.DataFrame | None:
@@ -95,8 +110,35 @@ def _compare_against_persisted(
     return len(built), first_difference(left, right)
 
 
+def _flush(trials: Sequence[Trial], settings: Settings, sha: str, dirty: bool | None) -> None:
+    """Last-resort append on the refusal path, so a refusal cannot erase counted trials."""
+    if trials:
+        append_trials(
+            trials,
+            root=settings.storage_root.parent,
+            at=dt.datetime.now(dt.UTC),
+            sha=sha,
+            dirty=dirty,
+        )
+
+
 def _run(settings: Settings, arguments: argparse.Namespace) -> int:
     started = time.perf_counter()
+    # Captured now, before a single number is produced. Reading it when the ledger is
+    # written would name the tree as it is at the end of a run that may take minutes, and
+    # the first headline run proved that is not pedantry: it began at one commit and the
+    # working tree was committed while it ran, so its lines named a tree it had never
+    # executed. The dirty flag goes on every line for the same reason -- a sha against a
+    # modified tree does not identify the code that ran.
+    sha, dirty = git_state(_REPO_ROOT)
+    if dirty:
+        print(f"git {sha[:12]} with a DIRTY tree: these trials are not reproducible from it")
+    elif dirty is None:
+        # ``None`` is "git could not be reached", which is not "clean". Printing clean here was a
+        # false reassurance on the console while the ledger line correctly recorded null.
+        print(f"git {sha}: the tree's state is UNKNOWN, so these trials cannot be located")
+    else:
+        print(f"git {sha[:12]}, clean")
     calendar = get_calendar(settings)
     sessions = sessions_between(calendar, arguments.start, arguments.stop)
     if not sessions:
@@ -104,7 +146,11 @@ def _run(settings: Settings, arguments: argparse.Namespace) -> int:
         return 1
 
     before = count_trials(settings.storage_root.parent)
+    # Stamped at the start, with the sha, so every line of one run shares one timestamp and that
+    # timestamp is when the numbers were produced rather than when they were written.
+    started_at = dt.datetime.now(dt.UTC)
     everything: list[Trial] = []
+    written = 0
     failures = 0
 
     for symbol in arguments.symbols:
@@ -115,11 +161,29 @@ def _run(settings: Settings, arguments: argparse.Namespace) -> int:
                 settings, targets, first=sessions[0], last=sessions[-1], every=arguments.every
             )
             if not origins:
+                # Counted, not skipped. A configuration that was run and produced nothing is
+                # exactly the result selective reporting omits.
                 print("  no origin in the window has a target completed at or before dev_end")
+                empty = Evaluation(
+                    symbol=symbol,
+                    horizon=horizon,
+                    results=(),
+                    features=pd.DataFrame(),
+                    skipped=(),
+                    requested=0,
+                    every=arguments.every,
+                )
+                written += append_trials(
+                    empty.trials(),
+                    root=settings.storage_root.parent,
+                    at=started_at,
+                    sha=sha,
+                    dirty=dirty,
+                )
                 continue
             print(f"  {len(origins)} origin(s) from {origins[0]} to {origins[-1]}")
 
-            audit = PanelAudit()
+            audit = RunAudit()
             evaluation = evaluate(
                 panel,
                 targets,
@@ -128,22 +192,35 @@ def _run(settings: Settings, arguments: argparse.Namespace) -> int:
                 horizon=horizon,
                 calendar=calendar,
                 minimum_training=arguments.minimum_training,
+                every=arguments.every,
                 audit=audit,
             )
             violations = audit.violations()
             if violations:
-                # Fail loudly. A panel reaching past its own cutoff is the one defect this whole
-                # module exists to prevent, and reporting it as a warning would be the posture
-                # this project refuses.
-                print(f"  REFUSED: {len(violations)} build(s) were handed rows past their cutoff")
-                print(f"           first: through={violations[0][0]} max as_of={violations[0][1]}")
+                # Fail loudly. Reading past a cutoff is the one defect this whole module exists to
+                # prevent, and reporting it as a warning would be the posture this project
+                # refuses. Trials already produced are flushed first, below, so a refusal cannot
+                # erase numbers that were printed.
+                kind, at, last = violations[0]
+                print(f"  REFUSED: {len(violations)} call(s) read past their cutoff")
+                print(f"           first: {kind} at={at} max as_of={last}")
+                _flush(everything, settings, sha, dirty)
                 return 2
-            print(f"  {len(audit.calls)} build(s), every one stopping at its own origin")
+            print(
+                f"  {len(audit.calls)} build(s) and {len(audit.training)} training set(s), "
+                "every one stopping at its own origin"
+            )
 
             compared, difference = _compare_against_persisted(
                 evaluation.features, _persisted(settings, symbol)
             )
-            if difference is None:
+            if compared == 0:
+                # Nothing to compare is not agreement. Printing "0 of 0 identical" and exiting 0
+                # would be a check that passes by checking nothing, which is this project's
+                # named anti-goal; it happens whenever the store holds no persisted table, so it
+                # is a reachable state and not a defensive branch.
+                print("  truncation equivalence: NOT COMPARED, the store holds no built table")
+            elif difference is None:
                 print(f"  truncation equivalence: {compared} of {compared} origins identical")
             else:
                 failures += 1
@@ -158,16 +235,21 @@ def _run(settings: Settings, arguments: argparse.Namespace) -> int:
             for trial in trials:
                 print(
                     f"  {trial.model:12s} {trial.loss:5s} {trial.value:+.6g} "
-                    f"over {trial.origins} origin(s)"
+                    f"over {trial.origins} origin(s), {trial.dropped} dropped"
                 )
+            # Appended **now**, per configuration, not once at the end. A run that printed
+            # SPY's results and then tripped the refusal branch on QQQ, raised, or was
+            # interrupted used to reach no ledger at all -- a number seen but not counted, which
+            # is the forking-paths hole this ledger exists to close.
+            written += append_trials(
+                trials,
+                root=settings.storage_root.parent,
+                at=started_at,
+                sha=sha,
+                dirty=dirty,
+            )
             everything.extend(trials)
 
-    written = append_trials(
-        everything,
-        root=settings.storage_root.parent,
-        at=dt.datetime.now(dt.UTC),
-        sha=git_sha(),
-    )
     after = count_trials(settings.storage_root.parent)
     print(f"trials: {written} appended, ledger now {after} line(s), was {before}")
     print(f"models counted: {len(MODELS)}, losses: {sorted(LOSSES)}")

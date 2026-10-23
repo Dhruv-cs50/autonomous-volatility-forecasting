@@ -45,7 +45,6 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
-import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -91,16 +90,32 @@ def solve(matrix: list[list[float]], vector: list[float]) -> list[float]:
         raise ValueError(f"matrix must be {size}x{size}")
     rows = [[*row, value] for row, value in zip(matrix, vector, strict=True)]
 
-    # The singularity threshold is **relative**, scaled by the largest magnitude anywhere in the
-    # system. An absolute one would be a latent refusal of perfectly good windows here: the HAR
-    # regressors are squared daily returns, order 1e-8, so their cross-products are order 1e-16
-    # and a Gram entry can sit below any fixed epsilon while the system is perfectly well
-    # conditioned. Found by a test, before it could reject a real fit.
-    scale = max((abs(value) for row in rows for value in row), default=0.0)
-    tolerance = 1e-12 * scale if scale > 0 else 1e-300
+    # The singularity threshold is relative **per column**, and getting that right took two
+    # attempts.
+    #
+    # It began absolute, at 1e-14, which was a latent refusal of perfectly good windows: the HAR
+    # regressors are squared daily returns of order 1e-8, so their cross-products are order 1e-16
+    # and a Gram entry can sit below any fixed epsilon on a well-conditioned system.
+    #
+    # The second attempt scaled it by the largest magnitude anywhere in the system. That is
+    # **still effectively absolute** for the regressor block, because the largest entry is always
+    # the intercept cell -- the observation count, 250 to 2,500 -- while the pivots that matter
+    # are orders of magnitude smaller. A reviewer measured the consequence: with HAR-like
+    # regressors from Gaussian returns the fit was refused as singular at every daily volatility
+    # of 0.2% and below, against roughly 0.5-0.6% on real calm equity data. A 10x margin in
+    # variance, and any low-vol series or change of units crosses it.
+    #
+    # Scaling per column is the scale-free version: a pivot is compared against the largest
+    # magnitude in **its own** column, so the test asks "has this column collapsed relative to
+    # itself", which is the question, and no column's units can drown another's.
+    column_scales = [
+        max((abs(rows[index][column]) for index in range(size)), default=0.0)
+        for column in range(size)
+    ]
 
     for column in range(size):
         pivot = max(range(column, size), key=lambda index: abs(rows[index][column]))
+        tolerance = 1e-12 * column_scales[column] if column_scales[column] > 0 else 1e-300
         if abs(rows[pivot][column]) <= tolerance:
             raise SchemaError(
                 "cannot fit: the normal equations are singular at column "
@@ -125,12 +140,27 @@ def solve(matrix: list[list[float]], vector: list[float]) -> list[float]:
 
 @dataclass(frozen=True)
 class Fit:
-    """A fitted linear model: an intercept, one coefficient per regressor, and the fit's size."""
+    """A fitted linear model: an intercept, one coefficient per regressor, and the fit's size.
+
+    ``smearing`` is Duan's nonparametric retransformation factor, the mean of ``exp(residual)``,
+    and it is ``None`` for a fit whose response was not logged. It exists because
+    ``exp(fitted log y)`` estimates the *geometric* mean of ``y`` and the thing being forecast is
+    the arithmetic mean. Measured on the real SPY panel before the correction existed: mean
+    forecast over mean realized was **0.2529 at h=1** and 0.6768 at h=22 -- a factor of four low,
+    which is a validity problem for any ranking built on it, and it was found by a review rather
+    than by any test here.
+
+    Duan's estimator rather than the lognormal ``exp(s^2 / 2)``: it assumes nothing about the
+    residual distribution, and squared-return residuals are not Gaussian in logs. It is also a
+    named estimator rather than a factor chosen to make the numbers look calibrated, which is the
+    distinction R54 drew when it refused a forecast floor.
+    """
 
     intercept: float
     coefficients: tuple[float, ...]
     regressors: tuple[str, ...]
     observations: int
+    smearing: float | None = None
 
     def predict(self, row: pd.Series) -> float:
         """The model's prediction for one feature row, or NaN if a regressor is null there."""
@@ -167,11 +197,19 @@ def fit_ols(frame: pd.DataFrame, regressors: Sequence[str], response: str) -> Fi
         sum(row[a] * value for row, value in zip(design, target, strict=True)) for a in range(width)
     ]
     solved = solve(gram, moment)
+    residuals = [
+        value - sum(coefficient * cell for coefficient, cell in zip(solved, row, strict=True))
+        for row, value in zip(design, target, strict=True)
+    ]
+    # Guarded against overflow so a diverged fit cannot make the correction itself inf. 700 is
+    # near the float64 ceiling for ``exp``.
+    smearing = sum(math.exp(min(residual, 700.0)) for residual in residuals) / len(residuals)
     return Fit(
         intercept=solved[0],
         coefficients=tuple(solved[1:]),
         regressors=tuple(regressors),
         observations=len(design),
+        smearing=smearing,
     )
 
 
@@ -215,52 +253,40 @@ assert set(LOSS_DOMAIN) == set(LOSSES), "every loss must declare where it is def
 
 
 @dataclass
-class PanelAudit:
-    """What every ``build_features`` call was handed, so the claim can be checked not asserted."""
+class RunAudit:
+    """What every call was handed, so the two point-in-time claims are checked, not asserted.
+
+    Two records, because there are two ways into the future and only one of them was watched:
+
+    * ``calls`` -- the panel each ``build_features`` received, as ``(through, max(as_of))``.
+    * ``training`` -- the training targets each origin used, as ``(origin, max(as_of))``. This
+      one was missing, and its absence let a ``ts``-based target slice pass all 25 tests. The
+      panel record could never have caught it: the leak was in the *targets*, which the panel
+      audit does not see.
+
+    ``violations`` reports both, tagged, so a failure says which claim broke.
+    """
 
     calls: list[tuple[dt.date, dt.date]] = field(default_factory=list)
+    training: list[tuple[dt.date, dt.date]] = field(default_factory=list)
 
     def record(self, through: dt.date, last_as_of: dt.date) -> None:
         self.calls.append((through, last_as_of))
 
-    def violations(self) -> list[tuple[dt.date, dt.date]]:
-        return [(through, last) for through, last in self.calls if last > through]
+    def record_training(self, origin: dt.date, last_as_of: dt.date) -> None:
+        self.training.append((origin, last_as_of))
+
+    def violations(self) -> list[tuple[str, dt.date, dt.date]]:
+        return [
+            *(("panel", through, last) for through, last in self.calls if last > through),
+            *(("target", origin, last) for origin, last in self.training if last > origin),
+        ]
 
 
-def features_at_origins(
-    panel: pd.DataFrame,
-    origins: Sequence[dt.date],
-    calendar: xcals.ExchangeCalendar,
-    *,
-    audit: PanelAudit | None = None,
-) -> pd.DataFrame:
-    """One feature row per origin, each built from a panel that physically stops at that origin.
-
-    This is the expensive part of the walk-forward and it is not an optimisation target: the
-    whole point is that origin ``t``'s row is computed without ``t + 1`` ever being in the frame.
-    Measured on the real SPY panel at roughly 0.06s per origin.
-
-    The row kept is the one whose ``as_of`` *is* the origin, and that is asserted rather than
-    assumed by taking the last row: the span reaches to ``through`` so such a row always exists,
-    but "always" is the kind of claim this project checks.
-    """
-    rows: list[pd.DataFrame] = []
-    for origin in origins:
-        stopped = truncate(panel, origin)
-        if audit is not None:
-            audit.record(origin, max(as_of_dates(stopped)))
-        table = build_features(stopped, through=origin, calendar=calendar)
-        if table.empty:
-            raise SchemaError(f"no feature row at origin {origin}: the truncated panel is empty")
-        last = table.iloc[[-1]]
-        emitted = as_of_dates(last).iloc[0]
-        if emitted != origin:
-            raise SchemaError(
-                f"the table built through {origin} ends at {emitted}, so the origin has no row "
-                "of its own; the session span no longer reaches the cutoff"
-            )
-        rows.append(last)
-    return pd.concat(rows, ignore_index=True)
+# ``features_at_origins`` lived here and is **deleted**, not kept for convenience. It was a
+# second per-origin loop that nothing called, and it diverged from ``evaluate``'s: it raised
+# on an empty truncation where ``evaluate`` skips. Two loops with different behaviour, one of
+# them never exercised, is a place for the tested one and the believed one to come apart.
 
 
 def origins_in(
@@ -301,6 +327,25 @@ def load_targets(settings: Settings, symbol: str, horizon: int, *, end: dt.date)
     )
 
 
+def knowable_targets(targets: pd.DataFrame, origin: dt.date) -> pd.DataFrame:
+    """The targets whose horizon had completed at ``origin``. Sliced on ``as_of``, never ``ts``.
+
+    A named function rather than an inline slice, for one reason: a test must be able to replace
+    it with the wrong slice and watch the harness notice. It could not before, and that mattered
+    --- a ``ts``-based slice planted here passed **all 25** walk-forward tests, real-data tests
+    included, because the test that claimed to check this re-implemented both slices inside
+    itself and compared them to each other instead of exercising ``evaluate``.
+
+    What the leak buys, measured on real SPY data over identical windows, is the part worth
+    keeping: QLIKE went from -4.71022 to -4.90416 at h=1, and from -3.82735 to -3.84474 at h=66.
+    **A real forward peek that moves the reported loss by 0.2% to 1.5%** -- far too little for any
+    test that checks a number to catch, and the whole reason this project's refusals are
+    structural rather than statistical. ``RunAudit`` records the maximum training-target
+    ``as_of`` per origin so the property is checked directly instead of through its effect.
+    """
+    return truncate(targets, origin)
+
+
 def target_panel_for(bars: pd.DataFrame, calendar: xcals.ExchangeCalendar) -> pd.DataFrame:
     """The bars with a ``log_return`` column, which is what ``build_targets`` reads.
 
@@ -322,24 +367,35 @@ def target_panel_for(bars: pd.DataFrame, calendar: xcals.ExchangeCalendar) -> pd
 # ---------------------------------------------------------------------------
 
 
-def git_sha() -> str:
-    """The working tree's commit, or ``"unknown"``. ``--no-optional-locks``, always.
+def git_state(scope: Path | None = None) -> tuple[str, bool | None]:
+    """The commit the run happened at, and whether the tree was dirty. ``("unknown", None)`` if
+    git cannot be reached.
 
-    Phase 1 lost about an hour to ``index.lock`` files that its own audit stamp was creating by
-    running ``git status`` without this flag on a 24,218-partition tree. The flag makes the call
-    read-only; the lesson was expensive enough to apply everywhere rather than once.
+    **Delegated to ``volab.store.git_state`` rather than reimplemented.** That function already
+    carries two fixes this would otherwise have to rediscover: ``--no-optional-locks``, because
+    ``git status`` otherwise takes ``index.lock`` to refresh the index and Phase 1 lost roughly an
+    hour to zero-byte locks its own audit stamp was creating; and a pathspec excluding the
+    derivable data tiers, because ``!data/**/`` forces git across 80,742 files and the unscoped
+    call measured 2.70s against a 5.0s timeout. A third copy of that would be a third place for
+    the lesson to be forgotten. A private name across sibling modules of one package is the
+    smaller cost. The accessor is ``store``'s **public** one: the import ratchet forbids a
+    private import from that module and caught this exact line when it reached for
+    ``_git_state``, which is the ratchet doing its job rather than an obstacle to route around.
+
+    ``scope`` is the directory the dirtiness question is asked about, and the walk-forward CLI
+    passes the **repository root** rather than taking the default. The default is the package, and
+    a reviewer measured that with it an edit to ``config/base.yaml`` -- which carries
+    ``splits.dev_end``, the universe and the storage root -- or to ``tests/`` reads as clean. A
+    provenance line blind to the configuration is not provenance.
+
+    **The dirty flag is not decoration.** A sha alone cannot say which code ran: a run against a
+    modified tree records a commit whose contents are not what executed. The first headline run
+    proved the hazard rather than hypothesising it -- see R70 -- so the flag is recorded on every
+    ledger line and a dirty run is one a reader must discount.
     """
-    try:
-        finished = subprocess.run(
-            ["git", "--no-optional-locks", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return "unknown"
-    return finished.stdout.strip() if finished.returncode == 0 else "unknown"
+    from volab.store import git_state as store_git_state
+
+    return store_git_state(scope)
 
 
 @dataclass(frozen=True)
@@ -350,12 +406,22 @@ class Trial:
     symbol: str
     horizon: int
     loss: str
+    # Origins actually averaged over.
     origins: int
     value: float
     # Origins attempted but not scored for this loss, because the loss was undefined there for
     # this model or for another one. Carried on every trial so a comparison can never be read as
     # like-for-like when it is not.
     dropped: int
+    # Origins the run **asked for**, and origins it could not forecast at all. Without these a
+    # ledger reader cannot tell a trial covering 250 of 251 requested origins from one covering
+    # 250 of 1,250: ``origins`` alone looks identical. ``skipped`` is the count whose reasons are
+    # on ``Evaluation.skipped``.
+    requested: int
+    skipped: int
+    # The origin stride the run used. A trial over every fifth session is not the same experiment
+    # as one over every session, and the ledger has to be able to say which it was.
+    every: int
     first_origin: dt.date
     last_origin: dt.date
 
@@ -366,26 +432,51 @@ class Trial:
             "horizon": self.horizon,
             "loss": self.loss,
             "origins": self.origins,
-            "value": self.value,
+            # ``None`` rather than a bare ``NaN``, which ``json.dumps`` emits happily and no
+            # strict JSON parser will read back. A ledger nobody can parse is not a ledger.
+            "value": None if math.isnan(self.value) else self.value,
             "dropped": self.dropped,
+            "requested": self.requested,
+            "skipped": self.skipped,
+            "every": self.every,
             "first_origin": self.first_origin.isoformat(),
             "last_origin": self.last_origin.isoformat(),
         }
 
 
-def append_trials(trials: Sequence[Trial], *, root: Path, at: dt.datetime, sha: str) -> int:
+def append_trials(
+    trials: Sequence[Trial],
+    *,
+    root: Path,
+    at: dt.datetime,
+    sha: str,
+    dirty: bool | None,
+) -> int:
     """Append one line per trial and return how many were written. Append-only, never rewritten.
 
     The count is returned rather than inferred from the file, so a caller can assert that a run
     of N configurations wrote exactly N lines -- which is the only way "every trial is counted"
     is a fact about the code rather than an intention.
+
+    ``sha`` and ``dirty`` are the caller's, captured at the **start** of its run and passed in.
+    Reading them here would record the tree as it is when the writing happens, which is not the
+    tree that produced the numbers -- a distinction the first headline run turned into a concrete
+    mis-attribution rather than a worry (R70).
     """
     path = root / TRIAL_LEDGER
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         for trial in trials:
             handle.write(
-                json.dumps({"at": at.isoformat(), "git_sha": sha, **trial.record()}) + "\n"
+                json.dumps(
+                    {
+                        "at": at.isoformat(),
+                        "git_sha": sha,
+                        "git_dirty": dirty,
+                        **trial.record(),
+                    }
+                )
+                + "\n"
             )
     return len(trials)
 
@@ -401,14 +492,47 @@ def count_trials(root: Path) -> int:
 # The models. Deliberately few, and each one counted.
 # ---------------------------------------------------------------------------
 
-MODELS: tuple[str, ...] = ("har_log", "random_walk")
+MODELS: tuple[str, ...] = ("har_levels", "har_semilog", "random_walk")
 
 
-def _har_log_forecast(training: pd.DataFrame, row: pd.Series, response: str) -> tuple[float, int]:
-    """Fit log-HAR on the training rows and forecast the origin's variance.
+def _har_levels_forecast(
+    training: pd.DataFrame, row: pd.Series, response: str
+) -> tuple[float, int]:
+    """Corsi's HAR: the response in **levels**, regressed on the components in levels.
 
-    The response is ``log`` of the target, so a non-positive target has no log and its row is
-    dropped; ``exp`` of the prediction is then strictly positive and QLIKE is always defined.
+    This is what "HAR" means in the literature, and it is run rather than skipped. Phase 2's
+    first draft ran only a log-response variant on the grounds that HAR in levels can forecast a
+    non-positive variance, where QLIKE is undefined -- and dodged the problem by not running the
+    standard baseline at all. That is the wrong trade: the baseline everyone compares against
+    should be on the record, and a non-positive forecast is a fact about the model worth seeing.
+
+    No floor. An origin whose forecast comes out non-positive simply has no QLIKE, and
+    ``Evaluation.comparable`` drops that origin for **every** model on that loss and reports how
+    many were dropped, so the comparison stays like-for-like and the cost is visible.
+    """
+    fit = fit_ols(training, HAR_REGRESSORS, response)
+    predicted = fit.predict(row)
+    return predicted, fit.observations
+
+
+def _har_semilog_forecast(
+    training: pd.DataFrame, row: pd.Series, response: str
+) -> tuple[float, int]:
+    """A log response on level regressors, with Duan's smearing retransformation.
+
+    **Named semi-log, not log-HAR, because that is what it is**: only the response is logged, and
+    Corsi's log-HAR logs the components too. It was called ``har_log`` until a review pointed out
+    both that the name was wrong and that ``exp(fitted log)`` estimates the geometric mean --
+    measured at 0.2529 of the realized mean at h=1 on real data.
+
+    Logging the components as well was considered and rejected here: ``har_d_proxy`` is a squared
+    daily return and is legitimately **zero** on a session whose close did not move, so
+    ``log`` of it needs either a dropped row (selection on a regressor) or an added epsilon (a
+    free parameter). The smearing factor fixes the bias that mattered without introducing either.
+
+    A non-positive target has no log, so those rows are dropped -- which is selection on the
+    dependent variable, and is stated in the docstring rather than buried: it is why
+    ``har_levels`` is run beside this and not replaced by it.
     """
     usable = training[training[response] > 0].copy()
     usable["_log_response"] = [math.log(float(value)) for value in usable[response]]
@@ -416,10 +540,10 @@ def _har_log_forecast(training: pd.DataFrame, row: pd.Series, response: str) -> 
     predicted = fit.predict(row)
     if pd.isna(predicted):
         return float("nan"), fit.observations
-    # Clipped only against overflow, not against being small: exp(700) is near the float64
-    # ceiling, and a forecast that large is a diverged fit which the loss should see as such
-    # rather than as an inf that poisons the mean.
-    return math.exp(min(predicted, 700.0)), fit.observations
+    factor = 1.0 if fit.smearing is None else fit.smearing
+    # Clipped only against overflow, never against being small: ``exp(700)`` is near the float64
+    # ceiling, and a forecast that large is a diverged fit the loss should see as such.
+    return math.exp(min(predicted, 700.0)) * factor, fit.observations
 
 
 def _random_walk_forecast(row: pd.Series, horizon: int) -> float:
@@ -456,6 +580,10 @@ class Evaluation:
     results: tuple[OriginResult, ...]
     features: pd.DataFrame
     skipped: tuple[tuple[dt.date, str], ...]
+    # How many origins the run asked for, and the stride it used. Carried so a trial can say what
+    # it covers rather than only what it managed.
+    requested: int = 0
+    every: int = 1
 
     def scored(self, model: str) -> list[tuple[dt.date, float, float]]:
         """``(origin, realized, forecast)`` for the origins where both are present."""
@@ -486,11 +614,35 @@ class Evaluation:
         return set.intersection(*sets) if sets else set()
 
     def trials(self) -> list[Trial]:
-        """One trial per model and loss. Every configuration evaluated, counted."""
+        """One trial per model and loss. Every configuration evaluated, counted.
+
+        **A configuration that produced no forecast at all still yields trials**, with
+        ``origins=0`` and a null value. Returning an empty list was the earlier behaviour and it
+        was a hole in the one thing this ledger exists for: a configuration that was run and
+        produced nothing is exactly the result a selective reporter would omit.
+        """
         out: list[Trial] = []
-        if not self.results:
-            return out
         attempted = {result.origin for result in self.results}
+        if not self.results:
+            for name in LOSSES:
+                for model in MODELS:
+                    out.append(
+                        Trial(
+                            model=model,
+                            symbol=self.symbol,
+                            horizon=self.horizon,
+                            loss=name,
+                            origins=0,
+                            value=float("nan"),
+                            dropped=0,
+                            requested=self.requested,
+                            skipped=len(self.skipped),
+                            every=self.every,
+                            first_origin=dt.date.min,
+                            last_origin=dt.date.min,
+                        )
+                    )
+            return out
         for name, loss in LOSSES.items():
             usable = self.comparable(name)
             dropped = len(attempted - usable)
@@ -514,6 +666,9 @@ class Evaluation:
                         origins=len(pairs),
                         value=value,
                         dropped=dropped,
+                        requested=self.requested,
+                        skipped=len(self.skipped),
+                        every=self.every,
                         first_origin=self.results[0].origin,
                         last_origin=self.results[-1].origin,
                     )
@@ -530,7 +685,8 @@ def evaluate(
     horizon: int,
     calendar: xcals.ExchangeCalendar,
     minimum_training: int = 250,
-    audit: PanelAudit | None = None,
+    every: int = 1,
+    audit: RunAudit | None = None,
 ) -> Evaluation:
     """Refit and forecast at every origin, each from a panel that physically stops there.
 
@@ -551,7 +707,10 @@ def evaluate(
     the trial count is over the origins actually scored.
     """
     column = target_column(horizon)
-    target_sessions = {
+    # Used **only** for the realized value a forecast is scored against, which is future relative
+    # to its origin by definition and is bounded by ``dev_end`` through ``scoreable_origins``.
+    # Training values come from ``knowable_targets`` instead; see below.
+    realized_by_base = {
         base: float(value)
         for base, value in zip(
             [stamp.date() for stamp in pd.to_datetime(targets["ts"], utc=True)],
@@ -581,12 +740,25 @@ def evaluate(
         row = table.iloc[-1]
         rows.append(table.iloc[[-1]])
 
-        # The training set: feature rows whose target had completed by the origin. ``truncate``
-        # on the targets is the store's own filter, applied to the frame it already returned.
-        knowable = truncate(targets, origin)
-        bases = {stamp.date() for stamp in pd.to_datetime(knowable["ts"], utc=True)}
-        usable = table[[day in bases for day in emitted]].copy()
-        usable[column] = [target_sessions[day] for day in as_of_dates(usable)]
+        # The training set: feature rows whose target had completed by the origin. The slice is
+        # ``knowable_targets``, by name, so a test can replace it with the wrong one and watch
+        # the audit below notice -- which it could not before.
+        knowable = knowable_targets(targets, origin)
+        # Values are read from ``knowable``, not from a dict built over the whole target frame.
+        # Under the store's dedupe on ``(symbol, ts)`` the two agree, so this is not a live bug;
+        # it removes the dependence on that dedupe rather than documenting it, because a frame
+        # holding two vintages of one base session would otherwise have let the later one --
+        # possibly with ``as_of > origin`` -- win the lookup.
+        values = {
+            stamp.date(): float(value)
+            for stamp, value in zip(
+                pd.to_datetime(knowable["ts"], utc=True), knowable[column], strict=True
+            )
+        }
+        if audit is not None and len(knowable):
+            audit.record_training(origin, max(as_of_dates(knowable)))
+        usable = table[[day in values for day in emitted]].copy()
+        usable[column] = [values[day] for day in as_of_dates(usable)]
 
         forecasts: dict[str, float] = {}
         observations = 0
@@ -603,16 +775,17 @@ def evaluate(
             skipped.append((origin, f"null regressor(s) at the origin: {null_regressors}"))
             continue
         try:
-            forecasts["har_log"], observations = _har_log_forecast(usable, row, column)
+            forecasts["har_levels"], observations = _har_levels_forecast(usable, row, column)
+            forecasts["har_semilog"], _ = _har_semilog_forecast(usable, row, column)
         except SchemaError as refused:
-            skipped.append((origin, f"har_log refused the window: {refused}"))
+            skipped.append((origin, f"a HAR fit refused the window: {refused}"))
             continue
         forecasts["random_walk"] = _random_walk_forecast(row, horizon)
 
         results.append(
             OriginResult(
                 origin=origin,
-                realized=target_sessions.get(origin, float("nan")),
+                realized=realized_by_base.get(origin, float("nan")),
                 forecasts=forecasts,
                 training_rows=observations,
             )
@@ -625,6 +798,8 @@ def evaluate(
         results=tuple(results),
         features=features,
         skipped=tuple(skipped),
+        requested=len(origins),
+        every=every,
     )
 
 
