@@ -238,8 +238,12 @@ def _refuse_a_later_dev_end(literal: object, effective: dt.date, config_path: Pa
 
     Not a ``ConfigError``: a later ``dev_end`` is not a setting someone mistyped, it is the
     holdout seal being moved from outside the file, and it belongs to the same class of refusal
-    as a keyless read. What is compared is the file on disk, so a local edit to ``base.yaml``
-    moves the boundary; that edit is visible in a diff, and an exported variable is not.
+    as a keyless read. What is compared is the file on disk -- whichever ``config/base.yaml``
+    ``DEFAULT_CONFIG_PATH`` resolved to, which is the first one found walking up from the
+    package. So a local edit to that file moves the boundary, and so does an untracked
+    ``base.yaml`` placed nearer the package. Both need write access to the checkout, which
+    already allows editing ``store.py``; the point of the refusal is that an exported variable
+    needs none. An edit shows up in ``git status`` -- a tracked one in ``git diff`` too.
 
     A file pinning no literal is refused too, so the rule is total rather than "no later than
     the literal, when there is one" -- otherwise deleting the key would sidestep it.

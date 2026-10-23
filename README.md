@@ -29,7 +29,7 @@ demand.
 | Phase | Scope | State |
 |---|---|---|
 | 0 — Skeleton | Parquet layout, config, `load_panel()` and the holdout guard | merged |
-| **1 — Data and targets** | Ingestion, realized measures, forward targets, point-in-time proof | **in review** |
+| **1 — Data and targets** | Ingestion, realized measures, forward targets, point-in-time evidence | **in review** |
 | 2 — Baseline shootout | GARCH family, HAR, recalibrated HAR, walk-forward, DM + MCS | not started |
 | 3–6 | Implied-vol contestant, scheduler, agent layer, write-up | not started |
 

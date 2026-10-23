@@ -136,8 +136,10 @@ def _clean_volab_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     ``VOLAB_SPLITS_DEV_END`` is the one that matters. The fixture below asks ``load_settings``
     for the repository's own boundary, so a variable that moved it would move the police with
     it, and every assertion the suite makes about the seal would be made against a boundary
-    chosen from outside the suite. ``volab.config`` refuses a *later* one now; an earlier one
-    is legitimate configuration and would still silently narrow what counts as sealed here.
+    chosen from outside the suite. ``volab.config`` refuses a *later* one now. An earlier one
+    is legitimate configuration and is cleared anyway, but it is the harmless direction: it
+    *widens* what counts as sealed, so the police becomes over-strict and fails closed. Noisy,
+    never silent.
 
     The others are cleared for the ordinary reason: a test that reads the configuration must
     see the committed file, not a developer's shell. The names come from ``_ENV_OVERRIDES``

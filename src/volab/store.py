@@ -176,7 +176,21 @@ def _git_state() -> tuple[str, bool | None]:
     sha = run("rev-parse", "HEAD")
     if sha is None:
         return "unknown", None
-    status = run("status", "--porcelain")
+    # The pathspec is a cost fix, not a correctness one. The untracked walk is the whole
+    # expense -- ``!data/**/`` in .gitignore forces git across 80,742 files -- and the derivable
+    # tiers cannot tell us anything about reproducibility that the commit does not. Measured
+    # here: 2.70s unscoped against the 5.0s timeout, 0.018s scoped, and both still report a
+    # tracked modification and an untracked file. ``-uno`` would be wrong: it drops the
+    # untracked signal entirely.
+    status = run(
+        "status",
+        "--porcelain",
+        "--",
+        ".",
+        ":(exclude)data/raw",
+        ":(exclude)data/curated",
+        ":(exclude)data/features",
+    )
     return sha, None if status is None else bool(status)
 
 

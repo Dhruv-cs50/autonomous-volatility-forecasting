@@ -9,9 +9,9 @@ past the boundary -- it must, or the holdout could never be scored later -- but 
 therefore every curated row, stops at ``settings.splits.dev_end``. Phase 6 unlocks once, with
 both keys and an audit line, to derive the holdout's curated rows from raw.
 
-The boundary cannot be moved *later* by configuration or environment either:
-``VOLAB_SPLITS_DEV_END`` may only bring it forward, and ``load_settings`` refuses a value past
-the literal in ``config/base.yaml``.
+Nor can the boundary itself be moved *later* by the environment: ``VOLAB_SPLITS_DEV_END`` may
+only move it *earlier*, and ``load_settings`` refuses a value past the literal in
+``config/base.yaml``. Editing that literal is the only way.
 """
 
 from __future__ import annotations

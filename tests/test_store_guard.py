@@ -10,12 +10,16 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import json
+import re
+import subprocess
+from pathlib import Path
 
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+import volab
 from volab import store
 from volab.config import Splits
 from volab.errors import DatasetNotFound, HoldoutViolation, SchemaError, UnknownSymbol
@@ -316,6 +320,28 @@ def test_the_audit_stamp_never_takes_gits_index_lock(monkeypatch: pytest.MonkeyP
     for argv in seen:
         assert argv[0] == "git"
         assert argv[1] == "--no-optional-locks", f"{argv} can take index.lock"
+
+
+def test_git_accepts_the_no_optional_locks_flag() -> None:
+    """The flag is real, not just present in the argv.
+
+    The test above stubs ``subprocess.run``, so it would pass just as happily on a typo. A
+    rejected flag exits 129, which ``run()`` maps to ``None``, so every audit line would quietly
+    degrade to ``git_sha: "unknown"`` with nothing going red. This calls git for real to close
+    that. Only the ``rev-parse`` leg: the ``status`` leg walks the tree and belongs nowhere in a
+    unit test.
+    """
+    completed = subprocess.run(
+        ["git", "--no-optional-locks", "rev-parse", "HEAD"],
+        cwd=Path(volab.__file__).resolve().parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0 and "not a git repository" in completed.stderr.lower():
+        pytest.skip("not inside a git work tree")
+    assert completed.returncode == 0, f"git rejected the flag: {completed.stderr.strip()}"
+    assert re.fullmatch(r"[0-9a-f]{40}", completed.stdout.strip())
 
 
 def test_dev_window_read_writes_no_audit_line(synthetic_store) -> None:

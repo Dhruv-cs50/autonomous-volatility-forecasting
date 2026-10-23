@@ -20,21 +20,9 @@ storage:
   root: "data"
 """
 
-_OVERRIDE_VARS = (
-    "VOLAB_UNIVERSE",
-    "VOLAB_EXOGENOUS",
-    "VOLAB_CALENDAR",
-    "VOLAB_SPLITS_DEV_END",
-    "VOLAB_SPLITS_HOLDOUT_START",
-    "VOLAB_STORAGE_ROOT",
-)
-
-
-@pytest.fixture(autouse=True)
-def _clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A developer's own VOLAB_* variables must not change what these tests see."""
-    for name in _OVERRIDE_VARS:
-        monkeypatch.delenv(name, raising=False)
+# The VOLAB_* overrides are cleared for every test by ``_clean_volab_environment`` in
+# conftest, which takes the names from ``_ENV_OVERRIDES`` itself. The hand-copied tuple and
+# local fixture that used to live here were exactly the duplicate that fixture exists to avoid.
 
 
 def _write(tmp_path: Path, text: str) -> Path:
@@ -363,10 +351,10 @@ def test_load_panel_still_rejects_an_unknown_symbol(synthetic_store) -> None:
 # against ``load_settings()``, which applies the same variable, so both sides move together.
 # The refusal therefore has to live where the value is accepted.
 #
-# Every case below sets ``VOLAB_SPLITS_HOLDOUT_START`` as well, so the pair stays internally
-# consistent and the only thing under test is the direction the boundary moved. Without it an
-# env ``dev_end`` past the file's ``holdout_start`` raises the ordinary split ConfigError and
-# the test would pass for the wrong reason.
+# The refusal cases set ``VOLAB_SPLITS_HOLDOUT_START`` as well, so the pair stays internally
+# consistent and the only thing under test is the direction the boundary moved. It is belt and
+# braces rather than load-bearing: ``_refuse_a_later_dev_end`` runs before ``_validate_splits``,
+# so a lone later ``dev_end`` raises ``HoldoutViolation`` either way.
 
 
 def test_an_env_dev_end_later_than_the_file_literal_is_refused(
