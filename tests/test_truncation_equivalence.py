@@ -70,8 +70,9 @@ LONGEST_WINDOW = 66
 # How many strided cutoffs the real-data tier sweeps. Chosen for wall-clock, and the cost is
 # stated rather than implied: a full-vs-truncated pair on the real panel measures ~0.07s, and the
 # real-data tests in this file are the bulk of the suite's growth: 644 tests in 36.8s before
-# Phase 2, 706 in 69.0s after, both measured on an idle machine. That is the honest price of a
-# per-commit ratchet that touches real data, and it is why the exhaustive mode is opt-in.
+# Phase 2, 707 in 89.2s after, both on an idle machine. That is the honest price of a per-commit
+# ratchet that touches real data, and it is why the exhaustive mode is opt-in. Every measurement
+# behind those two figures is tabulated under R38, because this number went stale three times.
 SAMPLED_CUTOFFS = 60
 
 # Opt-in exhaustive real-data sweep. ``VOLAB_`` prefixed in the manner of ``VOLAB_HOLDOUT_UNLOCK``

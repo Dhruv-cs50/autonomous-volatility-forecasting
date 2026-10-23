@@ -9,7 +9,8 @@ tests pass and the gates are green.
 
 **Execution shape, and where it was wrong.** Run natively by the session controller for the
 build, with an independent `code-reviewer` on the walk-forward and a `delivery-auditor` on this
-board at the sprint boundary, as the delivery model requires.
+board at the sprint boundary, as the delivery model requires, and an advisor pass over the
+fixes those two produced -- which found the ninth escape inside the fix for the eighth.
 
 **The native-only part of that was a mistake, and the record should say so.** The original
 justification is below and it still reads plausibly; what it got wrong was the claim that "the
@@ -17,7 +18,9 @@ tests are the seat". The two independent seats found, between them: a `ts`-based
 that passed **all 25** walk-forward tests, a forecast biased low by a factor of four, a
 singularity threshold that silently refused calm windows, an import-ratchet violation, two
 rulings with no test at all, a ledger that was not tracked despite claiming to be, and four
-ledger lines naming a tree that could not have produced them. Phase 1's R9 — review seats go
+ledger lines naming a tree that could not have produced them. A further pass over *those
+fixes* then found that the target audit checked the slice rather than what the fit consumed --
+R78, the ninth escape, inside the code written to close the eighth. Phase 1's R9 — review seats go
 where look-ahead can hide — was right, and the walk-forward's target slicing is exactly such a
 place. The original reasoning follows, kept because a decision that turned out wrong is worth
 more on the record than removed from it:
@@ -59,25 +62,26 @@ the wrong version was right.
 | US-2.6 | Prove it bites: E1 planted in `src/`, both methods run, both outputs quoted | — | Phase 1's suite passes; the sweep fails; the exhaustive count matches M2's prediction | done `3c7e087` (doc-only) — 100/100 and 644/645 pass planted; 52 of 2,245 caught, predicted 52. **The plant is not in the repo**, so the figures are not reproducible from a checkout; see Risks. |
 | US-2.7 | Demote the perturbation suite and the AST scan in the documentation, delete neither | `README.md`, `tests/test_point_in_time.py` | both still run; the scan is never cited as a defence | done `3c7e087` |
 | US-2.8 | Retract *"the store cannot help"*, in the spec and in the docstring that copied it | spec §9, `volab/features/build.py` | the retraction says what the paragraph still gets right | done `3c7e087` |
-| US-2.9 | The decisions log, each ruling with what it costs if wrong | `docs/superpowers/phase2-decisions.md` | every mechanical claim names an executable witness (R32) | **reopened then done** — a delivery audit found ~9 rulings with no test id and two (R62, R63) with no test at all. Witnesses added, the tests written, R58/R59/R60 corrected, R70–R77 added. |
+| US-2.9 | The decisions log, each ruling with what it costs if wrong | `docs/superpowers/phase2-decisions.md` | every mechanical claim names an executable witness (R32) | **reopened then done** `02eb0e5` — a delivery audit found ~9 rulings with no test id and two (R62, R63) with no test at all. Witnesses added, the tests written, R58/R59/R60 corrected, R70–R78 added. |
 
 ## Sprint 3 — The walk-forward · CLOSED, then reopened by the review, then closed
 
 | Story | Goal | Files | Acceptance | State |
 |---|---|---|---|---|
-| US-2.10 | Per-origin rebuild, HAR levels and semi-log, random-walk benchmark, QLIKE and MSE | `volab/walkforward/` | every build stops at its own origin, audited call by call | **reopened then done** — a review found the forecast biased low by 4x at h=1 and the standard levels baseline not run at all. See R73. |
-| US-2.11 | The trial ledger: append-only, git-tracked, keyed by the git sha and a dirty flag | `volab/walkforward/`, `.gitignore`, `data/trials.jsonl` | a run of N configurations appends exactly N lines, and every line identifies the tree that produced it | **reopened then done** — the audit found the file untracked (so "git-tracked" was false) and four lines naming a tree without the code. See R59, R60, R70, R74, R75. |
-| US-2.12 | The truncation comparison as a by-product of the walk-forward, over every origin **the run visits** | `volab/walkforward/__main__.py`, `tests/test_walkforward.py`, `tests/test_walkforward_cli.py` | per-origin rows byte-identical to the persisted table at every visited origin; the CLI's own refusals tested | **reopened then done** — the acceptance line said "every origin", which is true at `--every 1` and false of the recorded stride-5 run, and no test imported the CLI at all. |
+| US-2.10 | Per-origin rebuild, HAR levels and semi-log, random-walk benchmark, QLIKE and MSE | `volab/walkforward/` | every build stops at its own origin, audited call by call | **reopened then done** `02eb0e5` — a review found the forecast biased low by 4x at h=1 and the standard levels baseline not run at all. See R73. |
+| US-2.11 | The trial ledger: append-only, git-tracked, keyed by the git sha and a dirty flag | `volab/walkforward/`, `.gitignore`, `data/trials.jsonl` | a run of N configurations appends exactly N lines, and every line identifies the tree that produced it | **reopened then done** `02eb0e5`, ledger `064c1a4` — the audit found the file untracked (so "git-tracked" was false) and four lines naming a tree without the code. See R59, R60, R70, R74, R75. |
+| US-2.12 | The truncation comparison as a by-product of the walk-forward, over every origin **the run visits** | `volab/walkforward/__main__.py`, `tests/test_walkforward.py`, `tests/test_walkforward_cli.py` | per-origin rows byte-identical to the persisted table at every visited origin; the CLI's own refusals tested | **reopened then done** `02eb0e5` — the acceptance line said "every origin", which is true at `--every 1` and false of the recorded stride-5 run, and no test imported the CLI at all. |
 
 **Three defects found by these stories' own tests, each recorded with its ruling:**
 
 - an origin whose own regressors are null was scored as a NaN instead of being skipped (R56);
-- the singularity threshold was absolute where it must be relative, a latent refusal of good
-  windows given HAR's 1e-8 scale (R58);
+- the singularity threshold was absolute where it must be relative — and the first repair,
+  scaling by the largest entry in the whole system, was *still* effectively absolute, because
+  that entry is always the intercept cell. Now per-column (R58);
 - the random-walk forecast is `0.0` at a session whose close did not move, so QLIKE is undefined
   there — found because QLIKE raises rather than returning NaN (R55), and fixed by scoring every
   model over the common set of origins where the loss is defined, with the dropped count carried
-  on each trial (R60's sibling rule in `Evaluation.comparable`).
+  on each trial (`Evaluation.comparable`).
 
 ## Risks and what is carried
 

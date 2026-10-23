@@ -266,8 +266,8 @@ def test_the_log_har_forecast_is_always_positive_so_qlike_is_always_defined(toy:
     assert evaluation.results, "nothing was forecast"
     for result in evaluation.results:
         forecast = result.forecasts["har_semilog"]
-        assert not pd.isna(forecast), f"{result.origin}: log-HAR produced NaN"
-        assert forecast > 0, f"{result.origin}: log-HAR produced {forecast}"
+        assert not pd.isna(forecast), f"{result.origin}: har_semilog produced NaN"
+        assert forecast > 0, f"{result.origin}: har_semilog produced {forecast}"
         qlike(max(result.realized, 0.0), forecast)
 
 
@@ -735,3 +735,68 @@ def test_the_smearing_factor_corrects_the_retransformation_bias(toy: Toy) -> Non
     # Duan's factor is the mean of exp(residual), which is at least 1 by Jensen and is exactly 1
     # only for a perfect fit. A factor below 1 would mean the correction made the bias worse.
     assert fit.smearing >= 1.0, fit.smearing
+
+
+def test_the_forecast_does_not_change_when_future_targets_are_removed(toy: Toy) -> None:
+    """Target-side truncation equivalence: the same definition, applied to the targets.
+
+    Build the forecast at origin ``t`` from the full target frame, and again from a frame that
+    physically stops at ``t``. A fit that used only knowable targets cannot tell the difference.
+    One that reached forward can.
+
+    **This exists because the audit was not enough, and the audit's weakness was the same
+    tautology twice.** ``RunAudit.record_training`` logs the maximum ``as_of`` of what
+    ``knowable_targets`` *returned* -- so it proves the slice is correct, not that the fit
+    consumed its output. Verified by planting a training set built from the whole target frame,
+    bypassing ``knowable_targets`` entirely: **all 40** walk-forward and CLI tests passed,
+    including the audit test and its red case. That is the ninth time in this project a leakage
+    check has been satisfied by something adjacent to the property it claimed to hold.
+
+    Truncation equivalence has no such gap: it does not care how the future was reached, only
+    whether removing it changes the answer. ``realized`` is deliberately excluded from the
+    comparison -- it is legitimately null in the truncated run, because the value being forecast
+    has not happened yet, which is the whole point.
+    """
+    from volab.panel import truncate as truncate_frame
+
+    calendar = get_calendar(toy.settings)
+    checked = 0
+    for origin in toy.origins[::4]:
+        full = evaluate(
+            toy.panel,
+            toy.targets,
+            [origin],
+            symbol="SPY",
+            horizon=HORIZON,
+            calendar=calendar,
+            minimum_training=20,
+        )
+        stopped = evaluate(
+            toy.panel,
+            truncate_frame(toy.targets, origin),
+            [origin],
+            symbol="SPY",
+            horizon=HORIZON,
+            calendar=calendar,
+            minimum_training=20,
+        )
+        assert len(full.results) == len(stopped.results), (
+            f"{origin}: removing future targets changed whether the origin was forecast at all "
+            f"({len(full.results)} against {len(stopped.results)}); skipped: "
+            f"{full.skipped} / {stopped.skipped}"
+        )
+        if not full.results:
+            continue
+        checked += 1
+        here, there = full.results[0], stopped.results[0]
+        assert here.training_rows == there.training_rows, (
+            f"{origin}: the fit used {here.training_rows} rows with the future present and "
+            f"{there.training_rows} without it, so it was reading future targets"
+        )
+        for model in MODELS:
+            mine, theirs = here.forecasts[model], there.forecasts[model]
+            assert mine == theirs or (pd.isna(mine) and pd.isna(theirs)), (
+                f"{origin}: {model} forecast {mine!r} with the future present and {theirs!r} "
+                "without it, so the fit read a target that had not completed"
+            )
+    assert checked >= 3, f"only {checked} origin(s) were actually compared"

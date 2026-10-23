@@ -30,11 +30,21 @@ forecasting origins between refits from a model fitted on data those origins had
 reintroducing exactly the surface this module exists to close. The expensive thing is the
 rebuild, and that is per-origin regardless.
 
-**Log-HAR, not HAR in levels.** HAR in levels can forecast a non-positive variance, and QLIKE is
-undefined there; a floor would be a free parameter chosen to make the loss computable. Fitting
-``log`` variance and exponentiating gives a strictly positive forecast by construction. The cost
-is that the fit targets the log scale while the loss is on the variance scale, which is recorded
-rather than hidden, and the levels variant is not run at all rather than run with a floor.
+**Three models, and the reasoning behind that list was corrected once.** ``har_levels`` is
+Corsi's HAR in levels -- the baseline the literature means -- ``har_semilog`` logs the response
+only and corrects the retransformation with Duan's smearing estimator, and ``random_walk`` is the
+last daily variance proxy scaled to the horizon.
+
+The first draft ran **only** a log-response variant, on the grounds that HAR in levels can
+forecast a non-positive variance where QLIKE is undefined, and that a floor would be a free
+parameter chosen to make the loss computable. The second half of that is still right; the
+conclusion was not. Declining to run the standard baseline is the worse sin, and the machinery
+to handle a non-positive forecast already existed: ``Evaluation.comparable`` drops such an origin
+for **every** model on that loss and reports how many, so the comparison stays like-for-like and
+the cost is visible. So the levels variant is run, with no floor.
+
+``har_semilog``'s remaining cost is real and is on the ledger rather than in a footnote: it fits
+a log scale while the loss is on the variance scale.
 
 **Every trial is counted**, in an append-only ledger keyed by the git sha. A harness that reports
 a winner without saying how many candidates it considered is the thing this project refuses.
@@ -142,8 +152,10 @@ def solve(matrix: list[list[float]], vector: list[float]) -> list[float]:
 class Fit:
     """A fitted linear model: an intercept, one coefficient per regressor, and the fit's size.
 
-    ``smearing`` is Duan's nonparametric retransformation factor, the mean of ``exp(residual)``,
-    and it is ``None`` for a fit whose response was not logged. It exists because
+    ``smearing`` is Duan's nonparametric retransformation factor, the mean of
+    ``exp(residual)``. ``fit_ols`` always computes it, so it is ``None`` only on a ``Fit`` built
+    by hand; a caller fitting a response that was *not* logged simply ignores it, as
+    ``_har_levels_forecast`` does. It exists because
     ``exp(fitted log y)`` estimates the *geometric* mean of ``y`` and the thing being forecast is
     the arithmetic mean. Measured on the real SPY panel before the correction existed: mean
     forecast over mean realized was **0.2529 at h=1** and 0.6768 at h=22 -- a factor of four low,
@@ -221,9 +233,13 @@ def fit_ols(frame: pd.DataFrame, regressors: Sequence[str], response: str) -> Fi
 def qlike(realized: float, forecast: float) -> float:
     """QLIKE on the variance scale: ``log(f) + r / f``.
 
-    Requires a strictly positive forecast, which log-HAR gives by construction. Raising rather
-    than returning NaN on a non-positive one is deliberate: a loss that silently goes missing is
-    how a model with an undefined forecast comes to look like a model with no observations.
+    Requires a strictly positive forecast. ``har_semilog`` gives one by construction, but
+    ``har_levels`` and ``random_walk`` do **not**: Corsi's HAR can fit a negative variance, and
+    the random walk forecasts zero on a session whose close did not move. Raising rather than
+    returning NaN on such a forecast is deliberate and is how both cases were found: a loss that
+    silently goes missing is how a model with an undefined forecast comes to look like a model
+    with no observations. ``Evaluation.comparable`` is what turns the raise into a reported
+    exclusion instead of a crash.
     """
     if not forecast > 0:
         raise ValueError(f"QLIKE needs a positive forecast, got {forecast!r}")

@@ -144,15 +144,24 @@ at all**.
   **~0.07s**; a 37-cutoff sweep is **2.70s**; the exhaustive 2,245-cutoff sweep is **6m00s**.
   Compute is not the constraint for the sweep itself.
 
-  **What it did cost is the suite**, and this number has now been wrong twice, so it is the
-  measured one: **644 tests in 36.8s before Phase 2, 706 in 69.0s after**, both on an idle
-  machine. Not quite double. The real-data tiers are nearly all of the increase — the
-  persisted-table byte comparison, the walk-forward's per-origin comparison and the sampled real
-  sweep, at roughly 13-20s each. The first version of this ruling quoted the pre-Phase-2 figures
-  and a delivery audit caught them as stale; the second said "about 120s", which was a contended
-  measurement taken while two subagents were running. A per-commit ratchet that reads real data
-  is not cheap, and the alternative — not running it per commit — is how a regression reaches a
-  later phase.
+  **What it did cost is the suite**, and this number has been wrong three times, so here is every
+  measurement rather than one more confident summary:
+
+  | Tree | Tests | Wall clock | Machine |
+  |---|---|---|---|
+  | before Phase 2 (`d18f004`) | 644 | 36.8s | idle |
+  | Phase 2, mid-build | 706 | 69.0s | idle |
+  | Phase 2, mid-build | 706 | 163.9s | two subagents running |
+  | Phase 2, final | 707 | 89.2s | idle |
+
+  So **roughly 37s to roughly 90s**, about 2.4x, and a contended run can be twice that again. The
+  real-data tiers are nearly all of the increase — the persisted-table byte comparison, the
+  walk-forward's per-origin comparison and the sampled real sweep, at roughly 13-20s each. The
+  first version of this ruling quoted the pre-Phase-2 figures and a delivery audit caught them as
+  stale; the second said "about 120s" from the contended run; the third said 69.0s, which was
+  real but was superseded by the tests added after it. The table is the fix for a number that
+  keeps going stale. A per-commit ratchet that reads real data is not cheap, and the alternative —
+  not running it per commit — is how a regression reaches a later phase.
 
 ---
 
@@ -228,7 +237,7 @@ A check that fired on honest code would be useless.
 |---|---|---|---|
 | synthetic, exhaustive | 79 | **0** | ~2s |
 | real curated, sampled (stride + awkward) | 63 | **0** | ~4s |
-| real curated, **exhaustive** (`VOLAB_PIT_EXHAUSTIVE=1`) | 2,245 | **0** | 6m00s |
+| real curated, **exhaustive** (`VOLAB_PIT_EXHAUSTIVE=1`) | 2,245 | **0** | 6m00s, re-confirmed on the final tree at 5m44s |
 
 ### Proof that it bites: E1 planted in `src/`, not monkeypatched
 
@@ -391,12 +400,20 @@ interpreters does.
   `test_training_targets_are_knowable_at_the_origin` asserts the `as_of` slice is a strict subset
   of the `ts` slice at some origin, which is exactly the set a `ts` slice would have leaked, and
   fails if the fixture cannot show the difference at all.
-- **R54** **Log-HAR, not HAR in levels.** HAR in levels can forecast a non-positive variance and
-  QLIKE is undefined there; a floor would be a free parameter chosen to make the loss computable.
-  Fitting `log` variance and exponentiating is strictly positive by construction. *Cost if
-  wrong:* the fit targets the log scale while the loss is on the variance scale, which is a real
-  mismatch, recorded rather than hidden. The levels variant is **not run at all** rather than run
-  with a floor, so it is not a hidden trial.
+- **R54 (amended in place by R73 — the original text is kept below it, because a decision that
+  turned out wrong is worth more on the record than removed from it).**
+
+  *Original:* **Log-HAR, not HAR in levels.** HAR in levels can forecast a non-positive variance
+  and QLIKE is undefined there; a floor would be a free parameter chosen to make the loss
+  computable. Fitting `log` variance and exponentiating is strictly positive by construction. The
+  cost is that the fit targets the log scale while the loss is on the variance scale, recorded
+  rather than hidden. The levels variant is **not run at all** rather than run with a floor.
+
+  *Amended:* the second sentence still holds — a floor would be a free parameter — but the
+  conclusion does not. **Not running the standard baseline is the worse sin**, and the machinery
+  to handle a non-positive forecast already existed: `Evaluation.comparable` drops such an origin
+  for every model on that loss and reports how many. So `har_levels` is run, with no floor. The
+  log-response variant was also misnamed and miscalibrated; see R73.
 - **R55** **QLIKE raises on a non-positive forecast** rather than returning NaN. A loss that
   silently goes missing is how a model with an undefined forecast comes to look like a model with
   no observations.
@@ -586,7 +603,37 @@ Three changes, and the third is the one that matters most:
    `Evaluation.comparable` drops such an origin for every model on that loss and reports how
    many. So R54 is amended: the levels variant is run, with no floor.
 
-Witness: `test_the_smearing_factor_corrects_the_retransformation_bias`.
+**Measured after the fix, because "the correction works" is itself a claim.** The same probe,
+re-run on `02eb0e5` over SPY origins every 5 sessions from 2021-01-04, as mean forecast over
+mean realized — 1.0 is calibrated:
+
+| | h=1 | h=22 |
+|---|---|---|
+| `har_levels` | 0.7745 | 1.1263 |
+| `har_semilog` | 0.6230 | 1.0137 |
+| `random_walk` | 0.5382 | 0.7010 |
+
+And the correction's own effect, isolated by holding the model, the window and everything else
+fixed and only forcing the smearing factor to 1:
+
+```
+har_semilog corrected   calib +0.6230  qlike -8.03456  mse 4.295799e-07
+har_semilog uncorrected calib +0.1067  qlike -3.53163  mse 4.586929e-07
+random_walk benchmark                                  mse 4.453125e-07
+```
+
+So the correction moves calibration from 0.107 to 0.623 on this window, and **the same model
+goes from losing to the random walk on MSE (4.587e-07 against 4.453e-07) to beating it
+(4.296e-07)**. Note the honest caveats: every model still *under*-forecasts at h=1, so the
+correction reduced the bias rather than removing it; and the 0.107 here differs from the 0.2529
+quoted above because that probe used a 2024-onward window, which is a different sample and not a
+different result.
+
+Witness: `test_the_smearing_factor_corrects_the_retransformation_bias`, which asserts only that
+the factor is at least 1 — that is Jensen's inequality, not calibration, and the calibration
+figures above are a recorded measurement rather than a standing test. Said plainly because an
+earlier draft of this ruling implied the test checked the calibration.
+
 *Cost if wrong:* three models and two losses is 6 trials per symbol-horizon, 72 for the full
 run, and the semi-log specification still fits a log scale while the loss is on the variance
 scale. Both are on the ledger rather than in a footnote.
@@ -626,6 +673,51 @@ from the truncated frame, so it was not a live defect — but it made correctnes
 dedupe rather than on the slice. Training values now come from `knowable_targets`' own output;
 only the realized value used for *scoring* is read from the whole frame, which is future relative
 to its origin by definition and is bounded by `dev_end` through `scoreable_origins`.
+
+### R78 — the ninth escape: the target audit checked the slice, not what the fit consumed
+
+Found by asking an advisor to attack the fix for R72, which is the right place to look: a fix
+written in a hurry to close an escape is the most likely place for the next one.
+
+`RunAudit.record_training` logs the maximum `as_of` of what `knowable_targets` **returned**. That
+proves the slice is correct. It does not prove the fit *used* the slice's output — which is the
+same tautology as R72, one level down. Verified by planting a training set built from the whole
+target frame, bypassing `knowable_targets` entirely:
+
+```
+PLANTED: training set built from the whole target frame, bypassing knowable_targets
+........................................                 [100%]
+40 passed in 40.67s
+```
+
+All 40, the R72 audit test and its red case included.
+
+**Closed by target-side truncation equivalence**, which is the same definition this whole phase
+rests on, applied to the other input: build the forecast at `t` from the full target frame, build
+it again from a frame that physically stops at `t`, and compare. It does not care *how* the
+future was reached, only whether removing it changes the answer — so unlike an audit it cannot
+be satisfied by something adjacent. On the plant:
+
+```
+AssertionError: 2024-04-12: the fit used 49 rows with the future present and 48 without it,
+so it was reading future targets
+```
+
+The audit is **kept as well**, because it localises a failure to an origin and a date where the
+equivalence test only says the answer moved. `realized` is excluded from the comparison: it is
+legitimately null in the truncated run, because the value being forecast has not happened yet,
+which is the point.
+
+Witness: `test_the_forecast_does_not_change_when_future_targets_are_removed`.
+*Cost if wrong:* one extra `evaluate` call per compared origin, and the comparison is over a
+sample of the toy fixture's origins rather than all of them.
+
+**The pattern, now nine for nine.** Every leakage property in this project that was checked by
+reasoning about the code has eventually been found wrong, and every one was caught by running
+something. Three of the nine were caught in Phase 2, and two of those three were in code written
+*to close a previous one*. The honest conclusion is not that the harness is finished but that
+this is the rate: a new mechanical claim here should be assumed to have a hole until a plant has
+been run against it.
 
 ### What the review found that is recorded and not fixed
 
@@ -673,13 +765,26 @@ ran in 400.4s
 run visited, which is a stride of 5 across 2021-2025 and **not** the dev window; the dev-window
 result is the separate exhaustive sweep.
 
-**Fixing the specification changed the ranking, which is the point of having fixed it.** Before
-the retransformation correction, the review observed that SPY h1 MSE was `har_log` 4.59e-07
-against `random_walk` 4.45e-07 — the HAR model losing to a single squared return. After it,
-`har_levels` is 3.89e-07 against the random walk's 4.45e-07, and it beats `har_semilog` too. A
-model that was 4x miscalibrated had been reported as the winner on QLIKE while losing to the
-benchmark on MSE, and the correction moved both. **This is the clearest argument in the phase for
-why calibration belongs in the harness rather than in a modelling footnote.**
+**Fixing the calibration changed a ranking, measured on the same model and the same window.**
+The first version of this paragraph compared the *pre-fix semi-log* model against the *post-fix
+levels* model, which is two different models and proves nothing; it also quoted a figure read
+from a ledger that had since been deleted. Re-measured properly, by holding everything fixed and
+forcing the smearing factor to 1:
+
+```
+har_semilog corrected   mse 4.295799e-07
+har_semilog uncorrected mse 4.586929e-07
+random_walk benchmark   mse 4.453125e-07
+```
+
+The same model goes from **losing** to a single squared return to **beating** it. The
+uncorrected 4.587e-07 independently reproduces the 4.59e-07 the review reported, which is worth
+noting: that figure came from a ledger this phase had already deleted, and it checked out.
+
+`har_levels` is better still at 3.889e-07 on this configuration, but that is a different model
+and is reported as such. **The lesson is that calibration belongs in the harness rather than in a
+modelling footnote**: a model that was 4x low was reported as the QLIKE winner while losing to
+the benchmark on MSE, and nothing in the suite looked at calibration at all.
 
 One honest caution about QLIKE here: it is reported as `log(f) + r/f` with no additive constant,
 so its *level* is meaningless — the daily variance proxies are order 1e-5 to 1e-8 and their log
@@ -755,4 +860,6 @@ this project exists to withhold.
   exogenous columns are not. That is correct and it is worth knowing.
 - **The 200-session holdout is thin at the 22- and 66-session horizons.** Inherited from Phase 1
   and unchanged by anything here.
-- **Log-HAR's scale mismatch** (R54).
+- **The semi-log specification's scale mismatch** (R54, R73): it fits a log scale while the
+  loss is on the variance scale, and it still under-forecasts at h=1 (0.623 of realized) after
+  the smearing correction. `har_levels` is closer at 0.775 and is not positive by construction.

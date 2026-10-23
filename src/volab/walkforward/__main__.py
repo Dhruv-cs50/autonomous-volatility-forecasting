@@ -1,9 +1,9 @@
 """``python -m volab.walkforward run`` -- refit and forecast at each origin, and count the trials.
 
 One verb. It reads the curated panel and one horizon's targets, both to ``dev_end``, rebuilds the
-feature table at every forecast origin from a panel truncated at that origin, fits log-HAR and
-the random-walk benchmark, scores QLIKE and MSE, and appends one ledger line per evaluated
-configuration.
+feature table at every forecast origin from a panel truncated at that origin, fits HAR in
+levels, HAR semi-log and the random-walk benchmark, scores QLIKE and MSE, and appends one
+ledger line per evaluated configuration.
 
 **There is no ``--end`` and no unlock flag.** Every read stops at ``settings.splits.dev_end``.
 Phase 6 is the only confirmatory read of the holdout, with both keys and an audit line; an
