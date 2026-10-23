@@ -1,0 +1,6 @@
+{
+  "source": "nasdaq_bars",
+  "symbol": "IWM",
+  "fetched_at": "2026-10-21T22:02:03.416871+00:00",
+  "source_url": "https://api.nasdaq.com/api/quote/IWM/historical?assetclass=etf&fromdate=2016-07-01&todate=2026-10-21&limit=99999"
+}

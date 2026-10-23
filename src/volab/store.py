@@ -1,9 +1,15 @@
-"""The only sanctioned read path, and the guard that seals the holdout window.
+"""The only sanctioned path in or out of the Parquet store, and the guard that seals the holdout.
 
 Statistical corrections do not catch leakage: a strategy built on a future-looking feature can
 pass every deflated-Sharpe and PBO check and still be worthless. Only the data layer can refuse,
-so this module refuses. ``load_panel`` is the sole way volab reads data, and the sole place
-permitted to read Parquet.
+so this module refuses. ``load_panel`` is the sole way volab reads data, and this module is the
+sole place permitted to touch Parquet at all -- in either direction.
+
+The ``write_*`` functions at the bottom are the writing half. They exist mainly to make step 9
+below unreachable: every row they accept must carry an ``as_of`` equal to the partition it is
+being written into, so a file that contradicts its own ``date=`` partition cannot be produced by
+this package. They do not consult the holdout boundary, and must not. Ingestion has to capture
+post-``dev_end`` rows or Phase 6 could never score them; the seal is on reads.
 
 The checks run in a fixed order, because which error surfaces first is part of the contract:
 
@@ -39,21 +45,39 @@ import inspect
 import json
 import os
 import subprocess
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 import volab
-from volab.config import Settings, load_settings
-from volab.errors import DatasetNotFound, HoldoutViolation, SchemaError, UnknownSymbol
-from volab.paths import MANDATORY_COLUMNS, Tier, dataset_glob
+from volab.config import HOLDOUT_UNLOCK_ENV, Settings, load_settings
+from volab.errors import (
+    DatasetNotFound,
+    HoldoutViolation,
+    RawOverwrite,
+    SchemaError,
+    UnknownSymbol,
+)
+from volab.paths import (
+    MANDATORY_COLUMNS,
+    Tier,
+    curated_path,
+    dataset_glob,
+    features_path,
+    raw_path,
+)
 
 AUDIT_FILENAME: str = "holdout_access.jsonl"
 
-_UNLOCK_ENV = "VOLAB_HOLDOUT_UNLOCK"
+# Re-bound under the private name this module has always used; ``config`` owns the string,
+# because its own refusal has to point at the same unlock.
+_UNLOCK_ENV = HOLDOUT_UNLOCK_ENV
 # Supplied by DuckDB's Hive partitioning, not by the file: step 9 compares the two.
 _PARTITION_COLUMN = "date"
 _REQUIRED_COLUMNS: tuple[str, ...] = (*MANDATORY_COLUMNS, _PARTITION_COLUMN)
@@ -129,7 +153,16 @@ def _git_state() -> tuple[str, bool | None]:
     def run(*args: str) -> str | None:
         try:
             completed = subprocess.run(
-                ["git", *args],
+                # ``--no-optional-locks`` is load-bearing, not tidiness. ``git status`` otherwise
+                # takes ``index.lock`` to refresh the index, and this runs on every audited read
+                # -- so a suite run would contend with a developer's own commit. Worse, the
+                # timeout below kills git mid-refresh and leaves a zero-byte ``index.lock``
+                # behind, which blocks every later commit until someone removes it by hand.
+                # Measured in this repository: ``git status --porcelain`` takes 3.06s against a
+                # 5.0s timeout, so the margin is 1.6x on 24,218 raw partitions over an
+                # iCloud-synced directory. That lock cost this project roughly an hour before the
+                # flag was traced as the cause. The flag makes the call read-only.
+                ["git", "--no-optional-locks", *args],
                 cwd=_PACKAGE_DIR,
                 capture_output=True,
                 text=True,
@@ -143,7 +176,21 @@ def _git_state() -> tuple[str, bool | None]:
     sha = run("rev-parse", "HEAD")
     if sha is None:
         return "unknown", None
-    status = run("status", "--porcelain")
+    # The pathspec is a cost fix, not a correctness one. The untracked walk is the whole
+    # expense -- ``!data/**/`` in .gitignore forces git across 80,742 files -- and the derivable
+    # tiers cannot tell us anything about reproducibility that the commit does not. Measured
+    # here: 2.70s unscoped against the 5.0s timeout, 0.018s scoped, and both still report a
+    # tracked modification and an untracked file. ``-uno`` would be wrong: it drops the
+    # untracked signal entirely.
+    status = run(
+        "status",
+        "--porcelain",
+        "--",
+        ".",
+        ":(exclude)data/raw",
+        ":(exclude)data/curated",
+        ":(exclude)data/features",
+    )
     return sha, None if status is None else bool(status)
 
 
@@ -228,15 +275,17 @@ def load_panel(
                 f"Unlock the window with allow_holdout=True and {_UNLOCK_ENV}=1 instead."
             )
 
-    # 1. Symbols must name the configured universe. A bare string would otherwise be iterated
-    #    into single characters here instead of reaching dataset_glob's own refusal.
+    # 1. Symbols must name the configured universe or the exogenous series. A bare string would
+    #    otherwise be iterated into single characters here instead of reaching dataset_glob's own
+    #    refusal.
     if isinstance(symbols, str):
         raise ValueError(f"symbols must be a sequence of names, not a bare string: {symbols!r}")
     if symbols is not None:
-        unknown = sorted(set(symbols) - set(resolved.universe))
+        unknown = sorted(set(symbols) - set(resolved.universe) - set(resolved.exogenous))
         if unknown:
             raise UnknownSymbol(
-                f"symbol(s) {unknown} are not in the configured universe {list(resolved.universe)}"
+                f"symbol(s) {unknown} are in neither the configured universe "
+                f"{list(resolved.universe)} nor the exogenous series {list(resolved.exogenous)}"
             )
 
     # The same shape rules for columns: a bare string would be iterated into single characters
@@ -399,8 +448,168 @@ def load_panel(
             outcome="success",
         )
 
+    # Timestamps come back in UTC whatever the host's timezone is. DuckDB renders a TIMESTAMP
+    # WITH TIME ZONE in its session timezone, which defaults to the system's, so the same read on
+    # a laptop in America/Los_Angeles and on CI in UTC would otherwise return identical instants
+    # under different dtypes -- ``datetime64[us, America/Los_Angeles]`` against
+    # ``datetime64[us, UTC]``. The instants were always right; the dtype was not reproducible,
+    # and for a project whose claim rests on reproducibility that is the same kind of defect. A
+    # naive column is left alone rather than localised, because assuming a naive timestamp is UTC
+    # is exactly the silent repair this layer refuses to make.
+    aware = {
+        name: frame[name].dt.tz_convert("UTC")
+        for name in ("ts", "ingested_at")
+        if isinstance(frame[name].dtype, pd.DatetimeTZDtype)
+    }
+    if aware:
+        frame = frame.assign(**aware)
+
     # Last operation before returning, so every check above saw the full schema. The Hive
     # ``date`` column is a partition artefact duplicating ``as_of``; it is not part of the contract.
     if columns is None:
         return frame.drop(columns=[_PARTITION_COLUMN])
     return frame[list(columns)]
+
+
+def _pinned_schema(frame: pd.DataFrame) -> pa.Schema:
+    """The frame's own Arrow schema with the mandatory columns' types pinned.
+
+    ``as_of`` must land as ``date32`` and the two timestamps as microsecond timestamps, because
+    that is what ``tests/conftest.py`` writes and what ``_as_dates`` expects to read back. Left
+    to inference, a column of ``datetime.date`` objects arrives as a string or an object column
+    and step 9's comparison would be reading a different type than it was written as. Payload
+    columns keep whatever Arrow infers.
+    """
+    inferred = pa.Schema.from_pandas(frame, preserve_index=False)
+    zone = frame["ts"].dt.tz
+    pinned = {
+        "as_of": pa.date32(),
+        "ts": pa.timestamp("us", tz=str(zone)),
+        "ingested_at": pa.timestamp("us", tz="UTC"),
+    }
+    return pa.schema(
+        [pa.field(field.name, pinned.get(field.name, field.type)) for field in inferred]
+    )
+
+
+def _write(frame: pd.DataFrame, path: Path, *, as_of: dt.date, allow_overwrite: bool) -> Path:
+    """Validate ``frame`` against ``as_of`` and write it to ``path``, atomically.
+
+    The checks run in a fixed order, for the same reason ``load_panel``'s do: which error a
+    caller sees is part of the contract. Emptiness is judged before any dtype, because an empty
+    frame's columns carry no usable dtype -- pandas gives ``float64`` to an empty list -- so a
+    dtype complaint about a frame with no rows would name the wrong fault.
+    """
+    # ``datetime`` is a subclass of ``date``, so mypy accepts one here and the path builders
+    # would silently emit ``date=2023-06-15T12:00:00`` -- a partition ``parse_path`` rejects and
+    # Hive partitioning misreads. Phase 0 deferred this as a latent builder defect; it was
+    # unreachable while nothing under ``src/`` wrote files, and this function is what makes it
+    # reachable, so it is refused here rather than left to produce a corrupt partition.
+    if isinstance(as_of, dt.datetime):
+        raise SchemaError(f"as_of must be a plain date, not a datetime: {as_of!r}")
+
+    missing = [name for name in MANDATORY_COLUMNS if name not in frame.columns]
+    if missing:
+        raise SchemaError(f"cannot write {path}: missing mandatory column(s) {missing}")
+
+    if frame.empty:
+        raise SchemaError(f"cannot write {path}: the frame has no rows")
+
+    if not isinstance(frame["ts"].dtype, pd.DatetimeTZDtype):
+        raise SchemaError(
+            f"cannot write {path}: column 'ts' must be timezone-aware, "
+            f"got dtype {frame['ts'].dtype}"
+        )
+
+    null_as_of = int(frame["as_of"].isna().sum())
+    if null_as_of:
+        raise SchemaError(f"cannot write {path}: {null_as_of} row(s) have a null as_of")
+
+    # The whole reason this function exists. A row whose as_of disagrees with the partition it is
+    # being written into is what load_panel step 9 raises on at read time; refusing it here means
+    # that step can never fire on data this package wrote.
+    disagreeing = _as_dates(frame["as_of"]) != as_of
+    if bool(disagreeing.any()):
+        first = frame.loc[disagreeing, "as_of"].iloc[0]
+        raise SchemaError(
+            f"cannot write {path}: {int(disagreeing.sum())} row(s) carry an as_of that "
+            f"contradicts the partition being written, first {first} under date={as_of}"
+        )
+
+    # Checked after validation, deliberately: a schema fault is a code defect, while a collision
+    # is often expected operational state -- a resumed backfill meeting work it already did. The
+    # defect is the more useful thing to report first, and nothing has reached disk either way,
+    # because the write below goes to a temp file and is renamed into place.
+    if path.exists() and not allow_overwrite:
+        raise RawOverwrite(
+            f"{path} already exists and raw files are immutable; a second ingest of the same "
+            "source, symbol and date within one second collides on the filename stamp"
+        )
+
+    table = pa.Table.from_pandas(frame, schema=_pinned_schema(frame), preserve_index=False)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Written beside the destination and moved into place, so a crash or a full disk leaves the
+    # partition either absent or complete -- never a truncated Parquet file for a later read to
+    # trip over. os.replace is atomic within a filesystem, and the temp file shares the directory
+    # precisely to guarantee that.
+    descriptor, name = tempfile.mkstemp(dir=path.parent, prefix=".part-", suffix=".parquet.tmp")
+    os.close(descriptor)
+    temporary = Path(name)
+    try:
+        pq.write_table(table, temporary)
+        os.replace(temporary, path)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def write_raw(
+    frame: pd.DataFrame,
+    *,
+    source: str,
+    symbol: str,
+    as_of: dt.date,
+    ingested_at: dt.datetime,
+    settings: Settings | None = None,
+) -> Path:
+    """Write one immutable raw partition and return its path.
+
+    Refuses to replace an existing file: raw is the archive of what a vendor served, and for a
+    trailing-window source it is the only copy of sessions that can no longer be refetched.
+    """
+    resolved = load_settings() if settings is None else settings
+    path = raw_path(resolved.storage_root, source, symbol, as_of, ingested_at)
+    return _write(frame, path, as_of=as_of, allow_overwrite=False)
+
+
+def write_curated(
+    frame: pd.DataFrame,
+    *,
+    dataset: str,
+    symbol: str,
+    as_of: dt.date,
+    settings: Settings | None = None,
+) -> Path:
+    """Write one curated partition and return its path, replacing any existing file.
+
+    Curated data is a deterministic derivation of raw, so overwriting is what makes a rebuild
+    idempotent rather than a conflict.
+    """
+    resolved = load_settings() if settings is None else settings
+    path = curated_path(resolved.storage_root, dataset, symbol, as_of)
+    return _write(frame, path, as_of=as_of, allow_overwrite=True)
+
+
+def write_features(
+    frame: pd.DataFrame,
+    *,
+    feature_set: str,
+    symbol: str,
+    as_of: dt.date,
+    settings: Settings | None = None,
+) -> Path:
+    """Write one feature partition and return its path, replacing any existing file."""
+    resolved = load_settings() if settings is None else settings
+    path = features_path(resolved.storage_root, feature_set, symbol, as_of)
+    return _write(frame, path, as_of=as_of, allow_overwrite=True)

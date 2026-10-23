@@ -6,6 +6,9 @@ an unmarked test that unlocks it is failed rather than trusted. It fails an unma
 reads past the repository's own ``dev_end`` too, however it got there: reaching for the keys is
 one way past the seal, and handing ``load_panel`` a ``Settings`` with a later boundary was
 another.
+
+``_clean_volab_environment`` is the other half of that: the police asks ``load_settings`` where
+the boundary is, so the boundary must not be settable from outside the suite.
 """
 
 from __future__ import annotations
@@ -118,6 +121,7 @@ def synthetic_store(tmp_path: Path) -> SyntheticStore:
     # the repository, which a temporary directory by design does not.
     settings = Settings(
         universe=("SPY", "QQQ", "IWM"),
+        exogenous=("VIX", "VIX9D", "VIX1D", "VVIX", "BAA10Y", "DGS10", "T10Y2Y"),
         calendar="XNYS",
         splits=Splits(dev_end=dt.date(2023, 12, 31), holdout_start=dt.date(2024, 1, 2)),
         storage_root=tmp_path,
@@ -126,8 +130,35 @@ def synthetic_store(tmp_path: Path) -> SyntheticStore:
 
 
 @pytest.fixture(autouse=True)
+def _clean_volab_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Clear every ``VOLAB_*`` configuration override, for every test.
+
+    ``VOLAB_SPLITS_DEV_END`` is the one that matters. The fixture below asks ``load_settings``
+    for the repository's own boundary, so a variable that moved it would move the police with
+    it, and every assertion the suite makes about the seal would be made against a boundary
+    chosen from outside the suite. ``volab.config`` refuses a *later* one now. An earlier one
+    is legitimate configuration and is cleared anyway, but it is the harmless direction: it
+    *widens* what counts as sealed, so the police becomes over-strict and fails closed. Noisy,
+    never silent.
+
+    The others are cleared for the ordinary reason: a test that reads the configuration must
+    see the committed file, not a developer's shell. The names come from ``_ENV_OVERRIDES``
+    rather than being copied, so a setting added there cannot be forgotten here.
+
+    ``VOLAB_HOLDOUT_UNLOCK`` is deliberately not in that map -- it is a key, not a setting --
+    and ``_forbid_holdout_unlock`` deals with it per test instead.
+    """
+    from volab.config import _ENV_OVERRIDES
+
+    for variable in _ENV_OVERRIDES.values():
+        monkeypatch.delenv(variable, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _forbid_holdout_unlock(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    _clean_volab_environment: None,
 ) -> Iterator[None]:
     """Fail any unmarked test that unlocks the holdout, or that reads past it regardless.
 

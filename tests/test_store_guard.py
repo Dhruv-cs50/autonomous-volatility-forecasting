@@ -10,13 +10,17 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import json
+import re
+import subprocess
+from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+import volab
+from volab import store
 from volab.config import Splits
 from volab.errors import DatasetNotFound, HoldoutViolation, SchemaError, UnknownSymbol
 from volab.paths import MANDATORY_COLUMNS, Tier, curated_path
@@ -88,7 +92,11 @@ def test_columns_none_returns_the_contract_columns_without_the_partition_artefac
     assert "date" not in frame.columns
 
 
-@pytest.mark.parametrize("empty", [[], (), pd.Index([]), np.array([], dtype=str)], ids=type)
+# A list, a tuple, and two pandas sequences whose truthiness is ambiguous -- which is why
+# ``load_panel`` judges ``columns`` by ``len`` and not by ``bool``. numpy would be the
+# obvious fourth, but it is only a transitive dependency of pandas here and this suite does
+# not import it; ``pd.Series`` raises on ``bool()`` just as an ndarray does.
+@pytest.mark.parametrize("empty", [[], (), pd.Index([]), pd.Series([], dtype=str)], ids=type)
 def test_empty_columns_raises_value_error(synthetic_store, empty) -> None:
     synthetic_store.write("bars_daily", "SPY", [DEV_DAY])
 
@@ -284,6 +292,56 @@ def test_both_keys_return_holdout_rows_and_write_one_audit_line(
         "git_sha",
         "git_dirty",
     }
+
+
+def test_the_audit_stamp_never_takes_gits_index_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every git call in the audit stamp passes ``--no-optional-locks``.
+
+    Without it, ``git status`` takes ``index.lock`` to refresh the index, and the stamp's own
+    timeout can kill git mid-refresh and leave a zero-byte lock that blocks later commits. A
+    suite run would then be a source of the locks it has to work around, which is how this was
+    found. Asserted on the argv rather than on behaviour, because reproducing the contention
+    needs a concurrent committer.
+    """
+    seen: list[list[str]] = []
+
+    class Completed:
+        returncode = 0
+        stdout = "deadbeef"
+
+    def fake_run(argv: list[str], **kwargs: object) -> Completed:
+        seen.append(argv)
+        return Completed()
+
+    monkeypatch.setattr(store.subprocess, "run", fake_run)
+    store._git_state()
+
+    assert seen, "the stamp made no git call at all"
+    for argv in seen:
+        assert argv[0] == "git"
+        assert argv[1] == "--no-optional-locks", f"{argv} can take index.lock"
+
+
+def test_git_accepts_the_no_optional_locks_flag() -> None:
+    """The flag is real, not just present in the argv.
+
+    The test above stubs ``subprocess.run``, so it would pass just as happily on a typo. A
+    rejected flag exits 129, which ``run()`` maps to ``None``, so every audit line would quietly
+    degrade to ``git_sha: "unknown"`` with nothing going red. This calls git for real to close
+    that. Only the ``rev-parse`` leg: the ``status`` leg walks the tree and belongs nowhere in a
+    unit test.
+    """
+    completed = subprocess.run(
+        ["git", "--no-optional-locks", "rev-parse", "HEAD"],
+        cwd=Path(volab.__file__).resolve().parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0 and "not a git repository" in completed.stderr.lower():
+        pytest.skip("not inside a git work tree")
+    assert completed.returncode == 0, f"git rejected the flag: {completed.stderr.strip()}"
+    assert re.fullmatch(r"[0-9a-f]{40}", completed.stdout.strip())
 
 
 def test_dev_window_read_writes_no_audit_line(synthetic_store) -> None:

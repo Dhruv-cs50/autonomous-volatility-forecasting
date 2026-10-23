@@ -1,0 +1,7 @@
+{"data":{"symbol":"SPY","totalRecords":2,
+  "tradesTable":{"asOf":null,
+    "headers":{"date":"Date","close":"Close/Last","volume":"Volume","open":"Open","high":"High","low":"Low"},
+    "rows":[
+      {"date":"07/01/2016","close":"209.48","volume":"1,000,000","open":"209.00","high":"210.00","low":"208.50"},
+      {"date":"06/30/2016","close":"209.47","volume":"2,000,000","open":"208.00","high":"209.90","low":"207.75"}]}},
+ "message":null,"status":{"rCode":200,"bCodeMessage":null,"developerMessage":null}}

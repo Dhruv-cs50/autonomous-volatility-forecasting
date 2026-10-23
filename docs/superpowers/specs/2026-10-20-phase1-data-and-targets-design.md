@@ -37,6 +37,8 @@ that the test fails, revert, and publish that evidence.
   class of defect, proven by mutation.
 - A faithful raw tier plus a replayable vendor-payload archive, so a rebuild survives Nasdaq's
   trailing window (section 13).
+- A `has_distribution` flag on `curated/bars_daily`, because dividend drops bias one specific
+  feature in one specific direction (section 6a).
 - Moving the dev/holdout boundary (section 5), the one config change this phase makes.
 - One additive config key, `exogenous`, and the matching additive change to `load_panel`'s
   symbol check (section 8).
@@ -88,7 +90,7 @@ documentation. All three working sources need **no API key** and no account.
 
 | Dataset | Endpoint | Verified span | Grain |
 |---|---|---|---|
-| Daily bars, SPY/QQQ/IWM | `api.nasdaq.com/api/quote/{sym}/historical?assetclass=etf` | 2016-10-19 → 2026-10-19, **2513 sessions** | daily OHLCV |
+| Daily bars, SPY/QQQ/IWM | `api.nasdaq.com/api/quote/{sym}/historical?assetclass=etf` | a trailing **2,513 sessions**; 2016-10-19 → 2026-10-19 when first probed, 2016-10-20 → 2026-10-20 two days later | daily OHLCV |
 | VIX | `cdn.cboe.com/api/global/us_indices/daily_prices/VIX_History.csv` | 1990-01-02 → 2026-10-19 (9297) | daily OHLC |
 | VIX9D | …`/VIX9D_History.csv` | 2011-01-04 → 2026-10-19 (3971) | daily OHLC |
 | VIX1D | …`/VIX1D_History.csv` | **2022-05-13** → 2026-10-19 (1112) | daily OHLC |
@@ -166,11 +168,15 @@ produces a number.
 
 ### Why these dates
 
+Bar counts are as of the 2016-10-20 floor; the window is trailing, so the first column drifts
+down by one for every session that passes before the backfill runs (see section 15). VIX1D's 912
+and the holdout's 200 are fixed, because neither source is trailing.
+
 | `dev_end` | bar sessions in dev | VIX1D sessions in dev | holdout sessions (at 2026-10-19) |
 |---|---|---|---|
 | 2023-12-31 (old) | 1811 | 410 | 702 |
 | 2025-06-30 | 2185 | 784 | 328 |
-| **2025-12-31 (chosen)** | **2313** | **912** | **200** |
+| **2025-12-31 (chosen)** | **2312** | **912** | **200** |
 | 2026-03-31 | 2374 | 973 | 139 |
 | 2026-06-30 | 2436 | 1035 | 77 |
 
@@ -265,6 +271,19 @@ absent from `_ENV_OVERRIDES`, so a `fred_lags:` section would need a second addi
 and section 8's single key is worth keeping. "Configurable" here means editing that dict, stated
 rather than quietly assumed.
 
+`fredgraph.csv` emits a row for **every business day** and leaves the value **empty** on a
+market holiday. It sends no `.` placeholder, which is the marker FRED's other interfaces use.
+
+An earlier version of this paragraph said the endpoint "omits missing observations", which was
+wrong and wrong in an instructive way: the `.` count was measured and found to be zero, and
+absence of the marker was then read as absence of the row. Nobody checked for an empty field.
+Measured properly, `BAA10Y` carries **444 empty values in 10,645 rows**, every one a market
+holiday. The parser skips those rows -- an empty field is an explicit statement that there was
+no observation, which differs in kind from a value it cannot read -- and still raises on
+anything else. Parsing still refuses to coerce an unrecognised value, so a `.`
+arriving from a series not sampled here fails loudly rather than becoming `0.0` — but that
+handling is defensive, not a response to anything this endpoint was observed to do.
+
 FRED's keyless `fredgraph.csv` endpoint serves the **latest vintage only**, so revisions are
 not captured and a revised value silently replaces its original. For daily rate and spread
 series revisions are rare, so this is accepted as a known limitation; capturing true vintages
@@ -292,6 +311,50 @@ never passes an `end` past `dev_end`**; the curation and feature steps pass
 rows of the curated and feature tiers from raw, and leaves the audit line recording it. So
 section 8's "raw must be the rebuild source" holds for the dev window now and the holdout window
 then.
+
+
+### 6a. Distributions are flagged, never silently adjusted
+
+Nasdaq's closes are unadjusted, so every distribution date carries a spurious negative return.
+This is not generic noise to revisit later: it is **systematic, signed, and lands in the one
+feature whose entire purpose is to treat negative returns differently.** SPY distributes four
+times a year at roughly 0.3% of price; squared that is ~7.8e-6 against a typical daily variance
+near 1.2e-4, so each event injects roughly 6% of a normal day's variance — always negative,
+always into `semivar_neg_proxy_d{n}` and `signed_jump_proxy_d{n}`, on about 40 of the dev
+window's 2,513 sessions. Leaving that to "Phase 2 diagnostics" would mean the framework's
+second-ranked input is quietly contaminated on dates that were knowable in advance.
+
+So `curated/bars_daily` carries a boolean **`has_distribution`** column.
+
+**Returns are flagged, not adjusted.** Adjusting would destroy raw fidelity (section 13) and
+would bake a correction into the data before anyone has decided it is the right one. Flagging
+hands Phase 2 the information and lets it choose to adjust, exclude, or dummy the date — which
+is the same philosophy this spec applies everywhere else.
+
+#### What the vendor actually serves, verified 2026-10-19
+
+`api.nasdaq.com/api/quote/{sym}/dividends?assetclass=etf` returns ex-date, amount, record date
+and payment date — **for QQQ only** (58 rows, 2012-06-15 → 2026-09-21). **SPY and IWM return
+zero rows**, under `assetclass` values `etf`, `stocks` and `index` alike. No other keyless
+declared source was found.
+
+The resulting split, which the builder implements as stated rather than papering over:
+
+- **QQQ** — ingest the distribution calendar as `raw/nasdaq_dividends/QQQ/...` and set
+  `has_distribution` from it.
+- **SPY and IWM** — `has_distribution` is written as `False` everywhere, and the column carries
+  a dataset-level note that it is **unverified** for these two symbols. The contamination is
+  recorded in section 15 with its magnitude.
+
+**The builder must not infer distribution dates from the bars.** Detecting a close-to-close drop
+the open does not confirm conflates distributions with genuine overnight news, and a false
+positive here is worse than a missing flag: Phase 2 would exclude or dummy a real volatility
+event, which is a leak of the researcher's hindsight into the sample. A missing flag only leaves
+a known bias known.
+
+A deterministic schedule may exist — SPY ex-dates are widely held to fall on the third Friday of
+each quarter-end month — but that is unverified here and is not asserted. If Phase 2 finds the
+contamination material, verifying that schedule against a declared source is the cheapest fix.
 
 
 ## 7. The write path lives in `store.py`
@@ -392,18 +455,27 @@ nothing else. Let `r_t = log(C_t / C_{t-1})` over consecutive XNYS sessions, fro
 | `semivar_pos_proxy_d{n}` | `Σ r² · 1{r > 0}` over the window | as above, positive |
 | `signed_jump_proxy_d{n}` | `semivar_pos_proxy_d{n} − semivar_neg_proxy_d{n}` | daily-return analogue of the signed jump |
 | `bipower_proxy_d{n}` | `(π/2) · Σ_{i=0}^{n-2} \|r_{t-i}\| · \|r_{t-i-1}\|`, `n ≥ 2` | bipower on daily returns |
-| `har_d`, `har_w`, `har_m` | `r_t²`; mean of the last 5; mean of the last 22 | standard HAR components on the RV proxy |
+| `har_d_proxy`, `har_w_proxy`, `har_m_proxy` | `r_t²`; mean of the last 5; mean of the last 22 | standard HAR components, computed on the RV **proxy** |
 | `iv_h1`, `iv_h5`, `iv_h22` | VIX1D, VIX9D, VIX closes | horizon-matched implied vol, annualised % |
 | `iv_var_h{1,5,22}` | `(close/100)² · (h/252)` | the same, as variance over the horizon |
 | `vvix` | VVIX close | vol-of-vol |
 | `baa10y`, `dgs10`, `t10y2y` | FRED levels, lagged per section 6 | credit spread and rate context |
+| `has_distribution` | passed through from `curated/bars_daily` | ex-distribution flag; QQQ only, see section 6a |
 
 Horizon matching follows the research: VIX1D for 1 day, VIX9D (9 calendar days ≈ 6 sessions)
 for the 5-day horizon, VIX (30 calendar days ≈ 21 sessions) for 22 days.
 
 **Naming is a correctness requirement, not style.** Every daily-return estimator carries
-`_proxy_`. A later phase comparing against the literature must not be able to mistake these for
+`_proxy`. A later phase comparing against the literature must not be able to mistake these for
 intraday measures.
+
+An earlier draft of this table listed the HAR components as bare `har_d` / `har_w` / `har_m`,
+which contradicted that rule in the same section that states it: they are means of the
+squared-daily-return proxy and carry exactly the confusion the rule exists to prevent. The
+**persisted column names** therefore take the suffix. `har_components()`'s own dict keys stay
+`har_d` / `har_w` / `har_m`, because they are internal to a function whose docstring says what
+they are made of, and the confusion the rule guards against happens where a column is read back
+months later, not inside one function.
 
 **Incomplete windows yield null, never a partial sum.** A feature at `t` whose window extends
 before the panel's first session is `NaN`. Nulls are written, not dropped, so the table has one
@@ -485,8 +557,24 @@ one. The guard Phase 0 built does the work.
 
 ## 11. Point-in-time tests — the exit criterion
 
-`tests/test_point_in_time.py`. Byte-identity means per column: equal dtype, and
-`frame[col].to_numpy().tobytes()` equal. Float tolerance is not used anywhere in this file.
+`tests/test_point_in_time.py`. Byte-identity means per column: equal dtype, and equal canonical
+bytes — **not** a literal `frame[col].to_numpy().tobytes()`, which this spec prescribed until it
+was probed and found unusable. `tobytes()` on an object array compares *pointers*, so two
+independently built copies of one identical panel compare unequal; measured, `symbol` (pandas 3
+`str`), `ts` (`datetime64[us, UTC]`) and `as_of` (`object`) all came back unequal while only
+`float64` held. Applied literally the assertion would have failed on every run, and the obvious
+repair — skipping the columns that misbehave — would have quietly stopped checking the identity
+columns altogether.
+
+So the comparison is canonical per dtype: raw buffers for floats and datetimes, values plus the
+null mask for nullable booleans, and `repr` for object columns. **No float tolerance anywhere in
+this file**, and each branch of the canonicaliser carries its own red case.
+
+This is the third prescription in this section to be wrong, after the perturbation menu and its
+coverage. The pattern is worth naming: every part of §11 that was written as prose and not
+checked against a running interpreter turned out to be mistaken, and each was caught by probing
+or mutation rather than by review. Treat the remaining prose here as a statement of intent that
+an implementer is expected to verify, not as a recipe.
 
 These tests call `build_features(panel, through=T₀)` **directly**, with a panel built in the
 test and never round-tripped through `load_panel`. That is essential: routing the panel through
@@ -502,8 +590,33 @@ perturbation that silently no-ops would make its test pass for the wrong reason.
 
 1. **`test_perturbing_post_t_leaves_features_byte_identical`** — the exit criterion. Build a
    panel through `T`. Call `build_features(panel, through=T₀)` with `T₀ < T`. Then mutate every
-   row after `T₀`: scale closes, flip return signs, inject NaN, delete rows, append new
-   sessions. Recompute with the same `through=T₀`. Assert byte-identical, column by column.
+   row after `T₀` and recompute with the same `through=T₀`. Assert byte-identical, column by
+   column.
+
+   **The perturbation must change the sign structure of future returns, not only their
+   magnitudes, and this is a requirement rather than one option among several.** Scaling every
+   future close by a constant leaves the sign of every future return unchanged, so a
+   sign-dependent feature that peeks forward survives it — and `semivar_neg_proxy` is exactly
+   such a feature, which makes mutation 1 below the one a scale-only perturbation lets escape.
+   This was found the hard way during US-4.1: the mutation initially passed the perturbation
+   test, and the test was only made to bite by replacing the scaling with a decaying future
+   path. A perturbation set that misses this is the vacuous-test failure in section 3, reached
+   by following section 11 too literally.
+
+   Use a decaying or sign-alternating future path, plus the rest: inject NaN, delete rows,
+   append new sessions.
+
+   **And the perturbation must touch every input group, not only the ones under suspicion.**
+   This was found the same way, one story later, and it is the same mistake in a different
+   dress. US-4.1's perturbation rewrote the bars' `close` and FRED's `value` and left the
+   VIX-family closes and `has_distribution` alone — so a forward peek planted in
+   `has_distribution` (`flag | flag.shift(-3)`) passed **both** leakage tests, caught only
+   incidentally by a value test. Verified by mutation, not inferred.
+
+   A perturbation that misses an input misses every forward peek that input could host, however
+   strong it is on the inputs it does touch. So the test perturbs the bars' closes, every
+   exogenous series' values, and the pass-through flags — all of them, every time. A reviewer
+   should check the perturbation's *coverage* before examining its strength.
 2. **`test_panel_extent_does_not_change_features`** — `build_features(panel_to_T₀,
    through=T₀)` equals `build_features(panel_to_T, through=T₀)`. Catches a feature that depends
    on the panel's extent — a mean over the whole frame, a `max()`, a normalisation by a
@@ -540,10 +653,27 @@ A leakage test nobody has watched fail is not evidence. Before the PR, the build
 A mutation that only test 4 catches means test 1 is too weak and must be strengthened. A
 mutation that only test 1 catches is acceptable but worth noting.
 
-Run a **second** mutation against test 2, since the two tests catch different defects and test
-2's is the easier one to write by accident: replace a trailing `.rolling(22).mean()` with a
-full-sample `.mean()`. Test 1 will not catch it — no individual row changed — and test 2 must.
-Record that output too. If test 2 misses it, the test is wrong, not the mutation.
+Run a **second** mutation of a different *kind*, not merely against a different test: replace a
+trailing window with a **full-sample statistic**, such as normalising by the mean of the whole
+series. Record that output too.
+
+An earlier draft of this paragraph predicted that test 1 would not catch it, "no individual row
+changed". **That reasoning is wrong and the measurement says so**: a full-sample statistic
+includes the perturbed future rows, so test 1 catches it along with tests 2 and 3.
+
+What makes this mutation worth running is the thing the draft missed. It contains **no forward
+syntax at all**, so the AST scan is structurally blind to it — confirmed: the scan's five cases
+all pass under it while six behavioural tests fail. The two mutations therefore demonstrate that
+the two layers are complementary rather than redundant:
+
+| Mutation | Behavioural tests | AST scan |
+|---|---|---|
+| forward offset (`shift(-1)`) | catch it | catches it |
+| full-sample statistic | catch it | **blind to it** |
+
+A suite with only the scan would miss every leak of the second kind, which is the commoner one
+in real research code. That is the argument for keeping both, and it is why the second mutation
+is required rather than optional.
 
 
 ## 12. Physical layout cost, and the performance budget
@@ -579,11 +709,29 @@ records both numbers in `phase1-decisions.md`.
 on the development laptop; a single `load_panel` of curated bars finishes in under 30 seconds.
 
 **Revisit trigger.** If either budget is missed, **stop before writing the remaining ~86,000
-files** and escalate. Three levers exist, in order of preference: (a) narrow the ingested
-history further; (b) relax the one-`as_of`-per-partition invariant so a partition may span a
-date range — which makes `load_panel` step 9 reachable again and must be re-justified if so;
-(c) add partition pruning to `load_panel`, which contradicts its own docstring and is a last
-resort. All three are design changes, not tuning, and none is the builder's call alone.
+files** and escalate. Four levers exist, in order of preference:
+
+(a) **Narrow the ingested history further.** Cheapest, loses sample.
+
+(b) **Partition coarser — `date=YYYY-MM` — and weaken step 9 from equality to containment**,
+asserting each row's `as_of` falls inside its partition's month rather than equalling it. This
+cuts the file count by roughly 21x and is the lever to reach for first. Equality is a *stronger*
+assertion than the defect requires: step 9 exists to catch a row parked under a contradicting
+partition, and an `as_of` of 2024-03 under a `date=2023-06` partition still fires on containment.
+What containment gives up is the narrow case of a row misfiled *within* its own month — a
+2024-03-07 row under `date=2024-03` alongside 2024-03-11 rows — which the partition value can no
+longer distinguish. That case is not what the check was written for, and `write_*`'s own
+per-row assertion still covers everything this code writes. State that trade explicitly when
+proposing it.
+
+(c) **Relax one-`as_of`-per-partition entirely**, so a partition may span any date range. Strictly
+weaker than (b) for the same benefit.
+
+(d) **Add partition pruning to `load_panel`**, which contradicts its own docstring and is the last
+resort.
+
+All four are design changes, not tuning, and none is the builder's call alone. If the budget is
+missed, propose (b).
 
 The invariant is not pre-emptively traded away, because one `as_of` per partition is what makes
 step 9 unreachable from data this code wrote, and that is worth more than file count until a
@@ -598,30 +746,94 @@ simple invariant gets spent for nothing.
 Once a session falls off Nasdaq's trailing window, whatever was written is the only copy that
 will ever exist. "Immutable" and "faithful" are different properties and only the first one
 follows from section 7, so the second is stated here: **the raw tier keeps every field the
-vendor served, as served.** Nasdaq's prices stay the `"$123.45"` strings they arrive as. Raw
-rows carry the four mandatory columns, every vendor field unmodified, and provenance —
-`source_url`, `vendor_date_text`, `fetched_at`.
+vendor served, as served.** Raw rows carry the four mandatory columns, every vendor field
+unmodified, and provenance — `source_url`, `vendor_date_text`, `fetched_at`.
+
+What "as served" means here, verified against live payloads on 2026-10-19 rather than assumed:
+
+- **Nasdaq bars** send prices as bare numeric strings (`"766.48"`) with **no** currency symbol,
+  and volume with thousands separators (`"38,680,060"`). An earlier draft of this spec claimed
+  the prices carried a `$`; on this endpoint they do not.
+- **Nasdaq dividends** do use a currency symbol, on the amount (`"$0.75143"`), and send `"N/A"`
+  for an absent declaration date.
+- **Cboe** sends `MM/DD/YYYY` dates and plain decimals; `VVIX_History.csv` has two columns where
+  the other three have five.
+- **FRED** sends `observation_date,<SERIES_ID>` as its header, so the value column is named after
+  the series rather than `value`.
 
 All parsing, numeric coercion and normalisation happen at the **curated** step. A parse bug
 found in Phase 3 is then a curated rebuild rather than destroyed history, which is the whole
 point of having a raw tier at all.
 
-### The payload archive
+### The payload archive is committed, deliberately
 
-Each fetch also writes the untouched response body to
-`data/vendor_payloads/<source>/<symbol>/<fetched_at>.<ext>.gz`, and `build-raw` can replay from
-those instead of the network. That is what makes any rebuild possible once the trailing window
-has moved past the data.
+Each fetch writes the untouched response body to
+`data/vendor_payloads/<source>/<symbol>/<fetched_at>.<ext>.gz`, and `build-raw --replay` rebuilds
+raw from those instead of the network. That is what makes any rebuild possible once Nasdaq's
+trailing window has moved past the data.
 
-**The archive is not committed.** `.gitignore` excludes `data/**` and that stays. Nasdaq's and
-Cboe's data is theirs, this repository is public, and the framework document's own rule is to
-publish code and derived metrics rather than raw vendor data. This is my call, taken on the
-safer side of a licensing question rather than Dhruv's to adjudicate; if he wants the archive
-committed, that is a deliberate licensing decision and a one-line `.gitignore` exception.
+**The archive is committed to this public repository, for all three sources.** `.gitignore` keeps
+ignoring `data/**` and gains one narrow exception for `data/vendor_payloads/**` only — the
+curated, features and targets tiers stay out of git, and `data/holdout_access.jsonl` keeps its
+own existing exception.
 
-The consequence must be stated rather than hidden: **the irreplaceable asset lives on one
-laptop and git will not protect it.** Backing it up is Dhruv's action, outside this phase's
-code, and it appears in section 15 as a risk rather than being quietly solved here.
+This is Dhruv's decision, taken with the trade in front of him and recorded here so a later
+reader can see it was weighed rather than overlooked. What he was shown: that the three sources
+are not equally exposed — Cboe publishes these CSVs openly and FRED's own series are US
+government work in the public domain, so only Nasdaq's undocumented backend is genuinely being
+republished; that git history is effectively permanent, so a committed payload cannot
+meaningfully be withdrawn later; and that the durability goal was reachable without publishing
+anything, by keeping the Nasdaq tree in a private repository. He chose durability and
+self-contained reproducibility over licensing caution for all three.
+
+The framework document's own rule — publish code, download scripts and derived metrics rather
+than raw vendor data — is therefore **knowingly departed from here**, for Nasdaq specifically.
+That is the cost of the decision and it is not hidden.
+
+What it buys is real: the repository reproduces its own dataset from a clean checkout with no
+credentials and no live endpoint, which is a property the trailing window would otherwise have
+made impossible. A `NOTICE` file at the repository root names each payload tree's provenance,
+records that the data remains Nasdaq's, Cboe's and the St. Louis Fed's respectively, and states
+that it is included to make the research reproducible.
+
+### Archive shape and cadence: one immutable file per payload
+
+Committing the archive makes its growth git's problem, so the shape is a design decision rather
+than an implementation detail. Measured payload sizes, fetched 2026-10-19:
+
+| Payload | Raw | gzip -9 |
+|---|---|---|
+| Cboe `VIX_History.csv` (full history, every request) | 474 KB | **106 KB** |
+| FRED `BAA10Y` (full history, every request) | 169 KB | **37 KB** |
+| Nasdaq SPY, 10-year backfill | 273 KB | **57 KB** |
+| Nasdaq SPY, one-session update | 160 B | **155 B** |
+
+Two facts follow. First, the payload count is **~2,500 a year** (10 fetches a day), not the
+~88,900 of section 12 — that figure counts Parquet partitions, which are not archived. Git
+handles a few thousand immutable blobs without difficulty. Second, **Cboe and FRED re-serve
+their entire history on every request**, so archiving each daily fetch would add ~530 KB
+compressed per day, about **194 MB a year**, essentially all of it redundant.
+
+The cadence therefore differs by source, which is what keeps the archive small:
+
+- **Nasdaq bars and dividends — archive every fetch.** The window is trailing, so each payload
+  carries sessions that later payloads will have lost. At 155 bytes a day per symbol this is
+  free.
+- **Cboe and FRED — archive at most one payload per series per calendar month.** A full-history
+  payload subsumes every earlier one, so replay needs only the most recent; keeping one a month
+  still leaves a monthly vintage trail, which is worth having precisely because section 6 notes
+  the keyless FRED endpoint serves latest-vintage only. Skip the write if that month already
+  has one.
+
+That is roughly **160 files and 4–5 MB a year**, against 194 MB for archiving everything.
+
+Files are **immutable and never rewritten**: one payload, one path, named by `fetched_at`. A
+rolling or monthly *archive container* was considered and rejected — a `.tar.gz` cannot be
+appended to, so every fetch would decompress, add and recompress the current period's container,
+and git would store a whole new multi-megabyte blob on each rewrite. That converts a few
+thousand small immutable objects into a few hundred large mutable ones and increases total
+history, which is the opposite of the intent. Immutable per-payload files also keep `build-raw
+--replay` trivially resumable, since a partial run leaves completed payloads untouched.
 
 ### What CI can prove, and what it cannot
 
@@ -659,15 +871,16 @@ Phase 1 must not require it, and must not be rearranged to accommodate it later:
 
 | Risk | Consequence | Mitigation / status |
 |---|---|---|
-| Nasdaq's 10-year cap is a **trailing** window | the dev window's start drifts forward ~1 session/day; history is lost permanently once it falls off | **Run the full backfill first, before the feature engine exists.** Immutable raw Parquet pins the floor; the store only accumulates. The store's inception is **2016-10-19** and the span cannot be reproduced from scratch later. This is what makes Phase 0's immutability load-bearing rather than decorative. |
+| Nasdaq's 10-year cap is a **trailing** window | the dev window's start drifts forward ~1 session/day; history is lost permanently once it falls off | **Observed, not predicted:** the floor was 2016-10-19 when first probed and 2016-10-20 two days later, still exactly 2,513 sessions, so two days of delay cost one session permanently. The backfill ran before the feature engine existed, as planned, and the store's inception is therefore **2016-10-20**. Immutable raw Parquet plus the committed payload archive pin it; the store only accumulates from here and the span cannot be reproduced from scratch. This is what makes Phase 0's immutability load-bearing rather than decorative. |
 | `api.nasdaq.com` is undocumented and keyless | it may change shape, rate-limit or block without notice | raw archive means a break costs new data, never existing data; the fetcher's injected transport makes a vendor swap local |
-| Nasdaq closes are **unadjusted** | dividend drops (≈4/yr for SPY, ≈0.3% each) inflate squared returns on those days | documented; the contamination is ~9% of a typical day's variance on 4 days a year. Not corrected in Phase 1; revisit if Phase 2 diagnostics show it mattering |
+| Nasdaq closes are **unadjusted**, and distributions are only obtainable for QQQ | every distribution date carries a spurious ~0.3% negative return that flows **systematically and signed** into `semivar_neg_proxy_*` and `signed_jump_proxy_*` — ~6% of a typical day's variance, on ~40 of 2,513 dev sessions, always in the same direction | `has_distribution` is ingested and set for QQQ (section 6a). **For SPY and IWM no keyless declared source exists**, so the flag is `False` everywhere and the bias is present but unflagged. Bar-derived inference is forbidden: a false positive would exclude a real volatility event. Phase 2 must treat SPY/IWM semivariance as carrying this known bias |
 | FRED keyless gives the **latest vintage only** | a revision silently replaces its original, so `as_of` is an assumption for FRED alone | conservative one-session lag; rare for daily rate series; true vintages need ALFRED and a key |
 | No intraday data | the framework's two highest-ranked inputs are unavailable | stated everywhere, proxies named as proxies, section 14 keeps the door open |
 | 200-session holdout | the Phase 6 check is weak at 22 and 66 days | recorded in section 5; Phase 6 must report it |
+| **Cboe publishes VIX on days the NYSE is closed** | 33 rows since 2016-07-01 — Memorial Day, Independence Day, Labor Day, Thanksgiving, MLK Day — carry real values with no equity session to attach them to. VIX9D, VIX1D and VVIX have none | verified against the archived payloads. The non-session policy splits by tier: **bars reject** such a row, because a bar dated when the market was shut means the source disagrees with the calendar and would corrupt the return series; **exogenous series drop and report** it, because refusing outright would discard 9,298 usable VIX rows over 33 unusable ones. The dropped count is printed, so a vendor change surfaces rather than passing silently |
 | `load_panel` is modified | a regression here would break the project's central guarantee | the change is additive and confined to the symbol check; the entire Phase 0 suite must pass unmodified apart from two date assertions |
 | ~88,900 single-row Parquet files; ~25,600 paths per feature build | reads may be slow enough to make the suite and the daily pipeline painful | section 12: measure on one symbol first, stated budget, stop-and-escalate trigger before the bulk backfill |
-| The irreplaceable payload archive is **untracked local state on one machine** | `git clean -xdf`, a disk failure or a lost laptop destroys history that cannot be refetched | archive written on every fetch and replayable; **not** committed, for licensing reasons (section 13). **Backing it up is Dhruv's action and this phase does not do it for him.** |
+| The payload archive is **committed to a public repository**, republishing an undocumented vendor's responses | Nasdaq may send a takedown request; Cboe's CSVs are already public and FRED is public domain, so the exposure is Nasdaq's tree alone | Dhruv's informed decision (section 13), taken over the private-repo alternative. Remedy if it happens: make the repository private, or rewrite history to drop `data/vendor_payloads/nasdaq_*`. A `NOTICE` file records provenance. The durability risk this replaces — irreplaceable history on one laptop — is now closed by git |
 
 
 ## 16. Left to the builder

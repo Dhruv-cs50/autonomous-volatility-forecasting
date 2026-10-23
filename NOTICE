@@ -1,0 +1,42 @@
+# NOTICE
+
+This repository contains third-party market and economic data, committed under
+`data/vendor_payloads/` so that the research here can be reproduced from a clean checkout.
+The data is included for that purpose only. It is not original to this project, and
+publishing it here does not transfer or alter anyone's rights in it.
+
+## Provenance of the committed payloads
+
+| Payload tree | Source | Rights |
+|---|---|---|
+| `data/vendor_payloads/nasdaq_bars/` | Nasdaq historical quote service (`api.nasdaq.com`) | The data remains Nasdaq's. Included as served, unmodified. |
+| `data/vendor_payloads/nasdaq_dividends/` | Nasdaq dividend history (`api.nasdaq.com`) | The data remains Nasdaq's. Included as served, unmodified. |
+| `data/vendor_payloads/cboe_vix/` | Cboe Global Markets published index history (`cdn.cboe.com`) | The data remains Cboe's. Cboe publishes these CSV files openly. |
+| `data/vendor_payloads/fred/` | Federal Reserve Bank of St. Louis, FRED (`fred.stlouisfed.org`) | Series produced by US government bodies are in the public domain; series redistributed by FRED from other providers remain those providers'. |
+
+Each file is the untouched HTTP response body as received, gzip-compressed, named by the
+instant it was fetched. Nothing in these trees has been edited, reformatted or corrected;
+every transformation this project applies happens downstream, in the curated tier, which is
+**not** committed.
+
+## Why the payloads are here at all
+
+The Nasdaq endpoint serves only a trailing ten-year window. Sessions that fall out of that
+window cannot be fetched again at any price, so a repository holding only the download scripts
+would, after a year, be unable to reproduce its own results. Committing the payloads is what
+makes the dataset reproducible rather than merely described. The reasoning, the alternatives
+considered, and the fact that this knowingly departs from the project's own preference for
+publishing code and derived metrics rather than raw vendor data, are recorded in
+`docs/superpowers/specs/2026-10-20-phase1-data-and-targets-design.md`, section 13.
+
+## If you are a rights holder
+
+If you are one of the sources above and would prefer your data not be redistributed here,
+open an issue or contact the repository owner and it will be removed from the working tree and
+from git history.
+
+## The rest of the repository
+
+All code, tests, configuration and documentation in this repository are the project's own work
+and are covered by the repository's own license terms. This NOTICE concerns only the committed
+contents of `data/vendor_payloads/`.

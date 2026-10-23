@@ -46,6 +46,12 @@ files = ["src"]
 module = ["exchange_calendars", "exchange_calendars.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# Nor does pyarrow. Only store.py imports it -- the import ratchet forbids it everywhere else
+# under src/ -- so this override's blast radius is the one module allowed to touch Parquet.
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

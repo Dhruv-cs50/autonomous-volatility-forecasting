@@ -2,11 +2,15 @@
 
 ``splits.dev_end`` is the last date development code may observe and ``holdout_start`` is the
 first date of the sealed window. The guarded read path compares a caller's requested ``end``
-against ``dev_end``, so an inconsistent split here would make that guard meaningless. Every
-failure is a ``ConfigError``; a bad configuration is never repaired or clipped.
+against ``dev_end``, so an inconsistent split here would make that guard meaningless. A bad
+configuration is never repaired or clipped.
 
 ``load_settings`` reads YAML, applies the explicit environment overrides in ``_ENV_OVERRIDES``
-(any other ``VOLAB_*`` variable is ignored), then validates.
+(any other ``VOLAB_*`` variable is ignored), then validates. Almost every failure is a
+``ConfigError``. The one exception is ``HoldoutViolation``: an environment that moves
+``splits.dev_end`` *later* than the file's own literal is not a mistyped setting, it is the
+seal being moved from outside the file, and it is refused here because here is where the value
+is accepted. See ``_refuse_a_later_dev_end``.
 """
 
 from __future__ import annotations
@@ -22,7 +26,7 @@ import yaml
 from exchange_calendars.errors import CalendarError, DateOutOfBounds
 
 import volab
-from volab.errors import ConfigError
+from volab.errors import ConfigError, HoldoutViolation
 from volab.paths import validate_segment
 
 _CONFIG_RELATIVE = Path("config") / "base.yaml"
@@ -48,12 +52,20 @@ _REPO_ROOT: Path = DEFAULT_CONFIG_PATH.parent.parent
 # Dotted setting name -> environment variable. Explicit on purpose: no introspection.
 _ENV_OVERRIDES: dict[str, str] = {
     "universe": "VOLAB_UNIVERSE",
+    "exogenous": "VOLAB_EXOGENOUS",
     "calendar": "VOLAB_CALENDAR",
     "splits.dev_end": "VOLAB_SPLITS_DEV_END",
     "splits.holdout_start": "VOLAB_SPLITS_HOLDOUT_START",
     "storage.root": "VOLAB_STORAGE_ROOT",
 }
+# The second of the two keys ``store.load_panel`` requires to read the sealed window. Defined
+# here rather than in ``store`` because this module's own refusal has to name it, and ``store``
+# imports ``config`` and not the other way round: one definition, so the two cannot drift.
+HOLDOUT_UNLOCK_ENV: str = "VOLAB_HOLDOUT_UNLOCK"
+
 _SECTIONS = frozenset({"splits", "storage"})
+# Settings that are comma-separated lists in the environment and symbol lists in the file.
+_SYMBOL_LISTS = frozenset({"universe", "exogenous"})
 
 
 @dataclass(frozen=True)
@@ -65,6 +77,7 @@ class Splits:
 @dataclass(frozen=True)
 class Settings:
     universe: tuple[str, ...]
+    exogenous: tuple[str, ...]
     calendar: str
     splits: Splits
     storage_root: Path
@@ -127,7 +140,8 @@ def _apply_env_overrides(flat: dict[str, Any]) -> None:
         if value is None:
             continue
         # Whitespace around commas is ordinary syntax in the env form only.
-        flat[name] = [part.strip() for part in value.split(",")] if name == "universe" else value
+        is_symbol_list = name in _SYMBOL_LISTS
+        flat[name] = [part.strip() for part in value.split(",")] if is_symbol_list else value
 
 
 def _parse_date(field: str, value: object) -> dt.date:
@@ -147,27 +161,28 @@ def _parse_date(field: str, value: object) -> dt.date:
     return parsed
 
 
-def _validate_universe(value: object) -> tuple[str, ...]:
+def _validate_symbol_list(field: str, value: object) -> tuple[str, ...]:
+    """Validate a list of symbols; ``field`` names the setting in every message."""
     if not isinstance(value, list | tuple):
-        raise ConfigError(f"universe must be a list of symbols, got {value!r}")
+        raise ConfigError(f"{field} must be a list of symbols, got {value!r}")
     if not value:
-        raise ConfigError("universe must not be empty")
+        raise ConfigError(f"{field} must not be empty")
     symbols: list[str] = []
     for entry in value:
         if not isinstance(entry, str):
             raise ConfigError(
-                f"universe entries must be strings, got {entry!r} (quote symbols such as 'NO')"
+                f"{field} entries must be strings, got {entry!r} (quote symbols such as 'NO')"
             )
         if entry != entry.strip():
-            raise ConfigError(f"universe entry {entry!r} has surrounding whitespace")
+            raise ConfigError(f"{field} entry {entry!r} has surrounding whitespace")
         # Symbols become directory names, so they must satisfy the layout's own segment rule.
         try:
             symbols.append(validate_segment("symbol", entry))
         except ValueError as exc:
-            raise ConfigError(f"universe: {exc}") from None
+            raise ConfigError(f"{field}: {exc}") from None
     if len(set(symbols)) != len(symbols):
         duplicates = sorted({s for s in symbols if symbols.count(s) > 1})
-        raise ConfigError(f"universe has duplicate symbols: {duplicates}")
+        raise ConfigError(f"{field} has duplicate symbols: {duplicates}")
     return tuple(symbols)
 
 
@@ -210,6 +225,49 @@ def _validate_splits(
     return Splits(dev_end=dev_end, holdout_start=holdout_start)
 
 
+def _refuse_a_later_dev_end(literal: object, effective: dt.date, config_path: Path) -> None:
+    """Refuse an environment that moves ``splits.dev_end`` later than the file's own literal.
+
+    ``VOLAB_SPLITS_DEV_END`` exists so a developer can work to an **earlier** boundary than the
+    repository's; that direction is conservative and stays open. The other direction opens the
+    sealed window, and it opens it invisibly: ``store.load_panel``'s own check compares a
+    caller's ``Settings`` against ``load_settings()``, and this variable moves both sides at
+    once, so that check cannot see it. Nor can the suite's policing fixture, which reads the
+    same configuration. The one place the two values are still distinguishable is here, between
+    the file and the override, which is why the refusal lives in the configuration layer.
+
+    Not a ``ConfigError``: a later ``dev_end`` is not a setting someone mistyped, it is the
+    holdout seal being moved from outside the file, and it belongs to the same class of refusal
+    as a keyless read. What is compared is the file on disk -- whichever ``config/base.yaml``
+    ``DEFAULT_CONFIG_PATH`` resolved to, which is the first one found walking up from the
+    package. So a local edit to that file moves the boundary, and so does an untracked
+    ``base.yaml`` placed nearer the package. Both need write access to the checkout, which
+    already allows editing ``store.py``; the point of the refusal is that an exported variable
+    needs none. An edit shows up in ``git status`` -- a tracked one in ``git diff`` too.
+
+    A file pinning no literal is refused too, so the rule is total rather than "no later than
+    the literal, when there is one" -- otherwise deleting the key would sidestep it.
+    """
+    if os.environ.get(_ENV_OVERRIDES["splits.dev_end"]) is None:
+        return
+    unlock = f"allow_holdout=True and {HOLDOUT_UNLOCK_ENV}=1"
+    if literal is None:
+        raise HoldoutViolation(
+            f"{_ENV_OVERRIDES['splits.dev_end']} sets splits.dev_end to {effective}, but "
+            f"{config_path} pins no splits.dev_end of its own to be more conservative than: "
+            f"the holdout boundary is a committed literal, not an environment variable. "
+            f"Unlock the window with {unlock} instead."
+        )
+    pinned = _parse_date("splits.dev_end", literal)
+    if effective > pinned:
+        raise HoldoutViolation(
+            f"{_ENV_OVERRIDES['splits.dev_end']} sets splits.dev_end to {effective}, later "
+            f"than the {pinned} pinned in {config_path}: moving the holdout boundary is not a "
+            f"way to read past it. An earlier dev_end is allowed, because it only withholds "
+            f"data. Unlock the window with {unlock} instead."
+        )
+
+
 def _validate_storage_root(value: object) -> Path:
     """Resolve against the repository root and require a location strictly inside it.
 
@@ -239,17 +297,31 @@ def load_settings(path: Path | None = None) -> Settings:
     """Load and validate settings; ``path`` defaults to the repository's ``config/base.yaml``."""
     config_path = DEFAULT_CONFIG_PATH if path is None else path
     flat = _read_settings_file(config_path)
+    # Read before the override, because the override is what it has to be compared against.
+    literal_dev_end = flat.get("splits.dev_end")
     _apply_env_overrides(flat)
     for name in _ENV_OVERRIDES:
         if name not in flat:
             raise ConfigError(f"missing required setting {name!r} in {config_path}")
 
-    universe = _validate_universe(flat["universe"])
+    universe = _validate_symbol_list("universe", flat["universe"])
+    exogenous = _validate_symbol_list("exogenous", flat["exogenous"])
+    overlap = sorted(set(universe) & set(exogenous))
+    if overlap:
+        raise ConfigError(
+            f"symbol(s) {overlap} are in both universe and exogenous: a series is either a "
+            "forecast target or a market-wide input, never both"
+        )
     calendar_name, calendar = _load_calendar(flat["calendar"])
     dev_end = _parse_date("splits.dev_end", flat["splits.dev_end"])
+    _refuse_a_later_dev_end(literal_dev_end, dev_end, config_path)
     holdout_start = _parse_date("splits.holdout_start", flat["splits.holdout_start"])
     splits = _validate_splits(calendar, dev_end, holdout_start)
     storage_root = _validate_storage_root(flat["storage.root"])
     return Settings(
-        universe=universe, calendar=calendar_name, splits=splits, storage_root=storage_root
+        universe=universe,
+        exogenous=exogenous,
+        calendar=calendar_name,
+        splits=splits,
+        storage_root=storage_root,
     )
