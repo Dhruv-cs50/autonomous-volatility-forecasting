@@ -734,3 +734,92 @@ outside that list, which is not hypothetical: E1 above is one, written in source
 nor against cross-call state. **The PR must say so.** Claiming the suite catches leakage in
 general would be exactly the overclaim this project was built to refuse — and we would be making
 it in the document that argues the harness is honest.
+
+## US-6.3: the final whole-branch review — BLOCKED, then cleared
+
+Merge base `origin/main` (`a4027d4`), verified a strict ancestor with no divergence. One
+blocker, four Important, six Minor; all twelve fixed in `0490858..df38841`, plus `a0568f9`.
+
+### C1 — the seal could be moved from the environment
+
+`VOLAB_SPLITS_DEV_END` is in `_ENV_OVERRIDES`. `load_panel`'s step 0 guards a caller-supplied
+`Settings` by comparing it against `load_settings().splits.dev_end` — **which applies the same
+override** — so both sides moved together and the check was vacuously satisfied. With
+`settings=None` it was skipped entirely. Reproduced by the controller independently of the
+report, one curated row seeded at `as_of=2026-03-02`, no `allow_holdout`, no unlock key:
+
+```
+CONTROL  REFUSED: HoldoutViolation end 2026-06-30 is past dev_end 2025-12-31
+PROBE    READ SUCCEEDED, rows: 1   SPY 2026-03-02 999.0
+         audit file exists: False
+```
+
+The suite could not catch it either, with the variable exported before pytest starts:
+`tests/conftest.py` derived `repository_dev_end` from `load_settings()` too, and never cleared
+`VOLAB_*`. Fixed in `load_settings`, which now refuses an env `dev_end` later than the literal in
+`config/base.yaml`; an earlier one is still allowed, because it only withholds data. Verified
+after the fix: the probe is refused at config time, and an earlier `dev_end` still works.
+
+**The mechanism was inherited from `origin/main`; the claims were ours.** Phase 0 had the
+override, no production entry point and no claim. Phase 1 added the two CLIs that build features
+through it *and* three assertions that it could not happen. That is what made it this branch's
+defect rather than a known weakness.
+
+**Ruling R32: a stated "cannot" is a test, not a sentence.** Every mechanical guarantee in a
+README, docstring or spec must name an executable witness, and one without a test id is an
+unverified claim. C1's three claims were each true of an *adjacent* threat — `README.md:74`
+answered clock-derived boundaries, which nobody faced, while reading as coverage of
+configuration-derived ones. That is worse than silence: silence invites a check, and a
+confident adjacent truth redirects the next reader away from the one place worth looking.
+*Cost if wrong:* more tests pinning prose, some of which will feel pedantic. The alternative is
+what happened here.
+
+### The audit stamp was manufacturing the lock it then tripped over (a0568f9)
+
+`_git_state` ran `git status --porcelain` on every audited read without `--no-optional-locks`,
+so git took `index.lock` to refresh the index, and the stamp's own 5-second timeout killed it
+mid-refresh and left a zero-byte lock. Measured: `git status --porcelain` took **3.06s against
+the 5.0s timeout** over 24,218 raw partitions on an iCloud-synced directory, a margin of 1.6x, so
+exceeding it was routine. Roughly an hour of this phase was lost to those locks and blamed on the
+environment while the code was generating them. The flag makes the call read-only; the test
+asserts the argv, because reproducing the contention needs a concurrent committer.
+
+### The repository moved off the iCloud-synced Desktop
+
+To `~/dev/`. `mv` and `ditto` both timed out inside iCloud's file provider — `ditto` on a
+`.venv` file — so the copy excluded `.venv` and the caches, which are regenerable. Verified by
+`git fsck`, exact data parity (24,218 raw and 34,398 feature files) and a full suite run.
+Measured gain: a cold `uv run` that cost **15m48s** on iCloud rebuilds in **78s**, and the full
+suite runs in 33.9s.
+
+## The Phase 2 pivot, validated before it was adopted
+
+E1 showed the perturbation method has a class-level ceiling: at the cutoff the fixture can only
+present `|r_next|` from a finite set, so a predicate thresholded into a gap of that set is
+invariant under every perturbation image. **Truncation equivalence has no image to be constant
+across.** Build at cutoff `t` from the full panel, build again from a panel that physically stops
+at `t`, compare. That is not a proxy for point-in-time correctness; it is the definition.
+
+Measured on a synthetic 82-session 2024 panel, 38 cutoffs, harness in the session notes:
+
+| Tree | Point-in-time suite | Whole suite | Truncation equivalence |
+|---|---|---|---|
+| clean | 100 passed | 642 passed | **0 of 38 disagree** |
+| E1 planted, scan-silent | **100 passed** | **642 passed** | **3 of 38 disagree** |
+
+The clean row matters as much as the other: a check that fired on honest code would be useless.
+
+**A near-miss worth recording.** The first E1 variant spelled the forward series with
+`returns.index[:-1]`, and the AST scan caught it on the negative slice — which would have
+understated the escape. Removing the slice made it scan-silent, and only then did the entire
+suite pass a genuine forward peek. The scan-visible variant is the easy case, and measuring the
+easy case while believing it is the hard one is this phase's recurring error, now six for six.
+
+**What it does not do:** it does not catch E2 and cannot in-process, because a memoised statistic
+filled on the full-panel run is reused by the truncated run. E2 needs subprocess isolation per
+cutoff, or a ban on module-level mutable state in the feature package — AST-checkable, and sound
+there because it checks for a construct rather than guessing intent.
+
+**Consequence for the spec.** §11's *"the store cannot help"* for the walk-forward is false and
+is retracted. The store can help: re-slice per cutoff. That sentence conceded structural refusal
+in the one place the realistic leak lives, and substituted a test with a measured ceiling.

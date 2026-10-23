@@ -176,7 +176,7 @@ this story would close them. `docs/superpowers/phase1-decisions.md` says the sam
 |---|---|---|---|---|
 | US-6.1 | FRED backfill | controller | done `5ba4814` — 7,718 raw partitions; macro columns live |
 | US-6.2 | Finish the decisions log | controller | 5.x | done `8298a2e` — 7 records corrected, both mutations re-measured at 100 tests |
-| US-6.3 | Final whole-branch review, strongest model, merge base **`origin/main`** | code-reviewer | 6.2 | in progress — dispatched on Opus over `origin/main..52a1ddc` |
+| US-6.3 | Final whole-branch review, strongest model, merge base **`origin/main`** | code-reviewer | 6.2 | done — BLOCKED on C1 (seal movable from the env), 11 more findings; all fixed `0490858..a0568f9`, re-review pending |
 | US-6.4 | Open the PR against main | controller | 6.3 | todo |
 
 ## Carried from the Sprint 3 delivery audit
