@@ -87,7 +87,7 @@ the wrong version was right.
 
 | Story | Goal | Files | Acceptance | State |
 |---|---|---|---|---|
-| US-2.13 | Every figure the decisions log quotes is reproducible from a checkout, or says it is not | `tools/`, `docs/superpowers/phase2-decisions.md`, `README.md` | the plant is committed and applied to a throwaway tree; the three pre-measurements and the calibration probe are scripts; every quoted figure names what prints it; the ratchet is unchanged and `ALLOWED` stays `{"store.py"}` | done `6110f36` — R79–R81 |
+| US-2.13 | Every figure the decisions log quotes is reproducible from a checkout, or says it is not | `tools/`, `docs/superpowers/phase2-decisions.md`, `README.md` | the plant is committed and applied to a throwaway tree; the three pre-measurements and the calibration probe are scripts; every quoted figure names what prints it; the ratchet is unchanged and `ALLOWED` stays `{"store.py"}` | done `bfa30cb`, this line `HEAD` — R79–R81 |
 
 **The figures were checked mechanically, not by eye.** Each fenced block the log now calls
 reproducible was diffed line by line against the saved stdout of the script that claims it, and
