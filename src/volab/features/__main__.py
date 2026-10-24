@@ -27,10 +27,8 @@ from collections.abc import Sequence
 import pandas as pd
 
 from volab.config import Settings, load_settings
-from volab.errors import DatasetNotFound
 from volab.features.build import (
     CLOSE_COLUMN,
-    DISTRIBUTION_COLUMN,
     FRED_SERIES,
     IV_SERIES,
     VALUE_COLUMN,
@@ -46,10 +44,15 @@ from volab.features.targets import (
     targets_dataset,
     write_targets,
 )
-from volab.ingest.curate import BARS_DATASET, FRED_DATASET, VIX_DATASET
+from volab.ingest.curate import FRED_DATASET, VIX_DATASET
+from volab.panel import (
+    collapse_superseded_observations,
+    load_bars,
+    load_exogenous,
+)
 from volab.paths import MANDATORY_COLUMNS
 from volab.sessions import get_calendar, sessions_between
-from volab.store import load_panel, write_features
+from volab.store import write_features
 
 # The persisted feature table's name in the store: ``features/har_daily/<symbol>/date=<as_of>``.
 FEATURE_SET = "har_daily"
@@ -64,99 +67,25 @@ def _exogenous(
 ) -> pd.DataFrame | None:
     """One exogenous dataset, read up to ``dev_end``, or ``None`` if the store holds none of it.
 
-    Read **one series at a time**, which is no longer forced and is parked rather than load-
-    bearing. It was forced: the curated VIX family is not one schema -- VIX carries
-    open/high/low beside its close and VVIX only a close -- and a single ``load_panel`` over
-    both used to fail inside DuckDB with a schema mismatch. US-6.8 fixed that. Measured since:
-    one read over the real ``vix_family`` returns the same 8,079 rows as this loop, row for
-    row, and a read naming a series the store holds nothing for returns the others rather than
-    raising, so the per-series ``DatasetNotFound`` tolerance is not buying anything either.
-
-    What this function is still for is everything around the read: projecting each series to
-    the same columns, reporting which ones the store has nothing for, and the
-    latest-observation-per-session collapse below. Those are the reasons it exists, and
-    rewriting the read inside it would change working code to no measured end. A single read
-    is the simpler shape if a reason to touch this ever appears.
-
-    A series with no rows is reported and skipped rather than aborting the build, because the
-    feature table is defined for an absent exogenous series: those columns come out null. Both
-    families are ingested today -- ``fred_daily`` has 7,111 curated partitions -- so this is
-    tolerance for a state the repository is not in, kept because an exogenous source can be
-    added before it is backfilled. Only absence is tolerated; a dataset that exists and is
-    malformed still raises, because that is a fault and not a gap.
+    The read itself lives in ``volab.panel``, which the walk-forward and the truncation-
+    equivalence tests also go through. Assembling the panel twice is how the two paths drift,
+    and the second copy here cost two failed runs before it was removed -- a ``DatasetNotFound``
+    from omitting ``symbols``, and a ``SchemaError`` from omitting the superseded-observation
+    collapse. This wrapper is the CLI's half: it pins the cutoff to ``dev_end``, which is the
+    one thing this entry point may never be asked to move, and prints what the library reports.
     """
-    frames: list[pd.DataFrame] = []
-    for name in series:
-        try:
-            frames.append(
-                load_panel(
-                    dataset,
-                    end=settings.splits.dev_end,
-                    symbols=[name],
-                    columns=(*_KEYS, column),
-                    settings=settings,
-                )
-            )
-        except DatasetNotFound:
-            continue
-    if not frames:
-        print(
-            f"  {dataset}: skipped, none of {list(series)} is in the store; the {column!r} "
-            "columns will be null"
-        )
-        return None
-    absent = sorted(set(series) - {str(frame["symbol"].iloc[0]) for frame in frames})
-    if absent:
-        print(f"  {dataset}: {absent} not in the store, those columns will be null")
-    return _latest_observation_per_session(pd.concat(frames, ignore_index=True), dataset)
+    return load_exogenous(
+        settings, dataset, series, column, end=settings.splits.dev_end, report=print
+    )
 
 
 def _latest_observation_per_session(frame: pd.DataFrame, dataset: str) -> pd.DataFrame:
-    """Collapse a series to one observation per knowable session, keeping the latest.
-
-    Two observations can share an ``as_of`` because FRED's publication calendar and XNYS are
-    different calendars. When the NYSE closes on a day FRED still publishes, the preceding
-    business day and that day both lag onto the same next session.
-
-    Measured over the full curated dev window, this happens **7 times across 3 dates**, not once:
-    Good Friday 2021-04-02 and 2023-04-07, and 2025-01-09, the national day of mourning. Each
-    collides for DGS10 and T10Y2Y; only the mourning day also collides for BAA10Y, because BAA10Y
-    is one of the series FRED leaves empty on Good Friday. So the recurring case is Good Friday
-    and the freak case is the one-off -- the reverse of how an earlier version of this comment
-    read, which cited only the mourning day and made the collapse look like near-dead code.
-
-    Keeping the **latest** observation is the point-in-time reading: standing on Friday, the
-    newest value known is Thursday's. The earlier one is not lost information so much as
-    superseded information.
-
-    This is done here rather than in ``build_features``, which still refuses a panel carrying two
-    rows for one session. That guard is worth keeping strict: curated data legitimately holds
-    both observations, and choosing between them is the caller's decision, not something the
-    engine should quietly absorb.
-    """
-    counts = frame.groupby(["symbol", "as_of"], sort=False)["ts"].transform("size")
-    if not bool((counts > 1).any()):
-        return frame
-    collapsed = (
-        frame.sort_values(["symbol", "as_of", "ts"], kind="stable")
-        .drop_duplicates(["symbol", "as_of"], keep="last")
-        .reset_index(drop=True)
-    )
-    print(
-        f"  {dataset}: collapsed {len(frame) - len(collapsed)} superseded observation(s) that "
-        "shared a knowable session, keeping the latest of each"
-    )
-    return collapsed
+    """Collapse a series to one observation per knowable session. See ``volab.panel``."""
+    return collapse_superseded_observations(frame, dataset, report=print)
 
 
 def _bars(settings: Settings, symbol: str) -> pd.DataFrame:
-    return load_panel(
-        BARS_DATASET,
-        end=settings.splits.dev_end,
-        symbols=[symbol],
-        columns=(*_KEYS, CLOSE_COLUMN, DISTRIBUTION_COLUMN),
-        settings=settings,
-    )
+    return load_bars(settings, symbol, end=settings.splits.dev_end)
 
 
 def _target_panel(bars: pd.DataFrame, settings: Settings) -> pd.DataFrame:

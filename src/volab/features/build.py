@@ -9,12 +9,30 @@ The tempting alternative -- have the engine read the store itself at ``end=t`` a
 point-in-time filter guarantee honesty -- would make the phase's exit criterion vacuous. The
 store drops every row with ``as_of > end`` before any feature code runs, so a feature that
 peeked forward would produce identical output whether or not future rows existed on disk, and
-the perturbation test could never fail. It is also the realistic leak: Phase 2's walk-forward
-loads the dev panel **once**, legitimately, and then refits and evaluates at many earlier
-cutoffs. Every row it holds is one the store was right to hand over, so the store cannot help;
-the only thing between that panel and a leak is whether the feature functions look forward.
+the perturbation test could never fail. Phase 2 confirmed that the hard way: an early repair to
+the span below cut it back to ``through``, and all three of the forward peeks planted in
+``tests/test_truncation_equivalence.py`` went silent at once, because the engine no longer held a
+future to read. So this half stands.
+
 Holding rows it must not use is therefore not a lapse in posture -- it is the condition under
 which this function's honesty means anything. Nothing here reads the store; the CLI does.
+
+**What does not stand is the sentence that used to follow: "so the store cannot help".
+Retracted.** It said that because Phase 2's walk-forward loads the dev panel once, legitimately,
+and then evaluates at many earlier cutoffs, every row it holds is one the store was right to hand
+over -- and concluded that nothing but the feature functions' honesty stands between that panel
+and a leak. The premise is true and the conclusion is false. The store can be asked *again*:
+``volab.panel.truncate`` produces the panel the store would have handed over at ``t``, and
+comparing a build from that against a build from the full panel is point-in-time correctness by
+definition rather than by proxy.
+
+The two are not in tension, which is what the retracted sentence missed. The engine still takes
+a panel that may extend past ``through``, so a forward peek stays expressible and detectable;
+the truncated panel is supplied by the *test*, as the second term of a comparison, not by
+narrowing what the engine is allowed to see. Conceding structural refusal in the one place the
+realistic leak lives is what left the whole weight on perturbation, whose ceiling is now
+measured: see ``tests/test_truncation_equivalence.py``, ``tests/test_process_isolation.py`` and
+``docs/superpowers/phase2-decisions.md``.
 
 Three things this module owns, which the pure functions in ``realized`` and ``har`` cannot:
 
@@ -284,8 +302,13 @@ def build_features(
     here on ``as_of``. **It may extend past ``through``**, and the output must not move when it
     does; that is the property the phase exists to prove.
 
-    One row per session from the subject's first to its last, up to ``through``, with null
-    features wherever a window is incomplete. A session with no bar is still a row: its ``ts``
+    One row per session from the subject's first bar through to ``through``, with null features
+    wherever a window is incomplete. The row set is a function of the cutoff and the calendar
+    alone, never of how far the panel happens to reach: a panel extending past ``through`` emits
+    exactly the rows the same panel truncated at ``through`` emits. That used not to hold when
+    the cutoff session carried no bar -- see the span comment below.
+
+    A session with no bar is still a row: its ``ts``
     is the calendar's close for that session, and its ``ingested_at`` is null, because nothing
     was ingested for a bar that was never served.
     """
@@ -306,8 +329,37 @@ def build_features(
 
     bars = panel[panel["symbol"] == symbol]
     days = _sessions_of(bars)
-    # Every computation runs on the calendar's sessions, before the cutoff is applied.
-    sessions = sessions_between(calendar, min(days), max(days))
+    # The session index runs from the subject's first bar to the LATER of its last bar and the
+    # cutoff, and both halves of that ``max`` are load-bearing for opposite reasons.
+    #
+    # ``max(days)`` keeps the future in front of the engine. Computing the windows over the whole
+    # span and applying the cutoff only to the finished frame is what makes this phase's exit
+    # criterion able to fail at all: an engine handed only the rows it is allowed to use would
+    # produce identical output whether or not the future existed, and every leakage test here
+    # would pass by testing nothing. That is the trap spec section 9 names, and an earlier attempt
+    # at the fix below fell straight into it -- cutting the span at ``through`` silenced all three
+    # of the planted forward peeks in ``tests/test_truncation_equivalence.py``, because there was
+    # no longer a later row for a peek to read. The red cases caught it; reading the diff did not.
+    #
+    # ``through`` keeps the emitted rows a function of the cutoff rather than of the panel's
+    # extent. Without it the span ended at ``max(days)``, so cutting at a session the subject did
+    # not trade gave two different tables: a panel reaching past that session put the span beyond
+    # the cutoff and emitted a row for it, carrying the exogenous observations that were genuinely
+    # knowable that day, while a panel physically stopping at the same cutoff ended one session
+    # earlier and emitted no such row. Measured on a panel with one deliberate gap: **74 rows
+    # against 73** at cutoff 2024-04-17, and the extra row was not even all-null.
+    #
+    # That is extent dependence, which is the one defect ``through`` exists to prevent. It
+    # survived Phase 1 because the perturbation fixture could not express "the cutoff session has
+    # no bar", and it was found by the truncation sweep -- the seventh time in this project a
+    # point-in-time property was settled by running something rather than by reading it.
+    #
+    # Reaching the span forward to ``through`` rather than cutting it back to the last bar is the
+    # repair that keeps the knowable exogenous row instead of discarding it. It is a no-op
+    # wherever the panel already reaches the cutoff, which is every call the CLI makes, so the
+    # persisted table does not move; ``tests/test_features_cli.py`` pins that.
+    span_end = max(max(days), through)
+    sessions = sessions_between(calendar, min(days), span_end)
     stray = sorted(set(days) - set(sessions))
     if stray:
         raise SchemaError(

@@ -27,6 +27,7 @@ import pandas as pd
 import pytest
 
 import volab.features.__main__ as cli
+import volab.panel as panel_module
 from volab.errors import DatasetNotFound
 from volab.features.build import COLUMNS, FRED_SERIES
 from volab.features.targets import HORIZONS, target_column, targets_dataset
@@ -168,15 +169,20 @@ def test_the_feature_values_come_from_the_curated_panel(store: SyntheticStore) -
 def test_every_read_stops_at_dev_end(
     store: SyntheticStore, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Whatever the CLI reads, it reads with ``end=dev_end`` -- the store holds the future."""
+    """Whatever the CLI reads, it reads with ``end=dev_end`` -- the store holds the future.
+
+    Patched on ``volab.panel``, which is where the reads are since the assembly was shared with
+    the walk-forward and the truncation-equivalence tests. That is the one binding every read on
+    the CLI's behalf goes through, so recording it there also covers the ones it delegates.
+    """
     calls: list[dict[str, object]] = []
-    original = cli.load_panel
+    original = panel_module.load_panel
 
     def recording(*args: object, **kwargs: object) -> pd.DataFrame:
         calls.append(dict(kwargs))
         return original(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(cli, "load_panel", recording)
+    monkeypatch.setattr(panel_module, "load_panel", recording)
 
     cli.main(["build"])
 

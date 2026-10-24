@@ -522,13 +522,46 @@ point-in-time test that passes because it tests nothing.
 
 It is also the realistic leak. Phase 2's walk-forward loads the dev panel **once**, legitimately,
 with `end=dev_end`, and then refits and evaluates at many inner cutoffs `t << dev_end`. Every row
-it holds is one the store was right to hand over, so the store cannot help; the only thing
+it holds is one the store was right to hand over, so ~~the store cannot help~~; the only thing
 standing between that panel and a leak is whether the feature functions look forward. Separating
 the cutoff from the extent is what makes that property testable here, in the phase that owns it,
 instead of in the phase that would silently depend on it.
 
 Holding rows it must not use is therefore not a lapse in posture — it is the condition under
 which the engine's honesty means anything.
+
+> **RETRACTED 2026-10-22 by Phase 2 — "the store cannot help" is false, and conceding it is
+> what created E1 and E2.**
+>
+> The store can help, by being asked again. Re-slice per cutoff: build the table at `t` from the
+> panel the store would have handed over at `t`. Phase 2 does precisely that, in
+> `volab.panel.truncate`, and compares the result byte-exactly against the table built from the
+> full panel — which is not a proxy for point-in-time correctness but the definition of it.
+>
+> **What the retracted sentence got right, and must not be thrown out with it.** The paragraph
+> above it is still correct: an engine that *only ever* sees `load_panel(end=t)` makes the
+> perturbation test vacuous, because there is nothing left to perturb. Both halves are needed, and
+> they are not in tension once the comparison is between two builds rather than inside one:
+> `build_features` keeps taking a panel that may extend past `through`, so a forward peek is
+> still expressible and still detectable, and the *test* supplies the truncated panel as the
+> second term. Phase 2 confirmed the trap the hard way — an early repair cut the session span
+> back to `through`, which silenced all three planted forward peeks at once, because the engine
+> no longer held a future to read.
+>
+> **What it got wrong was the conclusion drawn from it:** that because the store could not be the
+> *only* defence, it could not be *a* defence, so the whole weight fell on perturbation — whose
+> ceiling is now measured. E1, a band predicate on the next session's return, passes all 642
+> Phase 1 tests and 100 of 100 point-in-time tests, verified by planting it in `src/` and
+> running them. E2, a memoised full-sample statistic, fails 0 of 100. Truncation equivalence
+> catches E1; subprocess isolation catches E2.
+>
+> **One correction to the retraction itself.** Phase 1's decisions log and the Phase 2 brief both
+> cite this sentence as section 11's. It is section 9's, here in the feature-engine section, 76
+> lines above where section 11 begins. Recorded because a wrong pointer sends the next reader to
+> the wrong place, which is the same failure mode ruling R32 names.
+>
+> See `docs/superpowers/phase2-decisions.md`, `tests/test_truncation_equivalence.py` and
+> `tests/test_process_isolation.py`.
 
 
 ## 10. Targets, and why they cannot leak

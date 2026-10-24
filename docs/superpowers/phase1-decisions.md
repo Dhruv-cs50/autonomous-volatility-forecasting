@@ -820,6 +820,14 @@ filled on the full-panel run is reused by the truncated run. E2 needs subprocess
 cutoff, or a ban on module-level mutable state in the feature package — AST-checkable, and sound
 there because it checks for a construct rather than guessing intent.
 
-**Consequence for the spec.** §11's *"the store cannot help"* for the walk-forward is false and
-is retracted. The store can help: re-slice per cutoff. That sentence conceded structural refusal
-in the one place the realistic leak lives, and substituted a test with a measured ceiling.
+**Consequence for the spec.** The *"the store cannot help"* sentence about the walk-forward is
+false and is retracted. The store can help: re-slice per cutoff. That sentence conceded
+structural refusal in the one place the realistic leak lives, and substituted a test with a
+measured ceiling.
+
+**Corrected by Phase 2:** this paragraph originally cited that sentence as **§11's**. It is
+**§9's**, in the feature-engine section, 76 lines above where §11 begins, and the Phase 2 brief
+inherited the wrong pointer from here. The retraction now sits inline at the sentence itself.
+A wrong pointer sends the next reader to the wrong place, which is the failure mode R32 names.
+Phase 2 carried out the retraction and its own rulings continue from R32 in
+`phase2-decisions.md`.

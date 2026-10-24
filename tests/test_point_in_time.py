@@ -1,4 +1,29 @@
-"""The phase's exit criterion: a feature at ``t`` does not move when the future is rewritten.
+"""Phase 1's exit criterion: a feature at ``t`` does not move when the future is rewritten.
+
+**DEMOTED BY PHASE 2. This file is a per-commit ratchet, not the project's guarantee.** It is
+kept, in full, because it is cheap and it catches a careless regression early -- and it is no
+longer what the claim rests on. Two escapes survive its method as a *class*, both built and run:
+
+* **E1**, a band predicate on the next session's return, passes **100 of 100** tests here and
+  644 of 645 in the whole suite, verified by planting it in ``src/`` rather than by argument. At
+  the cutoff the fixture can only present ``|r_next|`` from a finite set, so a predicate
+  thresholded into a gap of that set is invariant under *every* perturbation image. Enumerating
+  more groups raises the attacker's cost without closing the class.
+* **E2**, a memoised full-sample statistic, fails **0 of 100**, because
+  ``test_the_panels_extent_does_not_change_the_table`` -- the only full-sample detector in this
+  file -- compares two tables built in one process.
+
+The guarantee now lives in ``tests/test_truncation_equivalence.py`` (build at ``t`` from the full
+panel, build again from a panel that physically stops at ``t``, compare: the definition of
+point-in-time correctness rather than a proxy for it) and ``tests/test_process_isolation.py``
+(each side of that comparison in its own interpreter, so no cross-call state can span them).
+
+**The AST scan in this file is never to be cited as a defence.** Four evasions are measured:
+escape B, the volume peek, a back-fill spelled invisibly, and E1.
+
+Everything below is the original file, unchanged in substance. Read it as the ratchet it is.
+
+----
 
 This file is the project's founding premise made executable. A published agent framework had an
 LLM reviewer approve a feature built from future intraday bars, and a deliberately leaky strategy
@@ -69,6 +94,9 @@ from pathlib import Path
 import exchange_calendars as xcals
 import pandas as pd
 import pytest
+from forward_scan import (
+    _forward_looks,
+)
 
 import volab
 from volab.features.build import (
@@ -87,6 +115,7 @@ from volab.features.targets import (
     targets_dataset,
     write_targets,
 )
+from volab.identity import assert_byte_identical, canonical_bytes
 from volab.paths import Tier
 from volab.sessions import is_session, nth_session_after, sessions_between
 from volab.store import load_panel
@@ -346,45 +375,12 @@ def _grown(inputs: Inputs, extra: Sequence[dt.date]) -> Inputs:
 # so nothing here has a tolerance.
 
 
-def _canonical_bytes(series: pd.Series) -> bytes:
-    """``series``' values as bytes, canonically, so two independently built frames can compare.
-
-    Raw buffer bytes wherever there is one: a NaN payload, a ``-0.0`` and a value differing in
-    the last place all read as different, which is the point.
-
-    Object arrays need the exception, and the probe that established it is worth recording.
-    ``to_numpy().tobytes()`` on an object array is a list of **pointers** -- equal only when both
-    frames hold the very same Python objects, which two independent builds never do. Under pandas
-    3 a string column materialises a fresh ``str`` per call, a tz-aware column fresh
-    ``Timestamp``s, and ``as_of`` holds ``datetime.date`` objects rebuilt by every
-    ``sessions_between``; all four compared unequal between two builds of one identical panel. So
-    timestamps go through their integer buffer (the dtype check below covers the timezone), a
-    nullable boolean through its values buffer *and* its null mask, and the remaining object
-    columns -- ``symbol`` and ``as_of`` -- through ``repr``, which for strings and dates is exact
-    and also catches a date silently becoming a ``Timestamp``.
-    """
-    if isinstance(series.dtype, pd.DatetimeTZDtype):
-        # ``tz_convert``, never ``tz_localize``: the latter yields *wall-clock* time, so two
-        # instants an hour apart inside a DST fall-back hour would compare byte-equal under an
-        # identical dtype. ``build_features`` only requires ``ts`` to be timezone-aware, not UTC.
-        return series.dt.tz_convert(None).to_numpy().tobytes()
-    if series.dtype == "boolean":
-        values = series.to_numpy(dtype=bool, na_value=False)
-        return values.tobytes() + series.isna().to_numpy().tobytes()
-    if series.dtype == "float64":
-        return series.to_numpy().tobytes()
-    return repr(list(series)).encode()
-
-
-def _assert_byte_identical(left: pd.DataFrame, right: pd.DataFrame) -> None:
-    """The two tables are the same table: same columns, same dtypes, same bytes, no tolerance."""
-    assert list(left.columns) == list(right.columns), "the columns themselves moved"
-    assert list(left.index) == list(right.index), "the row index moved"
-    for column in left.columns:
-        assert left[column].dtype == right[column].dtype, f"{column}: dtype moved"
-        assert _canonical_bytes(left[column]) == _canonical_bytes(right[column]), (
-            f"{column}: values moved"
-        )
+# Both live in ``volab.identity`` now: Phase 2's truncation-equivalence tests compare tables
+# too, and the walk-forward reports an exhaustive comparison as part of a run, so the
+# comparator is library code. A comparator written twice is one free to be weaker in one
+# place. The red cases below, which prove this one can fail, stay here.
+_canonical_bytes = canonical_bytes
+_assert_byte_identical = assert_byte_identical
 
 
 def _moved(left: pd.Series, right: pd.Series) -> pd.Series:
@@ -792,112 +788,15 @@ FEATURES = Path(volab.__file__).parent / "features"
 # keeps a whole-file exemption from becoming a hiding place.
 EXEMPT = {"targets.py"}
 
-# The two calls whose argument is an offset in rows.
-OFFSET_CALLS = {"shift", "diff"}
-# Calls that take a value from a *later* row. ``ffill`` and ``pad`` take one from an earlier row,
-# which is all a trailing feature may do, so they are deliberately absent.
-BACKWARD_FILL_CALLS = {"bfill", "backfill", "interpolate"}
-# Calls whose ``method=`` chooses which direction a fill runs in.
-FILL_METHOD_CALLS = {"fillna", "reindex", "asfreq", "align", "resample"}
-# The only two ``method=`` values that fill from the past. ``build_features`` passes no method at
-# all -- its ``reindex`` leaves a gap session null and its ``fillna`` takes an explicit series.
-TRAILING_METHODS = {"ffill", "pad"}
-# ``rolling(window, min_periods, center, ...)``: ``center`` is reachable positionally, so a
-# keyword-only rule waves ``rolling(5, 5, True)`` straight through. Measured on pandas 3.0.6.
-_ROLLING_CENTER_POSITION = 2
+# The scan's vocabulary and the scanner itself live in ``tests/forward_scan.py``, so a test
+# that must show a planted peek is invisible to the scan can run the real scanner over it.
+# The red cases proving what the scan *does* catch stay below.
 
 
 def _modules(root: Path = FEATURES) -> list[Path]:
     return sorted(
         path for path in root.rglob("*.py") if path.relative_to(root).as_posix() not in EXEMPT
     )
-
-
-def _callee(node: ast.Call) -> str:
-    func = node.func
-    if isinstance(func, ast.Attribute):
-        return func.attr
-    if isinstance(func, ast.Name):
-        return func.id
-    return ""
-
-
-def _is_trailing_offset(offset: ast.expr) -> bool:
-    """Whether ``offset`` is provably a non-negative integer literal.
-
-    An allow-list, not a list of forbidden spellings, because the forbidden ones cannot be
-    enumerated: ``shift(-1)`` is only the obvious one, and ``shift(-n)``, ``shift(0 - 1)``,
-    ``shift(~0)`` and ``shift(lag)`` are the same leak written differently. A scan that flagged a
-    unary minus would wave every other one through, so anything that is not a literal ``0``,
-    ``1``, ``2``, ... is flagged and the author has to come and say why.
-    """
-    return (
-        isinstance(offset, ast.Constant)
-        and isinstance(offset.value, int)
-        and not isinstance(offset.value, bool)
-        and offset.value >= 0
-    )
-
-
-def _is_false(value: ast.expr) -> bool:
-    return isinstance(value, ast.Constant) and not value.value
-
-
-def _is_trailing_method(value: ast.expr) -> bool:
-    """Whether a ``method=`` provably fills from earlier rows, or does not fill at all."""
-    return isinstance(value, ast.Constant) and (
-        value.value is None or value.value in TRAILING_METHODS
-    )
-
-
-def _forward_looks(source: str) -> list[str]:
-    """Every syntactic way ``source`` could read a value from after the row being computed."""
-    found: list[str] = []
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Slice):
-            # No module in the strict half of this package slices anything, so the rule is "no
-            # slicing" rather than "no reversing": a forward window is spelled ``values[i + 1:]``
-            # and a reversal ``values[::-1]``, and a step-only rule would miss the first.
-            found.append(f"slices a series with [{ast.unparse(node)}]")
-            continue
-        if not isinstance(node, ast.Call):
-            continue
-        name = _callee(node)
-        if name in BACKWARD_FILL_CALLS:
-            # A back-fill is the subtlest forward peek of all: it reads a *later* row's value and
-            # presents it as this row's own, so a gap session's close would be bridged from the
-            # session after it and a future price would reach log_returns directly.
-            found.append(f"fills from later rows with {name}()")
-        if name == "rolling" and len(node.args) > _ROLLING_CENTER_POSITION:
-            positional = node.args[_ROLLING_CENTER_POSITION]
-            if not _is_false(positional):
-                found.append(
-                    f"centres a window with rolling's third argument {ast.unparse(positional)}"
-                )
-        for keyword in node.keywords:
-            if keyword.arg == "center" and not _is_false(keyword.value):
-                found.append(f"centres a window with center={ast.unparse(keyword.value)}")
-            if (
-                keyword.arg == "method"
-                and name in FILL_METHOD_CALLS
-                and not _is_trailing_method(keyword.value)
-            ):
-                found.append(
-                    f"fills from later rows with {name}(method={ast.unparse(keyword.value)})"
-                )
-            if (
-                keyword.arg == "periods"
-                and name in OFFSET_CALLS
-                and not _is_trailing_offset(keyword.value)
-            ):
-                found.append(f"offsets with {name}(periods={ast.unparse(keyword.value)})")
-        if name in OFFSET_CALLS:
-            found.extend(
-                f"offsets with {name}({ast.unparse(argument)})"
-                for argument in node.args
-                if not _is_trailing_offset(argument)
-            )
-    return found
 
 
 @pytest.mark.parametrize("module", _modules(), ids=lambda p: p.relative_to(FEATURES).as_posix())
