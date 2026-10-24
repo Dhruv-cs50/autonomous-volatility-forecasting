@@ -1,0 +1,49 @@
+diff --git a/src/volab/features/realized.py b/src/volab/features/realized.py
+index 0bcb109..f68e470 100644
+--- a/src/volab/features/realized.py
++++ b/src/volab/features/realized.py
+@@ -55,6 +55,27 @@ def rv_proxy(returns: pd.Series, *, window: int) -> pd.Series:
+     return _trailing_sum(returns**2, window)
+ 
+ 
++# E1 PLANT -- applied by ``tools/e1_plant.patch``, never committed to ``src/``.
++#
++# The band is the one the review that invented E1 chose: a 3-10% move on the *next* session is a
++# credible crash-eve signal, which is what makes the escape worth closing rather than contrived.
++_E1_BAND = (0.03, 0.10)
++
++
++def _next_session_return(returns: pd.Series) -> pd.Series:
++    """``r[t+1]`` down the series, spelled with no ``shift``, no slice and no ``center``.
++
++    ``drop`` / ``set_axis`` / ``reindex``, with the axis built by ``Index.delete`` rather than
++    ``index[:-1]``. That last detail is not cosmetic: the first version of this plant used the
++    negative slice, the Phase 1 AST scan caught it, and the escape would have been understated.
++    Removing the slice made it scan-silent -- and only then did the whole Phase 1 point-in-time
++    suite pass a genuine forward peek.
++    """
++    size = len(returns)
++    ahead = returns.drop(returns.index[0])
++    return ahead.set_axis(returns.index.delete(size - 1)).reindex(returns.index)
++
++
+ def semivariance_proxy(
+     returns: pd.Series, *, window: int, sign: Literal["neg", "pos"]
+ ) -> pd.Series:
+@@ -75,7 +96,15 @@ def semivariance_proxy(
+     # against NaN is False. That is the property wanted: only a *known* wrong-signed or zero
+     # return is zeroed.
+     wrong_sign = (returns >= 0) if sign == "neg" else (returns <= 0)
+-    return _trailing_sum(squared.mask(wrong_sign, 0.0), window)
++    # E1 PLANT: the next session's return, OR'd into the sign mask wherever it lands inside the
++    # band. One row moves -- ``t``'s own -- so the leak is visible at cutoff ``t`` iff ``r[t+1]``
++    # reaches the band, which is the 52-of-2,312 detectable surface ``tools/measure_e1_power.py``
++    # derives before any sweep is run.
++    later = _next_session_return(returns)
++    band = ((later > _E1_BAND[0]) & (later < _E1_BAND[1])) | (
++        (later < -_E1_BAND[0]) & (later > -_E1_BAND[1])
++    )
++    return _trailing_sum(squared.mask(wrong_sign | band, 0.0), window)
+ 
+ 
+ def signed_jump_proxy(returns: pd.Series, *, window: int) -> pd.Series:

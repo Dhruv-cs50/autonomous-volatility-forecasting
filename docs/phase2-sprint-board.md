@@ -40,7 +40,7 @@ a wrong implementation cannot pass by being plausible.
 
 | Story | Goal | Files | Acceptance | State |
 |---|---|---|---|---|
-| US-2.1 | Three pre-measurements before any code: vintages, E1's real detection power, where E2 can hide | — | each one either confirms or changes the plan, and is recorded | done `3c7e087` (doc-only) — M1/M2/M3 in `phase2-decisions.md`, all three changed it. **Evidence is quoted output, not a committed script**; see Risks. |
+| US-2.1 | Three pre-measurements before any code: vintages, E1's real detection power, where E2 can hide | — | each one either confirms or changes the plan, and is recorded | done `3c7e087` (doc-only) — M1/M2/M3 in `phase2-decisions.md`, all three changed it. Probes committed by US-2.13, so the quoted output is now re-runnable. |
 | US-2.2 | One panel-assembly path, plus `truncate`, shared by CLI, tests and walk-forward | `volab/panel.py`, `volab/features/__main__.py` | the CLI's existing tests still pin it; `truncate` carries its own witness | done `21dc15b` |
 | US-2.3 | Truncation equivalence as the primary point-in-time test | `tests/test_truncation_equivalence.py` | silent on clean code at every synthetic cutoff and every sampled real one; red cases assert the exact detectable surface | done `21dc15b` |
 | US-2.4 | Close E2's class | `tests/test_process_isolation.py`, `tests/isolated_build.py`, `tests/memo_plant.py` | the same plant escapes in-process and is caught across processes | done `21dc15b` |
@@ -59,7 +59,7 @@ the wrong version was right.
 
 | Story | Goal | Files | Acceptance | State |
 |---|---|---|---|---|
-| US-2.6 | Prove it bites: E1 planted in `src/`, both methods run, both outputs quoted | — | Phase 1's suite passes; the sweep fails; the exhaustive count matches M2's prediction | done `3c7e087` (doc-only) — 100/100 and 644/645 pass planted; 52 of 2,245 caught, predicted 52. **The plant is not in the repo**, so the figures are not reproducible from a checkout; see Risks. |
+| US-2.6 | Prove it bites: E1 planted in `src/`, both methods run, both outputs quoted | — | Phase 1's suite passes; the sweep fails; the exhaustive count matches M2's prediction | done `3c7e087` (doc-only) — 100/100 pass planted; 52 of 2,245 caught, predicted 52. Plant and driver committed by US-2.13; the whole-suite figure is re-recorded there, against the tree it was actually taken on — `21dc15b`, not this one. |
 | US-2.7 | Demote the perturbation suite and the AST scan in the documentation, delete neither | `README.md`, `tests/test_point_in_time.py` | both still run; the scan is never cited as a defence | done `3c7e087` |
 | US-2.8 | Retract *"the store cannot help"*, in the spec and in the docstring that copied it | spec §9, `volab/features/build.py` | the retraction says what the paragraph still gets right | done `3c7e087` |
 | US-2.9 | The decisions log, each ruling with what it costs if wrong | `docs/superpowers/phase2-decisions.md` | every mechanical claim names an executable witness (R32) | **reopened then done** `02eb0e5` — a delivery audit found ~9 rulings with no test id and two (R62, R63) with no test at all. Witnesses added, the tests written, R58/R59/R60 corrected, R70–R78 added. |
@@ -83,18 +83,77 @@ the wrong version was right.
   model over the common set of origins where the loss is defined, with the dropped count carried
   on each trial (`Evaluation.comparable`).
 
+## Sprint 4 — The evidence as artefacts · CLOSED
+
+| Story | Goal | Files | Acceptance | State |
+|---|---|---|---|---|
+| US-2.13 | Every figure the decisions log quotes is reproducible from a checkout, or says it is not | `tools/`, `docs/superpowers/phase2-decisions.md`, `README.md` | the plant is committed and applied to a throwaway tree; the three pre-measurements and the calibration probe are scripts; every quoted figure names what prints it; the ratchet is unchanged and `ALLOWED` stays `{"store.py"}` | done `bfa30cb`, this line `HEAD` — R79–R81 |
+
+**The figures were checked mechanically, not by eye.** Each fenced block the log now calls
+reproducible was diffed line by line against the saved stdout of the script that claims it, and
+the misses were real: three calibration blocks were in formats no script prints. They were
+replaced with verbatim output rather than left to look checkable. Separately, every one of the 35
+`test_*` id the log cites was checked to exist, counted over every spelling rather than only the
+backticked ones. Phase 1's spec naming five tests that never existed is the reason that check is
+worth running rather than assuming. **No count is given here on purpose.** Two earlier versions
+of this line gave one — 35, the backticked subset, which a delivery audit correctly called as 37
+— and the second was stale within the hour, because the fixes that audit prompted added five
+more cited ids. A number that changes whenever the log cites another test is not a fact worth
+recording; the property is that every id resolves, and that is what was checked.
+
+**One figure was wrong rather than stale, and the correction is the interesting part.** The log
+quoted `1 failed, 644 passed` for "the whole suite minus the new Phase 2 files" in a section
+about the final tree. On HEAD that exclusion set leaves **648**, and the first guess — that the
+suite had grown — was wrong: `git diff 3c7e087 HEAD -- tests/` shows no test file outside the
+exclusion set changed at all. Measured instead of inferred, by collecting on the archived trees:
+the 645 is **sprint 1's tree**, `21dc15b`, which held 663 tests and only two Phase 2 test files,
+since the walk-forward's two did not exist yet. So the number was right about a tree the section
+did not name. Both figures are now in the log, each with its tree.
+
+**One defect, found by this story's own first run, and it is the reason the driver refuses rather
+than reports.** `git archive` creates an empty `data/curated` (the `.gitignore` keeps
+`data/**/` tracked), `cp -R` into an existing destination nests, and the real sweep tiers raised
+`DatasetNotFound` — which the driver swallowed, **exiting 0 with those rows missing from the
+output**. A script written to close a reproducibility gap had produced a check that passes by not
+running. Fixed, and recorded under R80 rather than quietly corrected.
+
+**A `delivery-auditor` seat ran at this boundary**, as the delivery model requires and as this
+board's own opening note says Phase 2 should have done more of. It read the working tree before
+the commit landed, so its "no commit exists" finding is answered by `bfa30cb`. Five of its
+findings were real and are fixed here:
+
+- **R79's three claims about `tools/` had no witness** — R32 turned on the ruling that cites
+  R32. `tests/test_import_discipline.py` now carries them, over `tools/` as a separate root,
+  with a red case and a test pinning the docstring exemption. `ALLOWED` is untouched.
+- **The "every figure names what prints it" claim was false as written**: it classed the fenced
+  blocks and left bare timings uncovered. Every wall-clock figure in the log is now classed as
+  historical by a stated rule rather than one at a time.
+- **US-2.6's row contradicted the Sprint 4 narrative** about whether the suite had grown. The
+  git evidence supports the narrative; the row is corrected.
+- **The `har_log` block was headed "Reproduces this block"** although no script prints that name
+  or that layout. Re-classed: historical in format, reproducible in its figures.
+- **The recorded run's `251 of 251` equivalence counts are console output**, not ledger rows, and
+  are now labelled as such — the ledger carries losses and origin counts only.
+
+Two of its findings are noted rather than acted on. The `0 of 2245` and the 68.7s clean-tree
+rebuild are measurements this session took and the log names the commands that print them; their
+stdout is not committed, which is the same standing every other recorded run in this document
+has. And `tools/` has no tests of its own beyond the ratchet ones above: the probes are covered
+by being run, which is how the driver's own first-run defect was found.
+
 ## Risks and what is carried
 
 - **A sampled sweep is a ratchet, not a proof.** 2.2% power per cutoff against a band-threshold
   peek. The dev-window proof is the recorded exhaustive sweep (2,245 cutoffs, 6m00s), which is
   not per-commit; the walk-forward is exhaustive **only over the origins a given run visits**,
   and the recorded run used a stride of 5.
-- **The headline figures are not reproducible from a checkout.** The E1 plant and the three
-  pre-measurement probes were run and their output quoted, but neither the plant nor the probe
-  scripts are committed, so US-2.1 and US-2.6 rest on quoted output rather than on something a
-  reader can re-run. The *properties* they established do have standing tests; the *numbers* do
-  not. A `tools/` directory holding the plant as a patch and the probes as scripts would close
-  this, and is the obvious next piece of work.
+- ~~**The headline figures are not reproducible from a checkout.**~~ **Closed by US-2.13.**
+  `tools/` holds the E1 plant as a patch with a driver that applies it to a throwaway tree, and
+  the three pre-measurements and the calibration probe as scripts. Every figure in
+  `phase2-decisions.md` now names a `tools/` command, an existing test id, or says it is
+  historical and not reproducible on HEAD. Verified from a tree with no derived data: the
+  committed payloads rebuild the store in 68.7s with no network and the probes then print the
+  same numbers. R79–R81.
 - **The real-data tiers skip silently on a clean checkout.** `data/**` is gitignored and
   derivable, so `test_truncation_equivalence.py` and `test_walkforward.py` skip their real-data
   fixtures where the curated store is absent — which means a fresh clone's green suite has not

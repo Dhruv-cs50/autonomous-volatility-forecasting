@@ -109,11 +109,19 @@ escapes survive that method **as a class**, and both were built and run rather t
 
 | Planted defect | Phase 1 point-in-time suite | Whole Phase 1 suite | Truncation equivalence | Process isolation |
 |---|---|---|---|---|
-| E1 — band predicate on the next return | **100 of 100 pass** | **644 of 645 pass** | **catches it** | — |
+| E1 — band predicate on the next return | **100 of 100 pass** | **646 of 648 pass** | **catches it** | — |
 | E2 — memoised full-sample statistic | **0 of 100 fail** | passes | cannot see it | **catches it** |
 
 E1 was planted in `src/` and the suites were run; the one test that notices is a hand-written
 value test whose returns happen to land in the band, which is incidental rather than a defence.
+**Both rows are reproducible from a checkout**: the plant is committed as `tools/e1_plant.patch`
+and `uv run --locked python tools/reproduce_e1.py` applies it to a throwaway tree and runs both
+methods against it. The whole-suite figure is 648 tests — everything but the four Phase 2 test
+files the driver names — with one skip that names itself (`test_store_guard` declines to run
+outside a git work tree, and a `git archive` tree has no `.git`), so in an ordinary checkout it
+reads 647 of 648. An earlier **644 of 645** here was sprint 1's tree, `21dc15b`, which had 663
+tests and two Phase 2 test files rather than four. `tools/README.md` lists every probe behind a figure quoted here or in
+`docs/superpowers/phase2-decisions.md`.
 E1 escapes perturbation because at the cutoff a fixture can only present `|r_next|` from a finite
 set, so a predicate thresholded into a gap of that set is invariant under *every* perturbation
 image — more perturbation groups raise the attacker's cost without closing the class. Truncation
