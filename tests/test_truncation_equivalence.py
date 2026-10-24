@@ -25,7 +25,9 @@ is recorded rather than implied. A forward peek is visible at cutoff ``t`` only 
 row at or before ``t``, and E1 changes exactly one row -- ``t``'s own -- so it is visible iff
 ``t``'s next return lands in its band. Measured on the real SPY panel that is **52 of 2,312
 sessions, 2.2%**, so a 40-cutoff sample expects 0.9 hits and would have reported "no
-disagreement" against a live forward peek about a third of the time. Three consequences, all
+disagreement" against a live forward peek about 40% of the time -- ``(1 - 0.0225) ** 40 =
+0.403``, which ``tools/measure_e1_power.py`` prints and which the decisions log had rounded to
+"about a third" without computing. Three consequences, all
 deliberate:
 
 1. The real-data tier here is a **sampled ratchet** whose power is stated, not a proof.

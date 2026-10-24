@@ -17,6 +17,32 @@ stands at seven, and the seventh is in this document.
 
 ---
 
+## Every figure in this document names what prints it
+
+R32 is about guarantees: a stated "cannot" must name an executable witness. Applied to
+*measurements* it says the same thing one step over — **a quoted number must name the thing that
+prints it, or it is a figure on trust.** For most of Phase 2 it was. The board carried that as a
+named risk: the plant and the probes were run and their output quoted, but nothing was committed,
+so the *properties* had standing tests while the *numbers* had none.
+
+`tools/` closes it. Every figure below is now in one of three classes, and says which:
+
+* **a `tools/` command** — the number is reproducible from a checkout. Run it and diff.
+* **an existing test id** — the property is pinned by the suite, which asserts rather than prints.
+* **historical** — taken on a named tree, usually against code that has since been fixed, and
+  **not reproducible on HEAD**. Said so explicitly rather than left to look re-runnable. The
+  seventh escape's first run, R72's 13 origins, R78's planted pass and R38's timings are all of
+  this kind: they are records of what happened, not claims about the current tree.
+
+Two conventions those scripts follow, both of which exist because of something this phase got
+wrong. **Wall clock goes to stderr**, never into the diffable output — R38's timing went stale
+three times, and a duration measured while three probes share a machine is not a figure anyone
+should quote. And **the sweep is imported from the test module that carries it**, so a figure
+here comes from the code cited here rather than from a second implementation that agrees today.
+`tools/README.md` has the inventory.
+
+---
+
 ## The three measurements taken before any code was written
 
 Each changed the design, and all three were run against `d18f004` (main, with Phase 1 merged)
@@ -24,6 +50,8 @@ before a line was written. The pattern is deliberate: Phase 1's expensive lesson
 about a leakage property is worth less than one run.
 
 ### M1 — a post-load slice on `as_of` *is* what the store would hand over
+
+> Prints both blocks below: `uv run --locked python tools/measure_vintages.py`
 
 Truncation equivalence needs the truncated side to be the panel the store would have returned at
 `t`, not merely a filtered copy of a later panel. Those differ the moment a key carries several
@@ -37,8 +65,11 @@ fred_daily: rows=7118 dup(symbol,ts)=0 dup(symbol,as_of)=14
 ```
 
 The 14 are the 7 known FRED publication-calendar collisions, two rows each, differing in `ts`.
+The counts are over the whole universe, since the question is whether a vintage exists anywhere.
 Then checked directly rather than inferred — slice against `load_panel(end=t)`, three cutoffs in
-each of three datasets, **9 of 9 byte-identical**:
+each of three datasets, **9 of 9 byte-identical**. The bars comparison is on one symbol, because
+`volab.panel.load_bars` reads one symbol and comparing a frame no caller asks for would prove
+less:
 
 ```
 bars_daily 2019-04-18: slice=(627, 5) store=(627, 5) identical=True
@@ -72,16 +103,34 @@ E1 ORs a band on the *next* session's return into the semivariance sign mask. Tr
 removes exactly one row's forward view — `t`'s own — so the two tables disagree at cutoff `t`
 **iff** `t`'s next return lies in the band. Over SPY's 2,312 dev sessions:
 
+> Prints this block: `uv run --locked python tools/measure_e1_power.py`
+
 ```
 sessions: 2312
 sessions whose NEXT return is in (0.03, 0.10): 19
   ... in (-0.10, -0.03): 33
-hit rate: 0.0082
+hit rate: 0.0082  (the positive band alone)
+union: 52 of 2312, rate 0.0225
+a 40-cutoff sample expects 0.9 hit(s)
+P(a 40-cutoff sample sees none): 0.403
+informative cutoffs the sweep would visit: 2245
+of those, E1 is detectable at: 52
+first three: [datetime.date(2018, 2, 2), datetime.date(2018, 2, 7), datetime.date(2018, 10, 9)]
 ```
 
+**Two corrections the script forced, and they are the argument for writing it.** The earlier
+block printed one `hit rate: 0.0082` line, which is 19/2,312 — the *positive band alone* — while
+the sentence beside it described the union. Both are now printed and labelled. And "about a third
+of the time" was arithmetic nobody had run: `(1 − 0.0225)^40 = 0.403`, so a 40-cutoff sample
+misses a live forward peek **about two times in five**, which is worse than the figure that was
+there and makes R35's case more strongly rather than less.
+
 52 of 2,312 as the union, 2.2%. **A 40-cutoff sample expects 0.9 hits**, so a sampled sweep would
-have reported "no disagreement" against a live forward peek about a third of the time. The
-prototype's 3-of-38 came from a synthetic panel carrying a deliberate +5% move every 17 sessions.
+have reported "no disagreement" against a live forward peek about 40% of the time. The
+prototype's 3-of-38, and the 8% in this heading, are **historical**: they came from a prototype's
+synthetic panel carrying a deliberate +5% move every 17 sessions, which is not a fixture in this
+repository and is not reproducible here. They are in the record because the gap between 8% and
+2.2% is what made this measurement worth taking before any code was written.
 
 - **R35** Sampling is kept as the cheap per-commit tier **with its power stated**. Two further
   tiers carry the coverage, and the distinction between them matters because an earlier version
@@ -114,6 +163,8 @@ prototype's 3-of-38 came from a synthetic panel carrying a deliberate +5% move e
 
 ### M3 — E2 can hide outside the feature package, so the AST ban cannot close its class
 
+> Prints this block: `uv run --locked python tools/measure_calendar_memo.py`
+
 The cheap candidate for E2 was an AST ban on module-level mutable state in
 `src/volab/features/`. It is blind to state parked on an object handed *in*:
 
@@ -144,6 +195,12 @@ at all**.
   **~0.07s**; a 37-cutoff sweep is **2.70s**; the exhaustive 2,245-cutoff sweep is **6m00s**.
   Compute is not the constraint for the sweep itself.
 
+  **Every figure in this ruling is historical**, and it is the one ruling `tools/` deliberately
+  does not make reproducible. A timing is a property of a machine and a moment, not of the tree,
+  so a script that printed one would invite exactly the staleness this ruling is a correction
+  for. That is why the probes send wall clock to stderr. Read these as a record of what the
+  decision was taken on, not as numbers to diff.
+
   **What it did cost is the suite**, and this number has been wrong three times, so here is every
   measurement rather than one more confident summary:
 
@@ -168,6 +225,11 @@ at all**.
 ## The seventh escape: extent dependence at a cutoff with no bar
 
 Found by the new sweep on its **first run**, before any plant.
+
+> **Historical, and deliberately not reproducible.** The defect is fixed (R39), so a sweep on
+> HEAD prints `0 of 79` -- which is the point. What `tools/` makes re-runnable is the *method*
+> that found it: `tools/sweep_truncation.py --tier synthetic`, which would print the line below
+> again on any tree where the span fix were reverted.
 
 ```
 1 of 79 cutoffs disagree: [(datetime.date(2024, 4, 17), 'row counts differ: 74 vs 73')]
@@ -233,18 +295,36 @@ a panel physically stopping at `t`, compared byte-exactly with `volab.identity`.
 
 A check that fired on honest code would be useless.
 
+> Prints each row: `uv run --locked python tools/sweep_truncation.py --tier synthetic`, then
+> `--tier real`, then `--tier real --exhaustive`. A passing pytest run prints "1 passed", never
+> "0 of 2245 cutoffs disagree", which is why the clean row needed a script of its own.
+
 | Tier | Cutoffs | Disagreements | Wall clock |
 |---|---|---|---|
 | synthetic, exhaustive | 79 | **0** | ~2s |
 | real curated, sampled (stride + awkward) | 63 | **0** | ~4s |
 | real curated, **exhaustive** (`VOLAB_PIT_EXHAUSTIVE=1`) | 2,245 | **0** | 6m00s, re-confirmed on the final tree at 5m44s |
 
+All three re-confirmed from `tools/` on the current tree: `0 of 79`, `0 of 63`, **`0 of 2245`**.
+The wall clock is deliberately not re-quoted here — the probes send timings to stderr, and the
+figures above were taken on an idle machine while these were not.
+
 ### Proof that it bites: E1 planted in `src/`, not monkeypatched
+
+> Prints everything in this section: `uv run --locked python tools/reproduce_e1.py --exhaustive`.
+> The plant is `tools/e1_plant.patch`, applied to a throwaway `git archive HEAD` tree and **never
+> to your checkout** — see R80 for why each half of that matters, and for the defect the driver's
+> own first run produced.
 
 The scan-silent spelling — `drop` / `set_axis` / `reindex` with `Index.delete`, no `shift`, no
 slice, no `center` — written into `semivariance_proxy` in `src/volab/features/realized.py`.
+That spelling is the committed patch's, verbatim, and the reason it is not a negative slice is on
+Phase 1's record: the first E1 variant used `index[:-1]`, the AST scan caught it, and the escape
+would have been understated.
 
-**Phase 1's method, against that plant:**
+**Phase 1's method, against that plant.** As originally recorded — **historical, and the tree it
+was taken on is `21dc15b`**, sprint 1's close, which held 663 tests and only two Phase 2 test
+files because the walk-forward's two did not exist yet:
 
 ```
 === PHASE 1 POINT-IN-TIME SUITE, E1 PLANTED ===
@@ -255,10 +335,42 @@ FAILED tests/test_realized.py::test_signed_jump_is_negative_when_downside_domina
 1 failed, 644 passed in 25.70s
 ```
 
+**That tree is named here because the figure was wrong rather than stale, and the difference
+matters.** The section around it describes the final tree, where the same exclusion set — the
+four files listed by `tools/reproduce_e1.py` — leaves **648**, not 645. The obvious explanation,
+that the suite had grown, is false: `git diff 3c7e087 HEAD -- tests/` shows no test file outside
+the exclusion set changed at all. Collecting on the archived trees settles it: 645 is `21dc15b`
+with two Phase 2 files, 648 is both `3c7e087` and HEAD with four. So the count was right about a
+tree this section did not name, which is the failure mode R32 exists for, one level up from a
+missing test id.
+
+Re-recorded on HEAD. This is the driver's own output, as an excerpt: the two anti-vacuity
+lines it prints between these sections are shown further down, under R80.
+
+```
+=== BASELINE, SAME TREE, NO PLANT ===
+phase 1 point-in-time suite: 100 passed
+SKIPPED [1] tests/test_store_guard.py:342: not inside a git work tree
+whole suite minus the phase 2 files: 647 passed, 1 skipped
+=== PHASE 1'S METHOD, E1 PLANTED ===
+phase 1 point-in-time suite: 100 passed
+FAILED tests/test_realized.py::test_signed_jump_is_negative_when_downside_dominates
+SKIPPED [1] tests/test_store_guard.py:342: not inside a git work tree
+whole suite minus the phase 2 files: 1 failed, 646 passed, 1 skipped
+```
+
+Three things that block carries deliberately. The **baseline runs first in the same tree**, so
+the plant's evidence is a difference — 647 passed to 646 passed and one failure — rather than an
+absolute count carrying whatever the environment contributes. The **skip names itself**: a tree
+built by `git archive` has no `.git`, so `test_store_guard`'s git-work-tree guard declines to
+run, and in an ordinary checkout that test passes and the figure is 647 of 648. And the **failure
+is named**, because the claim is that the single catcher is one incidental unit value test; a
+bare count could not show that it is still the same one.
+
 **100 of 100 point-in-time tests pass with a live forward peek in the source.** The single
 catcher is a hand-written unit value test whose returns happen to land in the band — incidental,
-not a defence. This reproduces Phase 1's own 607-of-608 measurement on the current tree rather
-than citing it.
+not a defence. Phase 1's own **607-of-608** figure is historical — a different tree with a
+different suite — and this is the same measurement taken again rather than that one cited.
 
 **Phase 2's method, against the same plant:**
 
@@ -279,7 +391,15 @@ than citing it.
 **52, which is the number M2 predicted before the sweep was run** — 19 positive-band plus 33
 negative-band sessions. A prediction made from the return distribution and then confirmed to the
 unit is stronger evidence than the detection alone, because it means the mechanism is understood
-and not merely observed. The real sampled tier caught it at 2025-04-02, the eve of the April 2025
+and not merely observed.
+
+**And the check is now on the set, not the count.** `tools/sweep_truncation.py` derives
+`{t : r[t+1] in the band}` from the returns and compares it against the caught set by equality,
+so a figure that matched by coincidence would still fail. On the planted tree it prints
+`caught set == predicted set: True` at all three tiers — 1 of 1, 1 of 1 and **52 of 52**. That
+is R41's standard, which the synthetic red case already held, applied to the real-data tiers the
+decisions log quotes. M2's own first three predicted dates are 2018-02-02, 2018-02-07 and
+2018-10-09, which are the first three the exhaustive sweep reports. The real sampled tier caught it at 2025-04-02, the eve of the April 2025
 selloff, which is the sort of session the band was chosen to look credible on.
 
 - **R41** The red cases assert the sweep's **exact detectable surface**, not a count.
@@ -315,6 +435,11 @@ is no first build in the process for state to survive from.
 The file carries the **discriminating pair**, which is what makes the mechanism justified rather
 than merely plausible. Nothing about the plant changes between the two tests; only the number of
 interpreters does.
+
+> Both rows are standing tests rather than a recorded run, which is why they have no `tools/`
+> command: `test_a_memoised_full_sample_statistic_escapes_an_in_process_comparison` is the first
+> row and `test_process_isolation_catches_the_memoised_statistic_that_escapes_in_process` the
+> second. Run `uv run --locked pytest tests/test_process_isolation.py -v` to see the pair.
 
 | Comparison | Memoised full-sample statistic |
 |---|---|
@@ -523,6 +648,10 @@ phase's own tests passed.**
 
 ### R72 — a `ts`-based target slice passed all 25 walk-forward tests
 
+> **Historical.** Both blocks below, **and the clean-against-planted loss table**, were taken
+> against code that has since been fixed, so none of them is reproducible on HEAD. The standing
+> witnesses named at the end of this ruling are what carry it now.
+
 The eighth time in this project a leakage test let a real forward peek through.
 
 `test_training_targets_are_knowable_at_the_origin` **re-implemented both slices inside the test
@@ -575,11 +704,30 @@ The model was called `har_log` and was a **semi-log** specification: a logged re
 regressors, exponentiated. `exp(fitted log y)` estimates the geometric mean of `y`, and the
 quantity being forecast is the arithmetic mean. Measured on the real SPY panel:
 
+> Reproduces this block, although `har_log` no longer exists:
+> `uv run --locked python tools/measure_calibration.py --horizon 1 --horizon 22 --from 2024-01-02
+> --every 5`, and read the **uncorrected** rows of its second section. That the two agree to
+> four figures — `0.2529` at h=1 and `0.6768` at h=22, over `n=101` and `n=96`, against the same
+> `1.7903` and `1.3428` for the random walk — is itself a result: it establishes that `har_log`
+> *was* exactly today's `har_semilog` with the smearing factor forced to 1, so the rename changed
+> a name and the correction changed a number, and nothing else moved underneath them.
+
 ```
 h1   har_log      n= 101 mean realized 7.5138e-05 mean forecast 1.9002e-05  ratio 0.2529
 h1   random_walk  n= 101 mean realized 7.5138e-05 mean forecast 1.3452e-04  ratio 1.7903
 h22  har_log      n=  96 mean realized 2.3063e-03 mean forecast 1.5610e-03  ratio 0.6768
 h22  random_walk  n=  96 mean realized 2.3063e-03 mean forecast 3.0969e-03  ratio 1.3428
+```
+
+`har_log` is gone, so those two rows no longer have that name. Here is what the script prints for
+the same window today, with the random-walk rows unchanged and the semi-log rows appearing as the
+uncorrected counterfactual — the same four figures, from code that exists:
+
+```
+h1   random_walk  n= 101 mean realized 7.5138e-05 mean forecast 1.3452e-04  ratio 1.7903
+h22  random_walk  n=  96 mean realized 2.3063e-03 mean forecast 3.0969e-03  ratio 1.3428
+h1   har_semilog uncorrected calib +0.2529  qlike -6.64929  mse 1.907139e-08
+h22  har_semilog uncorrected calib +0.6768  qlike -5.06696  mse 1.439528e-05
 ```
 
 **A factor of four low at h=1.** Not a leak, but a validity problem for any ranking built on it,
@@ -607,6 +755,13 @@ Three changes, and the third is the one that matters most:
 re-run on `02eb0e5` over SPY origins every 5 sessions from 2021-01-04, as mean forecast over
 mean realized — 1.0 is calibrated:
 
+> Prints every figure in this table, as one line per model rather than as a table, and the block
+> below it verbatim:
+> `uv run --locked python tools/measure_calibration.py --symbol SPY --horizon 1 --horizon 22
+> --every 5`. Re-confirmed on the current tree, every figure to four decimals, and the losses
+> also match the recorded run's own lines in `data/trials.jsonl` — two independent paths to the
+> same numbers, since the ledger came from the CLI and these come from `evaluate` directly.
+
 | | h=1 | h=22 |
 |---|---|---|
 | `har_levels` | 0.7745 | 1.1263 |
@@ -617,9 +772,12 @@ And the correction's own effect, isolated by holding the model, the window and e
 fixed and only forcing the smearing factor to 1:
 
 ```
-har_semilog corrected   calib +0.6230  qlike -8.03456  mse 4.295799e-07
-har_semilog uncorrected calib +0.1067  qlike -3.53163  mse 4.586929e-07
-random_walk benchmark                                  mse 4.453125e-07
+h1   har_semilog corrected   calib +0.6230  qlike -8.03456  mse 4.295799e-07
+h1   har_semilog uncorrected calib +0.1067  qlike -3.53163  mse 4.586929e-07
+h1   random_walk benchmark                 qlike 514.08325  mse 4.453125e-07
+h22  har_semilog corrected   calib +1.0137  qlike -4.99100  mse 9.271182e-06
+h22  har_semilog uncorrected calib +0.5454  qlike -4.78135  mse 1.080418e-05
+h22  random_walk benchmark                 qlike 1392.58273  mse 1.620724e-05
 ```
 
 So the correction moves calibration from 0.107 to 0.623 on this window, and **the same model
@@ -628,6 +786,12 @@ goes from losing to the random walk on MSE (4.587e-07 against 4.453e-07) to beat
 correction reduced the bias rather than removing it; and the 0.107 here differs from the 0.2529
 quoted above because that probe used a 2024-onward window, which is a different sample and not a
 different result.
+
+**That last sentence was an assertion when it was written, and is now a measurement.** One script
+runs both windows, so the claim is checkable rather than plausible: `--from 2021-01-04` gives
+0.1067 uncorrected and `--from 2024-01-02` gives 0.2529, on the same model, the same code and
+the same stride. The window is the only thing that differs, which is what "a different sample
+and not a different result" has to mean to be worth saying.
 
 Witness: `test_the_smearing_factor_corrects_the_retransformation_bias`, which asserts only that
 the factor is at least 1 — that is Jensen's inequality, not calibration, and the calibration
@@ -675,6 +839,13 @@ only the realized value used for *scoring* is read from the whole frame, which i
 to its origin by definition and is bounded by `dev_end` through `scoreable_origins`.
 
 ### R78 — the ninth escape: the target audit checked the slice, not what the fit consumed
+
+> **Historical.** The `40 passed` and the `AssertionError` below both come from a tree carrying
+> a plant that was never committed -- a training set built from the whole target frame. Unlike
+> E1 it is not in `tools/`: E1's plant earns a committed patch because the claim about it is a
+> claim about *Phase 1's whole suite*, which only a patched source can test. This one's claim is
+> about a single audit, and `test_the_forecast_does_not_change_when_future_targets_are_removed`
+> asserts it on every run.
 
 Found by asking an advisor to attack the fix for R72, which is the right place to look: a fix
 written in a hurry to close an escape is the most likely place for the next one.
@@ -742,6 +913,13 @@ tree, 400.4s. Three symbols x four horizons x three models x two losses = **72 t
 lines**, every one carrying a sha that resolves to a tree containing the code, `git_dirty: false`,
 and the stride it used.
 
+> **This block names its own command, and re-running it is not free of consequence**: the ledger
+> is append-only by design, so a second run adds 72 more lines under a different sha rather than
+> reproducing these. The *numbers* in it are reproducible without touching the ledger —
+> `uv run --locked python tools/measure_calibration.py` reaches `evaluate` directly and writes
+> nothing (R81) — and `data/trials.jsonl` already holds these 72 lines, which is where a reader
+> should check them.
+
 ```
 git 02eb0e5bc419, clean
 SPY h1:
@@ -771,10 +949,13 @@ levels* model, which is two different models and proves nothing; it also quoted 
 from a ledger that had since been deleted. Re-measured properly, by holding everything fixed and
 forcing the smearing factor to 1:
 
+> Prints these three lines, among others: `uv run --locked python
+> tools/measure_calibration.py --symbol SPY --horizon 1 --every 5`.
+
 ```
-har_semilog corrected   mse 4.295799e-07
-har_semilog uncorrected mse 4.586929e-07
-random_walk benchmark   mse 4.453125e-07
+h1   har_semilog corrected   calib +0.6230  qlike -8.03456  mse 4.295799e-07
+h1   har_semilog uncorrected calib +0.1067  qlike -3.53163  mse 4.586929e-07
+h1   random_walk benchmark                 qlike 514.08325  mse 4.453125e-07
 ```
 
 The same model goes from **losing** to a single squared return to **beating** it. The
@@ -791,6 +972,67 @@ so its *level* is meaningless — the daily variance proxies are order 1e-5 to 1
 dominates. Only differences between models on the same configuration mean anything, and the
 random walk's large positive values come from origins where its forecast is far too small, which
 QLIKE punishes hard. Nothing is inferred here from a single number's sign or size.
+
+---
+
+## The evidence, made reproducible
+
+The board carried this as a named risk and it is now closed: the plant and the probes are
+committed, so the figures above are re-runnable rather than quoted. Three rulings came out of
+doing it, and one of them is a defect this directory's own first run produced.
+
+- **R79** The measurements live in **`tools/`, outside `src/`, with no `__init__.py`**, and that
+  placement is the ruling rather than a convenience. `tests/test_import_discipline.py` globs
+  `Path(volab.__file__).parent` — `src/volab` and nothing else — so a probe directory at the
+  repository root cannot widen the import ratchet, and `ALLOWED` stays `{"store.py"}`. The
+  alternative, a `volab.probes` package, would have put measurement code inside the distribution
+  and inside the ratchet's scope, where the only way to let a probe read the store would have
+  been to loosen the thing the ratchet exists to hold. Every probe reads through
+  `load_panel` with an explicit `end`; none names Parquet, sets `allow_holdout` or reads
+  `VOLAB_HOLDOUT_UNLOCK`. `ruff` covers the directory, `mypy`'s `files` stays `["src"]`, and no
+  dependency was added.
+
+  **Verified the way the claim is phrased**, since "reproducible from a checkout" is itself a
+  claim: in a tree built from `git archive HEAD` with **no derived data at all**, `build-raw`,
+  `curate` and `features build` rebuilt the store from the committed payloads in 68.7s with no
+  network, and M1, M2 and the sampled real sweep then printed the same figures as this
+  repository's own store — `9 of 9`, `52 of 2,312`, `0 of 63`. *Cost if wrong:* a reader trusts
+  a number this document cannot produce, which is the state Phase 2 shipped in.
+
+- **R80** The E1 plant is **a patch, applied to a throwaway tree, never a monkeypatch and never
+  this checkout.** Each half of that is load-bearing for a different reason.
+
+  *Not a monkeypatch*, because Phase 1's AST scan reads `src/volab/features/*.py` **off disk** —
+  `test_point_in_time.py` globs the package directory and calls `read_text()`. Against a
+  monkeypatch it would scan clean source and pass vacuously, reporting the escape as larger than
+  it is while proving nothing. `tools/sweep_truncation.py --plant e1` keeps the monkeypatch route
+  anyway, because for the *sweep's* counts it is equivalent and far cheaper; it is the
+  Phase-1-suite half of the claim that needs the file on disk changed.
+
+  *Not this checkout*, because a run killed between the apply and the revert would leave a live
+  forward peek in `src/` for the next commit to pick up. `git archive HEAD` into a temporary
+  directory touches no worktree bookkeeping and contends for no `.git/index.lock`, and there is
+  nothing to clean up in the repository if the process dies.
+
+  **And the driver's own first run is why it now refuses rather than reports.** `.gitignore`
+  keeps `data/**/` tracked, so `git archive` had already created an empty `data/curated`; `cp -R`
+  into an existing destination nests, giving `data/curated/curated`. The real sweep tiers raised
+  `DatasetNotFound`, the driver swallowed it, and the run **exited 0 with those rows simply
+  missing from the output** — a check that passes by not running, which is this project's named
+  anti-goal, produced by the script written to close a reproducibility gap. The destination is
+  now removed before the clone, a tier that fails fails the driver, and the availability of the
+  real-data tiers is printed before any measurement. *Cost if wrong:* an operator reads a
+  planted figure that was never computed.
+
+- **R81** `tools/measure_calibration.py` **appends nothing to the trial ledger**, and its
+  *uncorrected* figures are not a result anyone may report. They are a counterfactual —
+  `fit_ols` wrapped so the smearing factor is 1, with the model, the window, the training rows
+  and the origin set untouched — and their only job is to isolate what the correction is worth.
+  Putting them on the ledger would add six trials per configuration that no candidate model
+  produced, which is the opposite of what the ledger counts. The **corrected** losses it prints
+  are the same numbers the recorded run put on the ledger, and agreeing with it from a second
+  path is the check: those came from the CLI, these come from `evaluate` directly. *Cost if
+  wrong:* a reader could mistake a counterfactual for a seventh and eighth trial.
 
 ---
 
