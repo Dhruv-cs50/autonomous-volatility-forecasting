@@ -31,8 +31,16 @@ so the *properties* had standing tests while the *numbers* had none.
 * **an existing test id** — the property is pinned by the suite, which asserts rather than prints.
 * **historical** — taken on a named tree, usually against code that has since been fixed, and
   **not reproducible on HEAD**. Said so explicitly rather than left to look re-runnable. The
-  seventh escape's first run, R72's 13 origins, R78's planted pass and R38's timings are all of
-  this kind: they are records of what happened, not claims about the current tree.
+  seventh escape's first run, R72's 13 origins and R78's planted pass are all of this kind: they
+  are records of what happened, not claims about the current tree.
+
+**Every wall-clock figure anywhere in this document is historical, without exception**, and that
+is a rule rather than a list: R38 says why, and the probes send timings to stderr so one cannot
+leak into a diffable figure. That covers the tier table's duration column, the 5m44s beside it,
+R38's own table, R47's "4s of the suite's 69s" — stale against R38's 89.2s for the final tree,
+and left as the record of when it was taken — R57's per-origin cost, and the rebuild figures in
+R79. Each is what some machine did once. A delivery audit found these uncovered by an earlier
+version of this section, which claimed "every figure" while classing only the fenced blocks.
 
 Two conventions those scripts follow, both of which exist because of something this phase got
 wrong. **Wall clock goes to stderr**, never into the diffable output — R38's timing went stale
@@ -306,8 +314,9 @@ A check that fired on honest code would be useless.
 | real curated, **exhaustive** (`VOLAB_PIT_EXHAUSTIVE=1`) | 2,245 | **0** | 6m00s, re-confirmed on the final tree at 5m44s |
 
 All three re-confirmed from `tools/` on the current tree: `0 of 79`, `0 of 63`, **`0 of 2245`**.
-The wall clock is deliberately not re-quoted here — the probes send timings to stderr, and the
-figures above were taken on an idle machine while these were not.
+The durations in the column above, **5m44s included**, are historical by the rule stated at the
+top of this document: the probes print no timing to stdout, and the re-confirming runs shared a
+machine with two others, so no new duration is recorded here to replace them.
 
 ### Proof that it bites: E1 planted in `src/`, not monkeypatched
 
@@ -372,7 +381,10 @@ catcher is a hand-written unit value test whose returns happen to land in the ba
 not a defence. Phase 1's own **607-of-608** figure is historical — a different tree with a
 different suite — and this is the same measurement taken again rather than that one cited.
 
-**Phase 2's method, against the same plant:**
+**Phase 2's method, against the same plant.** The block below is this document's abridgement:
+the `...` are elisions made here, the driver prints each disagreement on one unwrapped line, and
+it also prints the two `predicted by M2` / `caught set == predicted set` lines quoted further
+down. Only the lines shown are claimed to be verbatim.
 
 ```
 === SYNTHETIC, EXHAUSTIVE ===
@@ -704,9 +716,12 @@ The model was called `har_log` and was a **semi-log** specification: a logged re
 regressors, exponentiated. `exp(fitted log y)` estimates the geometric mean of `y`, and the
 quantity being forecast is the arithmetic mean. Measured on the real SPY panel:
 
-> Reproduces this block, although `har_log` no longer exists:
+> **Historical in its format, reproducible in its figures.** `har_log` does not exist and
+> nothing prints that name or that `mean realized … ratio` layout for a semi-log row, so this
+> block is a record. The *numbers* come back from
 > `uv run --locked python tools/measure_calibration.py --horizon 1 --horizon 22 --from 2024-01-02
-> --every 5`, and read the **uncorrected** rows of its second section. That the two agree to
+> --every 5` — the random-walk rows verbatim, the semi-log ones as the uncorrected rows of its
+> second section, in that section's own format, reprinted below. That the two agree to
 > four figures — `0.2529` at h=1 and `0.6768` at h=22, over `n=101` and `n=96`, against the same
 > `1.7903` and `1.3428` for the random walk — is itself a result: it establishes that `har_log`
 > *was* exactly today's `har_semilog` with the smearing factor forced to 1, so the rename changed
@@ -939,7 +954,10 @@ ran in 400.4s
 ```
 
 **Truncation equivalence held at every origin of every configuration** — 251 of 251, 250 of 250,
-247 of 247, 238 of 238, for each of SPY, QQQ and IWM. That is exhaustive over the origins this
+247 of 247, 238 of 238, for each of SPY, QQQ and IWM. Those four pairs are **historical console
+output**: the ledger records losses and origin counts, not the equivalence result, so unlike the
+qlike and mse lines above they cannot be checked against `data/trials.jsonl`. Re-running the CLI
+would recompute them and append 72 more trials, which is why they are left as a record. That is exhaustive over the origins this
 run visited, which is a stride of 5 across 2021-2025 and **not** the dev window; the dev-window
 result is the separate exhaustive sweep.
 
@@ -988,9 +1006,22 @@ doing it, and one of them is a defect this directory's own first run produced.
   alternative, a `volab.probes` package, would have put measurement code inside the distribution
   and inside the ratchet's scope, where the only way to let a probe read the store would have
   been to loosen the thing the ratchet exists to hold. Every probe reads through
-  `load_panel` with an explicit `end`; none names Parquet, sets `allow_holdout` or reads
-  `VOLAB_HOLDOUT_UNLOCK`. `ruff` covers the directory, `mypy`'s `files` stays `["src"]`, and no
-  dependency was added.
+  `load_panel` with an explicit `end` — directly in `measure_vintages.py`, through
+  `volab.panel.load_curated_panel` in the two sweep probes, and through `walkforward.evaluate`
+  in the calibration probe, while `measure_calendar_memo.py` reads no data at all — and none
+  names Parquet, sets `allow_holdout` or reads `VOLAB_HOLDOUT_UNLOCK`. `ruff` covers the
+  directory, `mypy`'s `files` stays `["src"]`, and no dependency was added.
+
+  **Those three sentences had no witness, and a delivery audit said so — R32 turned on the
+  ruling that cites R32.** They have three now, over `tools/` as a separate root so the scan
+  for `src/volab` still covers that package alone:
+  `test_the_probe_directory_is_outside_the_scanned_package` (outside `SRC`, no `__init__.py`,
+  `ALLOWED` still exactly `{"store.py"}`), `test_probe_does_not_read_parquet_directly` (the
+  existing `_violations` scanner, per probe) and `test_probe_does_not_unlock_the_holdout`. The
+  last reads the **AST** and exempts docstrings, because `tools/README.md` and
+  `tools/_harness.py` both *promise* this ban in words and a text search would trip over the
+  promise itself; `test_the_unlock_scan_detects_each_spelling` is its red case and
+  `test_the_unlock_scan_ignores_prose_that_only_names_it` pins the exemption.
 
   **Verified the way the claim is phrased**, since "reproducible from a checkout" is itself a
   claim: in a tree built from `git archive HEAD` with **no derived data at all**, `build-raw`,

@@ -131,3 +131,127 @@ def test_store_is_actually_exempt() -> None:
     # Guards against the allowlist silently covering a renamed module.
     assert (SRC / "store.py").exists()
     assert "read_parquet" in (SRC / "store.py").read_text()
+
+
+# ---------------------------------------------------------------------------
+# The probe directory. Added because R79 claimed three things about ``tools/`` and a delivery
+# audit pointed out that none of them had a witness -- which is R32 turned on the ruling that
+# cites R32. The scan above deliberately covers ``src/volab`` only, so these are separate tests
+# over a separate root, and ``ALLOWED`` is untouched.
+# ---------------------------------------------------------------------------
+
+TOOLS = SRC.parent.parent / "tools"
+
+# The keyword that opens the sealed window. Spelled once, here, so the test and the thing it
+# forbids cannot drift apart.
+UNLOCK_ARGUMENT = "allow_holdout"
+UNLOCK_ENVIRONMENT = "VOLAB_HOLDOUT_UNLOCK"
+
+
+def _tools_modules() -> list[Path]:
+    return sorted(TOOLS.glob("*.py")) if TOOLS.is_dir() else []
+
+
+def _docstring_constants(tree: ast.AST) -> set[ast.Constant]:
+    """Every ``Constant`` that is a docstring, so prose about a ban is not read as the ban.
+
+    ``tools/_harness.py`` and ``tools/README.md`` both *say* the probes never unlock the holdout,
+    and a text search would trip over the sentence that promises it. Comments are not in the AST
+    at all, so they need no exemption.
+    """
+    found: set[ast.Constant] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            continue
+        if node.body and isinstance(node.body[0], ast.Expr):
+            value = node.body[0].value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                found.add(value)
+    return found
+
+
+def test_the_probe_directory_is_outside_the_scanned_package() -> None:
+    """Why ``tools/`` cannot widen this ratchet, asserted rather than argued (R79)."""
+    assert TOOLS.is_dir(), "tools/ is gone, and with it every figure the decisions log cites"
+    assert not TOOLS.resolve().is_relative_to(SRC.resolve()), "tools/ is inside the scanned package"
+    assert not (TOOLS / "__init__.py").exists(), "tools/ is not a package and must not become one"
+    assert sorted(ALLOWED) == ["store.py"], "the probe directory must not have bought an exemption"
+
+
+@pytest.mark.parametrize("module", _tools_modules(), ids=lambda p: f"tools/{p.name}")
+def test_probe_does_not_read_parquet_directly(module: Path) -> None:
+    """A probe reads through ``load_panel`` like every other caller (R79)."""
+    found = _violations(module.read_text())
+    assert not found, f"tools/{module.name}: {found}; reads belong in store.py"
+
+
+def _unlocks(source: str) -> list[str]:
+    """Every way ``source`` reaches the sealed window, ignoring prose that merely names it."""
+    tree = ast.parse(source)
+    exempt = _docstring_constants(tree)
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.keyword) and node.arg == UNLOCK_ARGUMENT:
+            found.append(f"passes {UNLOCK_ARGUMENT}=")
+        elif isinstance(node, ast.Name) and node.id == UNLOCK_ARGUMENT:
+            found.append(f"names {UNLOCK_ARGUMENT}")
+        elif isinstance(node, ast.Attribute) and node.attr == UNLOCK_ARGUMENT:
+            found.append(f"reads .{UNLOCK_ARGUMENT}")
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and UNLOCK_ENVIRONMENT in node.value
+            and node not in exempt
+        ):
+            found.append(f"names {UNLOCK_ENVIRONMENT} outside a docstring")
+    return found
+
+
+@pytest.mark.parametrize("module", _tools_modules(), ids=lambda p: f"tools/{p.name}")
+def test_probe_does_not_unlock_the_holdout(module: Path) -> None:
+    """No probe passes ``allow_holdout`` or reads the unlock key (R79)."""
+    found = _unlocks(module.read_text())
+    assert not found, f"tools/{module.name}: {found}; the holdout is Phase 6's single read"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("load_panel('x', end=e, allow_holdout=True)\n", "passes allow_holdout="),
+        ("if settings.allow_holdout:\n    pass\n", "reads .allow_holdout"),
+        ("allow_holdout = True\n", "names allow_holdout"),
+        (
+            "import os\nos.environ['VOLAB_HOLDOUT_UNLOCK']\n",
+            "names VOLAB_HOLDOUT_UNLOCK outside a docstring",
+        ),
+        (
+            "KEY = 'VOLAB_HOLDOUT_UNLOCK'\n",
+            "names VOLAB_HOLDOUT_UNLOCK outside a docstring",
+        ),
+    ],
+    ids=lambda value: value.strip().replace("\n", " ; "),
+)
+def test_the_unlock_scan_detects_each_spelling(source: str, expected: str) -> None:
+    """The red case. Without it this is a ban nobody has watched fail."""
+    assert expected in _unlocks(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        '"""No probe here sets allow_holdout or reads VOLAB_HOLDOUT_UNLOCK."""\n',
+        'def f() -> None:\n    """Never reads VOLAB_HOLDOUT_UNLOCK."""\n',
+        "# a comment naming VOLAB_HOLDOUT_UNLOCK and allow_holdout\nx = 1\n",
+        "from volab.store import load_panel\nload_panel('x', end=e)\n",
+    ],
+    ids=("module docstring", "function docstring", "comment", "an ordinary read"),
+)
+def test_the_unlock_scan_ignores_prose_that_only_names_it(source: str) -> None:
+    """Both ``tools/README.md`` and ``_harness.py`` promise this ban in words.
+
+    A text search would trip over the promise itself, which is why the scan reads the AST and
+    exempts docstrings. Comments never reach the AST, so they need no exemption -- asserted here
+    rather than assumed, because "comments are not in the AST" is exactly the kind of sentence
+    this project has been wrong about before.
+    """
+    assert _unlocks(source) == []
