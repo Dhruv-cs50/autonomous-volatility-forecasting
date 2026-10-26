@@ -1,0 +1,283 @@
+{
+ "_captured_on": "eed92c6, before evaluate was touched",
+ "h1": {
+  "requested": 13,
+  "skipped": [
+   "2024-04-22",
+   "2024-04-30",
+   "2024-05-08",
+   "2024-05-16"
+  ],
+  "results": [
+   {
+    "origin": "2024-04-12",
+    "realized": "0x1.b293fccda42a6p-21",
+    "training_rows": 48,
+    "forecasts": {
+     "har_levels": "-0x1.1ca9ecce8d2eep-11",
+     "har_semilog": "0x1.293c5686f6e48p-15",
+     "random_walk": "0x1.0d8d86eda68dbp-16"
+    }
+   },
+   {
+    "origin": "2024-05-24",
+    "realized": "0x1.b2823c3b99751p-21",
+    "training_rows": 54,
+    "forecasts": {
+     "har_levels": "-0x1.407d894a91028p-13",
+     "har_semilog": "0x1.87a3e93be1147p-15",
+     "random_walk": "0x1.b34aa52b13c2bp-21"
+    }
+   },
+   {
+    "origin": "2024-06-04",
+    "realized": "0x1.b268e96cf9c09p-21",
+    "training_rows": 60,
+    "forecasts": {
+     "har_levels": "0x1.fe1d577574f17p-11",
+     "har_semilog": "0x1.b3d3829c8a462p-13",
+     "random_walk": "0x1.b240213c362f1p-21"
+    }
+   },
+   {
+    "origin": "2024-06-12",
+    "realized": "0x1.b33fda8fd8611p-21",
+    "training_rows": 66,
+    "forecasts": {
+     "har_levels": "0x1.d985792bb0095p-12",
+     "har_semilog": "0x1.097d3959d5fb0p-13",
+     "random_walk": "0x1.b226e681a436fp-21"
+    }
+   },
+   {
+    "origin": "2024-06-21",
+    "realized": "0x1.b235600df2e4dp-21",
+    "training_rows": 72,
+    "forecasts": {
+     "har_levels": "0x1.34917dc54a4cbp-12",
+     "har_semilog": "0x1.bbf52a2cb6858p-14",
+     "random_walk": "0x1.b2fd93ccaf3bbp-21"
+    }
+   },
+   {
+    "origin": "2024-07-01",
+    "realized": "0x1.b30b2ad10156ep-21",
+    "training_rows": 78,
+    "forecasts": {
+     "har_levels": "0x1.c9fb3ea42c947p-13",
+     "har_semilog": "0x1.89e9294c9880fp-14",
+     "random_walk": "0x1.b1f3561cd5b97p-21"
+    }
+   },
+   {
+    "origin": "2024-07-10",
+    "realized": "0x1.b2f07dd370eecp-21",
+    "training_rows": 84,
+    "forecasts": {
+     "har_levels": "0x1.6c43ece7de623p-13",
+     "har_semilog": "0x1.65f58eebd76bep-14",
+     "random_walk": "0x1.b1d9386a7def7p-21"
+    }
+   },
+   {
+    "origin": "2024-07-18",
+    "realized": "0x1.b2d573a891f34p-21",
+    "training_rows": 90,
+    "forecasts": {
+     "har_levels": "0x1.2e82fb2df9561p-13",
+     "har_semilog": "0x1.49a6bfb5f77c3p-14",
+     "random_walk": "0x1.b2ae48b53a23bp-21"
+    }
+   },
+   {
+    "origin": "2024-07-26",
+    "realized": "0x1.b2ba43ccc5266p-21",
+    "training_rows": 96,
+    "forecasts": {
+     "har_levels": "0x1.02c03e7f45121p-13",
+     "har_semilog": "0x1.3248d0abb5cfbp-14",
+     "random_walk": "0x1.b29356ec5fed1p-21"
+    }
+   }
+  ],
+  "trials": [
+   {
+    "model": "har_levels",
+    "loss": "qlike",
+    "origins": 7,
+    "dropped": 2,
+    "value": "-0x1.07a7d08887735p+3"
+   },
+   {
+    "model": "har_semilog",
+    "loss": "qlike",
+    "origins": 7,
+    "dropped": 2,
+    "value": "-0x1.25560c786eb89p+3"
+   },
+   {
+    "model": "random_walk",
+    "loss": "qlike",
+    "origins": 7,
+    "dropped": 2,
+    "value": "-0x1.a0d89de34047ep+3"
+   },
+   {
+    "model": "har_levels",
+    "loss": "mse",
+    "origins": 9,
+    "dropped": 0,
+    "value": "0x1.8da55b2165332p-23"
+   },
+   {
+    "model": "har_semilog",
+    "loss": "mse",
+    "origins": 9,
+    "dropped": 0,
+    "value": "0x1.7e1f7ec622894p-27"
+   },
+   {
+    "model": "random_walk",
+    "loss": "mse",
+    "origins": 9,
+    "dropped": 0,
+    "value": "0x1.c70337f476001p-36"
+   }
+  ]
+ },
+ "h5": {
+  "requested": 12,
+  "skipped": [
+   "2024-04-22",
+   "2024-04-30",
+   "2024-05-08",
+   "2024-05-16"
+  ],
+  "results": [
+   {
+    "origin": "2024-04-12",
+    "realized": "nan",
+    "training_rows": 44,
+    "forecasts": {
+     "har_levels": "-0x1.74948550b42f0p-12",
+     "har_semilog": "0x1.31ac601cbdd4bp-12",
+     "random_walk": "0x1.50f0e8a910312p-14"
+    }
+   },
+   {
+    "origin": "2024-05-24",
+    "realized": "0x1.6462821a62d05p-18",
+    "training_rows": 46,
+    "forecasts": {
+     "har_levels": "0x1.b0eea26e692c0p-13",
+     "har_semilog": "0x1.c4f5898d9fba7p-12",
+     "random_walk": "0x1.100ea73aec59bp-18"
+    }
+   },
+   {
+    "origin": "2024-06-04",
+    "realized": "0x1.645af76ffc4efp-18",
+    "training_rows": 52,
+    "forecasts": {
+     "har_levels": "0x1.411b3431c2d2ep-9",
+     "har_semilog": "0x1.9b7657c7ebd37p-9",
+     "random_walk": "0x1.0f6814c5a1dd7p-18"
+    }
+   },
+   {
+    "origin": "2024-06-12",
+    "realized": "0x1.64b763cade98ep-18",
+    "training_rows": 58,
+    "forecasts": {
+     "har_levels": "0x1.bf799a03f9addp-10",
+     "har_semilog": "0x1.89c44a6b09299p-10",
+     "random_walk": "0x1.0f58501106a25p-18"
+    }
+   },
+   {
+    "origin": "2024-06-21",
+    "realized": "0x1.64691caa8d77ap-18",
+    "training_rows": 64,
+    "forecasts": {
+     "har_levels": "0x1.cfbc20c589e4ap-11",
+     "har_semilog": "0x1.27fb4f81b0cf5p-11",
+     "random_walk": "0x1.0fde7c5fed855p-18"
+    }
+   },
+   {
+    "origin": "2024-07-01",
+    "realized": "0x1.647ed6ab21be6p-18",
+    "training_rows": 70,
+    "forecasts": {
+     "har_levels": "0x1.3981d58d50734p-11",
+     "har_semilog": "0x1.986f0d2078a94p-12",
+     "random_walk": "0x1.0f3815d20593ep-18"
+    }
+   },
+   {
+    "origin": "2024-07-10",
+    "realized": "0x1.64763c6ae43a8p-18",
+    "training_rows": 76,
+    "forecasts": {
+     "har_levels": "0x1.da3a4fade1417p-12",
+     "har_semilog": "0x1.4862fb43adfd7p-12",
+     "random_walk": "0x1.0f27c3428eb5ap-18"
+    }
+   },
+   {
+    "origin": "2024-07-18",
+    "realized": "0x1.646d6f79541c8p-18",
+    "training_rows": 82,
+    "forecasts": {
+     "har_levels": "0x1.7db846334052fp-12",
+     "har_semilog": "0x1.192ab112a3e31p-12",
+     "random_walk": "0x1.0faced7144565p-18"
+    }
+   }
+  ],
+  "trials": [
+   {
+    "model": "har_levels",
+    "loss": "qlike",
+    "origins": 7,
+    "dropped": 1,
+    "value": "-0x1.d118e4250e087p+2"
+   },
+   {
+    "model": "har_semilog",
+    "loss": "qlike",
+    "origins": 7,
+    "dropped": 1,
+    "value": "-0x1.d761a2b53e083p+2"
+   },
+   {
+    "model": "random_walk",
+    "loss": "qlike",
+    "origins": 7,
+    "dropped": 1,
+    "value": "-0x1.635bcc3710d4ep+3"
+   },
+   {
+    "model": "har_levels",
+    "loss": "mse",
+    "origins": 7,
+    "dropped": 1,
+    "value": "0x1.8d756f8a31300p-20"
+   },
+   {
+    "model": "har_semilog",
+    "loss": "mse",
+    "origins": 7,
+    "dropped": 1,
+    "value": "0x1.ed755ece0a0fdp-20"
+   },
+   {
+    "model": "random_walk",
+    "loss": "mse",
+    "origins": 7,
+    "dropped": 1,
+    "value": "0x1.c2d97500aec03p-40"
+   }
+  ]
+ }
+}

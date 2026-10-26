@@ -63,13 +63,19 @@ import exchange_calendars as xcals
 import pandas as pd
 
 from volab.config import Settings
-from volab.errors import SchemaError
+from volab.errors import ModelSkip, SchemaError
 from volab.features.build import build_features, log_returns
 from volab.features.targets import RETURN_COLUMN, target_column, targets_dataset
+from volab.identity import first_difference
+from volab.models.base import Cohort, Forecast, Forecaster, TrainingView
 from volab.panel import KEYS, as_of_dates, load_curated_panel, truncate
 from volab.paths import Tier
 from volab.sessions import get_calendar, sessions_between
 from volab.store import load_panel
+
+# The cohort the 72 recorded ledger lines were produced by. A ledger line with no ``cohort`` key
+# means this (R86), and ``evaluate`` refuses to let any other set of contestants carry the name.
+BASELINE_COHORT_NAME = "phase2-baseline"
 
 # The HAR regressors, in the order the design matrix carries them. The intercept is prepended.
 HAR_REGRESSORS: tuple[str, ...] = ("har_d_proxy", "har_w_proxy", "har_m_proxy")
@@ -274,7 +280,8 @@ assert set(LOSS_DOMAIN) == set(LOSSES), "every loss must declare where it is def
 class RunAudit:
     """What every call was handed, so the two point-in-time claims are checked, not asserted.
 
-    Two records, because there are two ways into the future and only one of them was watched:
+    Three records, because there are three ways into the future and at first only one of them
+    was watched:
 
     * ``calls`` -- the panel each ``build_features`` received, as ``(through, max(as_of))``.
     * ``training`` -- the training targets each origin used, as ``(origin, max(as_of))``. This
@@ -282,11 +289,17 @@ class RunAudit:
       panel record could never have caught it: the leak was in the *targets*, which the panel
       audit does not see.
 
-    ``violations`` reports both, tagged, so a failure says which claim broke.
+    * ``returns`` -- the last session of the return series each origin handed its contestants,
+      as ``(origin, last session)``. The third way in, added with the model zoo (R85): a GARCH
+      fit reads returns, which are neither the panel ``build_features`` saw nor a training
+      target, so neither of the other two records could have seen one reach past the origin.
+
+    ``violations`` reports all three, tagged, so a failure says which claim broke.
     """
 
     calls: list[tuple[dt.date, dt.date]] = field(default_factory=list)
     training: list[tuple[dt.date, dt.date]] = field(default_factory=list)
+    returns: list[tuple[dt.date, dt.date]] = field(default_factory=list)
 
     def record(self, through: dt.date, last_as_of: dt.date) -> None:
         self.calls.append((through, last_as_of))
@@ -294,10 +307,14 @@ class RunAudit:
     def record_training(self, origin: dt.date, last_as_of: dt.date) -> None:
         self.training.append((origin, last_as_of))
 
+    def record_returns(self, origin: dt.date, last_session: dt.date) -> None:
+        self.returns.append((origin, last_session))
+
     def violations(self) -> list[tuple[str, dt.date, dt.date]]:
         return [
             *(("panel", through, last) for through, last in self.calls if last > through),
             *(("target", origin, last) for origin, last in self.training if last > origin),
+            *(("returns", origin, last) for origin, last in self.returns if last > origin),
         ]
 
 
@@ -380,6 +397,29 @@ def target_panel_for(bars: pd.DataFrame, calendar: xcals.ExchangeCalendar) -> pd
     return panel
 
 
+def returns_through(
+    panel: pd.DataFrame, origin: dt.date, calendar: xcals.ExchangeCalendar, *, symbol: str
+) -> pd.Series:
+    """``symbol``'s daily log returns up to ``origin``, one entry per session, null at a gap.
+
+    The series ``build_targets`` squares, by construction: it is ``target_panel_for``'s own
+    derivation, called rather than copied, so the returns a contestant is handed and the returns
+    the target is built from cannot drift apart. The only addition is a reindex onto the
+    sessions from the first bar through ``origin``, so a session with no bar is an explicit null
+    rather than an absent row -- ``log_returns`` poisons the two returns spanning a gap and a
+    contestant must be able to see that, not have it bridged. ``panel`` may carry the exogenous
+    series beside the bars; only ``symbol``'s rows are read, and nothing after ``origin``.
+    Witness: ``test_the_return_series_handed_to_a_model_squares_to_the_target``.
+    """
+    bars = truncate(panel[panel["symbol"] == symbol], origin)
+    if bars.empty:
+        return pd.Series([], index=pd.Index([], dtype=object), dtype="float64")
+    derived = target_panel_for(bars, calendar)
+    days = list(as_of_dates(derived))
+    returns = pd.Series(derived[RETURN_COLUMN].astype("float64").to_list(), index=days)
+    return returns.reindex(sessions_between(calendar, min(days), origin))
+
+
 # ---------------------------------------------------------------------------
 # The trial ledger.
 # ---------------------------------------------------------------------------
@@ -442,6 +482,15 @@ class Trial:
     every: int
     first_origin: dt.date
     last_origin: dt.date
+    # The named set of contestants this trial was scored against. A HAR trial scored over a
+    # seven-contestant intersection is a different experiment from one scored over three, by the
+    # argument R75 made about the stride (R86). **A ledger line with no ``cohort`` key is
+    # ``"phase2-baseline"``**: the 72 lines written before the key existed are that run.
+    cohort: str = BASELINE_COHORT_NAME
+    # Origins this contestant itself declined with ``ModelSkip`` (R87), so "my model refused 40
+    # origins" is distinguishable from "someone else's did". The two baseline NaNs are
+    # grandfathered and are not counted here.
+    refused: int = 0
 
     def record(self) -> dict[str, object]:
         return {
@@ -459,6 +508,8 @@ class Trial:
             "every": self.every,
             "first_origin": self.first_origin.isoformat(),
             "last_origin": self.last_origin.isoformat(),
+            "cohort": self.cohort,
+            "refused": self.refused,
         }
 
 
@@ -510,6 +561,11 @@ def count_trials(root: Path) -> int:
 # The models. Deliberately few, and each one counted.
 # ---------------------------------------------------------------------------
 
+# **Frozen at the three baseline names, and never appended to** (R86). ``Evaluation.comparable``
+# intersects over the contestants of the cohort that was run, not over this tuple: appending a
+# fourth name here would let one non-converged origin shrink every model's comparable set, and
+# ``har_semilog``'s recorded MSE would move while every forecast stayed byte-identical.
+# ``Evaluation.contestants`` defaults to this tuple, which is the whole of its role.
 MODELS: tuple[str, ...] = ("har_levels", "har_semilog", "random_walk")
 
 
@@ -575,6 +631,79 @@ def _random_walk_forecast(row: pd.Series, horizon: int) -> float:
 
 
 # ---------------------------------------------------------------------------
+# The baseline, expressed through the model interface (R85) with no arithmetic change.
+#
+# The three adapters call ``_har_levels_forecast``, ``_har_semilog_forecast`` and
+# ``_random_walk_forecast`` -- and through them ``fit_ols`` -- **by bare name inside method
+# bodies**, so each is resolved in this module's globals at the moment of the call. That is
+# load-bearing and must not be tidied into a stored reference: ``tools/measure_calibration.py``
+# assigns ``wf.fit_ols`` to produce the uncorrected row quoted in R73, and an adapter that had
+# captured the function at import or construction would silently stop being patched.
+# ``test_forcing_the_smearing_factor_still_reaches_the_baseline_cohort`` is the witness, as a red
+# case: the patch must *change* the forecast.
+# ---------------------------------------------------------------------------
+
+
+class _Fitted:
+    """A forecaster for a model whose fit and forecast are one computation, done at fit time.
+
+    The baseline functions fit and predict together, so the answer exists when ``fit`` returns;
+    ``forecast`` only checks it is being asked the question it was fitted for. A mismatched
+    horizon is a ``ValueError`` and not a ``SchemaError`` (R85): ``evaluate`` files the second
+    under "the window was unfittable", and a wiring bug would pass as a data problem. Witness:
+    ``test_forecasting_a_horizon_the_fit_was_not_made_for_is_a_value_error``.
+    """
+
+    def __init__(self, value: float, observations: int, horizon: int) -> None:
+        self.observations = observations
+        self._value = value
+        self._horizon = horizon
+
+    def forecast(self, horizon: int) -> Forecast:
+        if horizon != self._horizon:
+            raise ValueError(
+                f"fitted for horizon {self._horizon}, asked to forecast horizon {horizon}"
+            )
+        return Forecast(self._value, self.observations)
+
+
+class _HarLevelsModel:
+    name: str = "har_levels"
+    fit_depends_on_horizon: bool = True
+
+    def fit(self, view: TrainingView) -> Forecaster:
+        value, observations = _har_levels_forecast(view.training, view.row, view.response)
+        return _Fitted(value, observations, view.horizon)
+
+
+class _HarSemilogModel:
+    name: str = "har_semilog"
+    fit_depends_on_horizon: bool = True
+
+    def fit(self, view: TrainingView) -> Forecaster:
+        value, observations = _har_semilog_forecast(view.training, view.row, view.response)
+        return _Fitted(value, observations, view.horizon)
+
+
+class _RandomWalkModel:
+    name: str = "random_walk"
+    # Its fit reads only the origin's own row, but the forecast is that row scaled by the horizon,
+    # so it is asked the horizon it was fitted for like the others.
+    fit_depends_on_horizon: bool = True
+
+    def fit(self, view: TrainingView) -> Forecaster:
+        return _Fitted(_random_walk_forecast(view.row, view.horizon), 0, view.horizon)
+
+
+# The cohort the recorded run used. ``har_levels`` is first, and has to stay first: the first
+# entry's ``observations`` is ``OriginResult.training_rows`` (R87).
+BASELINE_COHORT = Cohort(
+    BASELINE_COHORT_NAME, (_HarLevelsModel(), _HarSemilogModel(), _RandomWalkModel())
+)
+assert BASELINE_COHORT.contestants == MODELS, "the baseline cohort must be exactly MODELS"
+
+
+# ---------------------------------------------------------------------------
 # The walk-forward itself.
 # ---------------------------------------------------------------------------
 
@@ -602,6 +731,17 @@ class Evaluation:
     # it covers rather than only what it managed.
     requested: int = 0
     every: int = 1
+    # The contestants the run was made over, which is what ``comparable`` and ``trials`` read.
+    # Never the module-global ``MODELS`` (R86); the default exists so a hand-built baseline
+    # ``Evaluation`` needs no argument.
+    contestants: tuple[str, ...] = MODELS
+    # ``(origin, model, reason)`` for every origin a contestant declined with ``ModelSkip``. The
+    # origin stays in ``results`` with a NaN for that model (R87), so every NaN a new
+    # contestant wrote has a reason on this list. The baseline's own two NaNs are grandfathered
+    # and are not here: ``test_the_baseline_nans_are_not_counted_as_refusals``.
+    refusals: tuple[tuple[dt.date, str, str], ...] = ()
+    # The name of the cohort that was run, which is what reaches the ledger.
+    cohort: str = BASELINE_COHORT_NAME
 
     def scored(self, model: str) -> list[tuple[dt.date, float, float]]:
         """``(origin, realized, forecast)`` for the origins where both are present."""
@@ -627,9 +767,13 @@ class Evaluation:
         defined = LOSS_DOMAIN[loss]
         sets = [
             {origin for origin, _, forecast in self.scored(model) if defined(forecast)}
-            for model in MODELS
+            for model in self.contestants
         ]
         return set.intersection(*sets) if sets else set()
+
+    def _refused(self, model: str) -> int:
+        """How many origins ``model`` itself declined, distinct from origins others did."""
+        return len({origin for origin, name, _ in self.refusals if name == model})
 
     def trials(self) -> list[Trial]:
         """One trial per model and loss. Every configuration evaluated, counted.
@@ -643,7 +787,7 @@ class Evaluation:
         attempted = {result.origin for result in self.results}
         if not self.results:
             for name in LOSSES:
-                for model in MODELS:
+                for model in self.contestants:
                     out.append(
                         Trial(
                             model=model,
@@ -658,13 +802,15 @@ class Evaluation:
                             every=self.every,
                             first_origin=dt.date.min,
                             last_origin=dt.date.min,
+                            cohort=self.cohort,
+                            refused=self._refused(model),
                         )
                     )
             return out
         for name, loss in LOSSES.items():
             usable = self.comparable(name)
             dropped = len(attempted - usable)
-            for model in MODELS:
+            for model in self.contestants:
                 pairs = [
                     (realized, forecast)
                     for origin, realized, forecast in self.scored(model)
@@ -689,6 +835,8 @@ class Evaluation:
                         every=self.every,
                         first_origin=self.results[0].origin,
                         last_origin=self.results[-1].origin,
+                        cohort=self.cohort,
+                        refused=self._refused(model),
                     )
                 )
         return out
@@ -705,6 +853,7 @@ def evaluate(
     minimum_training: int = 250,
     every: int = 1,
     audit: RunAudit | None = None,
+    cohort: Cohort = BASELINE_COHORT,
 ) -> Evaluation:
     """Refit and forecast at every origin, each from a panel that physically stops there.
 
@@ -723,7 +872,19 @@ def evaluate(
     An origin that cannot be fitted -- too few usable rows, or a singular design over its window
     -- is **skipped and recorded**, never silently dropped: ``skipped`` is part of the result and
     the trial count is over the origins actually scored.
+
+    **The contestants are a parameter** (R85, R86). ``cohort`` defaults to the baseline, so every
+    caller written before it existed is unchanged. Each contestant is handed one frozen
+    ``TrainingView`` per origin. A ``SchemaError`` from any of them skips the origin for
+    everyone, as it always has; a ``ModelSkip`` is that contestant's own refusal (R87), recorded
+    on ``Evaluation.refusals`` with a NaN written for it, and the origin stays in place.
     """
+    if cohort.name == BASELINE_COHORT_NAME and cohort.contestants != MODELS:
+        raise ValueError(
+            f"the cohort name {BASELINE_COHORT_NAME!r} is reserved for the recorded run's "
+            f"contestants {MODELS}, but this cohort holds {cohort.contestants}: a cohort name is "
+            "a claim about which experiment produced a ledger line"
+        )
     column = target_column(horizon)
     # Used **only** for the realized value a forecast is scored against, which is future relative
     # to its origin by definition and is bounded by ``dev_end`` through ``scoreable_origins``.
@@ -740,6 +901,7 @@ def evaluate(
     rows: list[pd.DataFrame] = []
     results: list[OriginResult] = []
     skipped: list[tuple[dt.date, str]] = []
+    refusals: list[tuple[dt.date, str, str]] = []
 
     for origin in origins:
         stopped = truncate(panel, origin)
@@ -777,9 +939,18 @@ def evaluate(
             audit.record_training(origin, max(as_of_dates(knowable)))
         usable = table[[day in values for day in emitted]].copy()
         usable[column] = [values[day] for day in as_of_dates(usable)]
+        # Built from ``knowable``, not from a dict over the whole target frame: the rule above
+        # applies to the completion date for exactly the reason it applied to the value. A column
+        # the HARs never read -- ``fit_ols`` selects its regressors and response by name -- that
+        # lets a contestant see, and the conformance suite check, when each target became known.
+        completed = {
+            stamp.date(): done
+            for stamp, done in zip(
+                pd.to_datetime(knowable["ts"], utc=True), as_of_dates(knowable), strict=True
+            )
+        }
+        usable["target_as_of"] = [completed[day] for day in as_of_dates(usable)]
 
-        forecasts: dict[str, float] = {}
-        observations = 0
         if len(usable.dropna(subset=[*HAR_REGRESSORS, column])) < minimum_training:
             skipped.append((origin, f"only {len(usable)} knowable training row(s)"))
             continue
@@ -792,13 +963,39 @@ def evaluate(
         if null_regressors:
             skipped.append((origin, f"null regressor(s) at the origin: {null_regressors}"))
             continue
+        view = TrainingView(
+            symbol=symbol,
+            origin=origin,
+            horizon=horizon,
+            response=column,
+            training=usable,
+            row=row,
+            returns=returns_through(stopped, origin, calendar, symbol=symbol),
+            minimum_training=minimum_training,
+            stride=every,
+        )
+        if audit is not None:
+            audit.record_returns(origin, view.returns.index[-1])
+        forecasts: dict[str, float] = {}
+        declined: list[tuple[dt.date, str, str]] = []
+        observations = 0
         try:
-            forecasts["har_levels"], observations = _har_levels_forecast(usable, row, column)
-            forecasts["har_semilog"], _ = _har_semilog_forecast(usable, row, column)
+            for index, model in enumerate(cohort.models):
+                try:
+                    answer = model.fit(view).forecast(horizon)
+                except ModelSkip as reason:
+                    forecasts[model.name] = float("nan")
+                    declined.append((origin, model.name, str(reason)))
+                    continue
+                forecasts[model.name] = answer.value
+                # ``training_rows`` is the first contestant's, which is ``har_levels`` in every
+                # named cohort; ``test_every_named_cohort_begins_with_har_levels`` is the witness.
+                if index == 0:
+                    observations = answer.observations
         except SchemaError as refused:
-            skipped.append((origin, f"a HAR fit refused the window: {refused}"))
+            skipped.append((origin, f"a fit refused the window: {refused}"))
             continue
-        forecasts["random_walk"] = _random_walk_forecast(row, horizon)
+        refusals.extend(declined)
 
         results.append(
             OriginResult(
@@ -818,6 +1015,9 @@ def evaluate(
         skipped=tuple(skipped),
         requested=len(origins),
         every=every,
+        contestants=cohort.contestants,
+        refusals=tuple(refusals),
+        cohort=cohort.name,
     )
 
 
@@ -852,3 +1052,182 @@ def scoreable_origins(
     bases = {stamp.date() for stamp in pd.to_datetime(targets["ts"], utc=True)}
     calendar = get_calendar(settings)
     return [day for day in origins_in(calendar, first, last, every=every) if day in bases]
+
+
+# ---------------------------------------------------------------------------
+# One driver loop, not two (R97).
+#
+# R76 deleted the last per-configuration loop for diverging from ``evaluate``'s. Four rulings live
+# in the loop below and all four are load-bearing: R63 (an audit violation refuses), R74 (trials
+# are appended per configuration, so one that refuses later cannot erase them), the empty
+# configuration still being counted, and the truncation-equivalence report. The walk-forward CLI
+# and the model shootout both call this, so neither can drift from the other.
+# ---------------------------------------------------------------------------
+
+
+def compare_against_persisted(
+    built: pd.DataFrame, stored: pd.DataFrame | None
+) -> tuple[int, str | None]:
+    """Byte-compare the per-origin rows against the persisted table, on the origins built.
+
+    Returns the number of origins compared and the first disagreement, if any. The comparison
+    normalises the store's two documented round-trip asymmetries and nothing else: ``as_of``
+    (written as ``date``, read back as ``datetime64[us]``) and ``has_distribution`` (written as
+    nullable ``boolean``, read back as ``bool`` because no null ever reached disk). The second
+    cast runs the narrow way, ``bool`` up to ``boolean``, so a null appearing in a fresh build is
+    still a difference rather than being normalised away.
+    """
+    if stored is None or built.empty:
+        return 0, None
+    wanted = set(as_of_dates(built))
+    rows = stored[[day in wanted for day in as_of_dates(stored)]].reset_index(drop=True)
+    if len(rows) != len(built):
+        return len(built), f"the store holds {len(rows)} of the {len(built)} origins built"
+
+    left = built.assign(
+        as_of=list(as_of_dates(built)),
+        has_distribution=built["has_distribution"].astype("boolean"),
+    )
+    right = rows[list(built.columns)].assign(
+        as_of=list(as_of_dates(rows)),
+        has_distribution=rows["has_distribution"].astype("boolean"),
+    )
+    return len(built), first_difference(left, right)
+
+
+@dataclass(frozen=True)
+class ConfigurationOutcome:
+    """What one configuration did, for the caller's loop to act on."""
+
+    # ``None`` when no origin in the window was scoreable and only the empty trials were written.
+    evaluation: Evaluation | None
+    trials: tuple[Trial, ...]
+    # Ledger lines this configuration appended.
+    written: int
+    # An audit recorded a read past a cutoff (R63). Nothing was appended for this configuration;
+    # the caller flushes what earlier ones counted and exits non-zero.
+    refused: bool
+    # The built rows differ from the persisted table. The caller's exit status, not a refusal.
+    disagrees: bool
+
+
+def run_configuration(
+    settings: Settings,
+    symbol: str,
+    horizon: int,
+    panel: pd.DataFrame,
+    targets: pd.DataFrame,
+    *,
+    calendar: xcals.ExchangeCalendar,
+    first: dt.date,
+    last: dt.date,
+    every: int,
+    minimum_training: int,
+    cohort: Cohort,
+    persisted: Callable[[], pd.DataFrame | None],
+    append: Callable[[Sequence[Trial]], int],
+    report: Callable[[str], None] = print,
+) -> ConfigurationOutcome:
+    """Evaluate one ``(symbol, horizon)`` over ``cohort`` and append its trials (R97).
+
+    **Everything that reaches the disk or the clock is passed in**, not reached for: the frames
+    are the caller's (loaded by ``load_for``, which stops at ``dev_end`` and takes no later
+    ``end``), ``persisted`` produces the stored feature table to compare against, and ``append``
+    writes the trials -- the ledger for the CLI, a sink for the shootout. So the sha and dirty flag
+    (R70) are captured by the caller at the start of its run and arrive inside ``append``, and the
+    date window is the caller's, already clamped to ``dev_end`` (R62). This function takes no
+    ``end`` of its own and nothing here opens a path.
+
+    Trials are appended **now**, per configuration (R74), and a configuration that was run and
+    produced nothing is still counted. Witnesses, each through this function rather than through
+    the CLI's use of it: ``test_the_driver_appends_one_line_per_trial_labelled_with_the_cohort``,
+    ``test_the_driver_refuses_an_audit_violation_and_appends_nothing``,
+    ``test_the_driver_counts_a_configuration_with_nothing_to_score`` and
+    ``test_the_driver_reports_a_disagreement_with_the_persisted_table``.
+    """
+    origins = scoreable_origins(settings, targets, first=first, last=last, every=every)
+    if not origins:
+        # Counted, not skipped. A configuration that was run and produced nothing is exactly the
+        # result selective reporting omits.
+        report("  no origin in the window has a target completed at or before dev_end")
+        empty = Evaluation(
+            symbol=symbol,
+            horizon=horizon,
+            results=(),
+            features=pd.DataFrame(),
+            skipped=(),
+            requested=0,
+            every=every,
+            contestants=cohort.contestants,
+            cohort=cohort.name,
+        )
+        counted = empty.trials()
+        return ConfigurationOutcome(
+            evaluation=None,
+            trials=tuple(counted),
+            written=append(counted),
+            refused=False,
+            disagrees=False,
+        )
+    report(f"  {len(origins)} origin(s) from {origins[0]} to {origins[-1]}")
+
+    audit = RunAudit()
+    evaluation = evaluate(
+        panel,
+        targets,
+        origins,
+        symbol=symbol,
+        horizon=horizon,
+        calendar=calendar,
+        minimum_training=minimum_training,
+        every=every,
+        audit=audit,
+        cohort=cohort,
+    )
+    violations = audit.violations()
+    if violations:
+        # Fail loudly. Reading past a cutoff is the one defect this whole module exists to
+        # prevent, and reporting it as a warning would be the posture this project refuses.
+        kind, at, latest = violations[0]
+        report(f"  REFUSED: {len(violations)} call(s) read past their cutoff")
+        report(f"           first: {kind} at={at} max as_of={latest}")
+        return ConfigurationOutcome(
+            evaluation=evaluation, trials=(), written=0, refused=True, disagrees=False
+        )
+    report(
+        f"  {len(audit.calls)} build(s) and {len(audit.training)} training set(s), "
+        "every one stopping at its own origin"
+    )
+
+    compared, difference = compare_against_persisted(evaluation.features, persisted())
+    disagrees = False
+    if compared == 0:
+        # Nothing to compare is not agreement. Printing "0 of 0 identical" and exiting 0 would be
+        # a check that passes by checking nothing, which is this project's named anti-goal; it
+        # happens whenever the store holds no persisted table, so it is a reachable state and not
+        # a defensive branch.
+        report("  truncation equivalence: NOT COMPARED, the store holds no built table")
+    elif difference is None:
+        report(f"  truncation equivalence: {compared} of {compared} origins identical")
+    else:
+        disagrees = True
+        report(f"  truncation equivalence: DISAGREES at {compared} origins: {difference}")
+
+    if evaluation.skipped:
+        report(
+            f"  {len(evaluation.skipped)} origin(s) skipped, first: "
+            f"{evaluation.skipped[0][0]} {evaluation.skipped[0][1]}"
+        )
+    trials = evaluation.trials()
+    for trial in trials:
+        report(
+            f"  {trial.model:12s} {trial.loss:5s} {trial.value:+.6g} "
+            f"over {trial.origins} origin(s), {trial.dropped} dropped"
+        )
+    return ConfigurationOutcome(
+        evaluation=evaluation,
+        trials=tuple(trials),
+        written=append(trials),
+        refused=False,
+        disagrees=disagrees,
+    )
