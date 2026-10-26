@@ -43,10 +43,11 @@ Each has already cost this project time, so each is stated rather than assumed:
 |---|---|---|---|---|
 | US-3.1 | Architect the model-zoo interface and the comparison design before any model is written | `docs/superpowers/specs/2026-10-25-phase2-completion-design.md` | one `fit(train) -> forecast(h)` interface the existing three models can be expressed in without changing their numbers; the h-step aggregation defined against the `targets_rv_h*` definition rather than invented; DM's HAC lag and the MCS bootstrap's block length derived from the horizon and the stride-5 origins, not defaulted | done `ce9f781`, `d05f491` — R85-R97, ratified by reference in the decisions log |
 | US-3.1b | The shared seam: the `Model`/`Forecaster` interface, the cohort, and the one edit that can move a recorded number | `src/volab/models/{__init__,base}.py`, `src/volab/walkforward/__init__.py`, `src/volab/walkforward/__main__.py`, `src/volab/errors.py`, `tests/model_conformance.py`, `tests/test_model_interface.py`, `tests/goldens/baseline_toy_forecasts.json` | the three baseline models are expressed through the interface with **byte-identical per-origin forecasts**, against goldens captured *before* `evaluate` is touched; `MODELS` frozen and `Evaluation.contestants` added so appending a contestant cannot shrink the baseline's comparable set; `"phase2-baseline"` reserved so a shootout cannot be labelled as the recorded run | done `2dbd454` + coordinator follow-up — all six recorded figures unmoved, 787 tests; the two defects it raised fixed under R98 and R99 |
-| US-3.2 | GARCH(1,1) and GJR/EGARCH with skew-t errors, behind that interface | `src/volab/models/garch.py`, `tests/test_garch.py` | fits warning-free under `filterwarnings=error` via R83's rescaling; a non-converging origin is a recorded skip; h-step forecasts on the variance scale the losses use | todo, depends on US-3.1b |
-| US-3.3 | Recalibrated HAR — Mincer-Zarnowitz, as the framework defines it at line 27 | `src/volab/models/recalibrated.py`, `tests/test_recalibrated.py` | the MZ regression is fitted on **training-window** forecasts only, so recalibration cannot see the origin it is scoring; a red case shows an in-sample fit scoring better and being refused | todo, depends on US-3.1b |
-| US-3.4 | Diebold-Mariano, MCS and SPA over every contestant, and the leaderboard per horizon | `src/volab/compare/`, `tests/test_compare.py` | DM carries the Harvey correction and an HAC lag justified by the horizon; MCS membership reported at 10% and 25%; the leaderboard states **how many trials were evaluated** beside every ranking | todo, depends on US-3.2, US-3.3 |
+| US-3.2 | GARCH(1,1) and GJR/EGARCH with skew-t errors, behind that interface | `src/volab/models/garch.py`, `tests/test_garch.py` | fits warning-free under `filterwarnings=error` via R83's rescaling; a non-converging origin is a recorded skip; h-step forecasts on the variance scale the losses use | done `4618ba8`, `a2179dd` — 45 tests, six planted defects each caught; found R90's seeding inert and R91's filter overridden by arch (R100, R101, R102) |
+| US-3.3 | Recalibrated HAR — Mincer-Zarnowitz, as the framework defines it at line 27 | `src/volab/models/recalibrated.py`, `tests/test_recalibrated.py` | the MZ regression is fitted on **training-window** forecasts only, so recalibration cannot see the origin it is scoring; a red case shows an in-sample fit scoring better and being refused | done `0ee890a`, `c1c46a8` — 28 tests, six mutations each caught, the in-sample red case refused; found R96's lattice reading fatal at h>=22 (R103) |
+| US-3.4 | Diebold-Mariano, MCS and SPA over every contestant, and the leaderboard per horizon | `src/volab/compare/`, `tests/test_compare.py` | DM carries the Harvey correction and an HAC lag justified by the horizon; MCS membership reported at 10% and 25%; the leaderboard states **how many trials were evaluated** beside every ranking | todo, unblocked — must **call** `run_configuration`, not reimplement it, and print the measured Monte-Carlo error beside every simulated figure (R102) |
 | US-3.5 | The leaderboard as a committed command, reading what the sink wrote | `src/volab/leaderboard/{__init__,__main__}.py`, `tests/test_leaderboard.py` | `python -m volab.leaderboard` prints, per symbol and horizon, every contestant ranked on each loss with **the trial count beside it**, plus MCS membership and `n_eff`; it **computes nothing of its own**, reading `data/trials.jsonl` for the losses and `data/comparisons.jsonl` for membership, so the leaderboard cannot disagree with what it reports; the headline trial count is every ledger line with the per-cohort breakdown beside it, so a new cohort cannot reset the number (R59); a trial whose tree was dirty is shown as such rather than silently ranked | todo, depends on US-3.4 |
+| US-3.3b | Strengthen conformance clause 2 so it catches a model that captured its own target frame | `tests/model_conformance.py`, `tests/test_model_interface.py` | a plant that keeps its own reference to the target frame — the R78 shape — is caught by the **shared** suite rather than by one contestant's own test; the existing contestants still pass unchanged | todo (R104), may run beside US-3.4 — disjoint files |
 | US-3.6 | `delivery-auditor` over this board against git at the sprint close | — | the board and the repository agree, and the board is corrected where they do not | todo |
 
 **US-3.1b reported DONE_WITH_CONCERNS, and the concerns were right.** It kept the design as
@@ -109,6 +110,21 @@ commits only, `git add -N` first for new files.
   set shrinks for every model on that loss. This is why `Trial.cohort` is required, why absence
   of the key on the existing 72 lines means `phase2-baseline`, and why that name is reserved so
   the shootout's lines cannot be mistaken for the recorded run.
+
+- **EGARCH at h=66 gets no benefit from more simulation paths** (R102): the Monte-Carlo error is
+  0.951% at S=10,000 and **3.273%** at S=100,000, because an EGARCH with β≈0.98 and skew-t η=8
+  compounded over 66 steps has a mean dominated by rare explosive paths, so the sample mean does
+  not converge at 1/√S. `S` stays at 100,000 because it helps the other three rows, the measured
+  error is printed beside every simulated figure, and **no significance is claimed there**. The
+  2.5-hour shootout cost is therefore buying accuracy at three of four simulated rows, not four.
+- **Coverage gaps in the recalibrated contestant's tests**, stated rather than discovered later:
+  the shipped 60-point lookback and 40-pair floor are exercised only at h=1, stride 1, on the last
+  four toy origins; the toy has no usable pairs at h≥22, so those horizons are covered only by the
+  hand-built lattice test. A real-data witness belongs with US-3.4, which will have the cohort.
+- **Both contestants were built before their tests in part**, and both compensated with mutation
+  checks rather than claiming otherwise — six planted defects each, every one caught by a named
+  test. Recorded because the method says test-first and the honest report of a departure is worth
+  more than a silent one.
 
 ## Not this phase's to fix, and carried forward
 

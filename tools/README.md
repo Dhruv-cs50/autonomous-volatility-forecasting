@@ -38,6 +38,7 @@ writes nothing — see R79 for why its *uncorrected* figures must not be reporte
 | `measure_e1_power.py` | **M2** — E1's real detection power, 52 of 2,312, and the exact cutoffs it predicts | seconds |
 | `measure_calendar_memo.py` | **M3** — cross-call state survives on the `lru_cache`d calendar, so a package-scoped AST ban cannot close E2's class | instant |
 | `measure_calibration.py` | **R73** — mean forecast over mean realized per model, and the smearing correction's isolated effect | a minute or so |
+| `measure_garch_forecast_error.py` | **R90, R102** — `arch`'s analytic multistep against simulation per specification, and the Monte-Carlo error at S=10,000 against S=100,000 | a minute or two |
 
 ```bash
 uv run --locked python tools/measure_vintages.py

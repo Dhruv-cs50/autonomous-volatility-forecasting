@@ -248,3 +248,91 @@ more than the leak this project was built to catch.
   trial count is the headline number, and a second kind of duplicate would corrupt it the same
   way; the test is over the behaviour now rather than the helper, so a future refactor that
   reintroduces a second writer fails here.
+
+---
+
+## R100-R104 — what the two contestants found when they were built
+
+US-3.2 and US-3.3 both reported `DONE_WITH_CONCERNS`, and between them they overturned three of
+the architect's rulings. All of the figures below were **re-measured by the coordinator** from the
+committed probe rather than taken from the reports.
+
+- **R100 — R90's seeding keyword was wrong, and its Monte-Carlo figures were therefore unseeded
+  draws.** `arch` reads `random_state` only for the **bootstrap**; a simulation *forecast* takes
+  `rng`. The design's `random_state=RandomState(seed)` compiled, warned of nothing, and seeded
+  nothing. Confirmed directly: two identical `forecast(..., method="simulation",
+  random_state=RandomState(7))` calls return **different** numbers.
+
+  That is not cosmetic. The same view forecasting a different number on each call breaks the
+  byte-exact reproducibility this whole project runs on, and it was caught by the conformance
+  suite's determinism clause rather than by review — which is the suite earning its cost. Now
+  `rng=SkewStudent(seed=crc32_seed).simulate(...)`, rebuilt per `forecast` call, with `zlib.crc32`
+  rather than the builtin `hash`, which is salted per process. *Cost if wrong:* unreproducible
+  forecasts that still look fine, and a leaderboard nobody can re-derive.
+
+- **R101 — R91's warning mechanism does not work, because `arch` overrides the caller's filter.**
+  `fit` runs `warnings.filterwarnings("always", "", ConvergenceWarning)` internally, which beats
+  an enclosing `simplefilter("error")`. Measured: inside `catch_warnings()` with `"error"`,
+  `fit(options={"maxiter": 1})` returned `convergence_flag == 9` and **printed instead of
+  raising**. So the scoped-filter design would have silently stopped detecting non-convergence.
+  Replaced by `catch_warnings(record=True)` with `"always"`, classifying afterwards —
+  `ConvergenceWarning` and `StartingValueWarning` become `ModelSkip`, `DataScaleWarning` and
+  anything else are re-raised — with the `convergence_flag != 0` check independent of warnings
+  entirely. A parametrised test pins identical behaviour under caller filters of `error`,
+  `ignore`, `always` and `default`. *Cost if wrong:* a non-converged fit scored as a forecast.
+
+- **R102 — the Monte-Carlo error does not fall with `S` for EGARCH at h=66, and that is reported
+  rather than tuned away.** The probe, re-run by the coordinator:
+
+  | spec | h | S=10,000 | S=100,000 |
+  |---|---|---|---|
+  | `gjr11_skewt` | 22 | 0.664 % | 0.207 % |
+  | `gjr11_skewt` | 66 | 0.882 % | 0.514 % |
+  | `egarch11_skewt` | 22 | 1.226 % | 0.163 % |
+  | `egarch11_skewt` | 66 | 0.951 % | **3.273 %** |
+
+  Ten times the paths made the last row **worse**. The mechanism is not a bug: the fitted β is
+  about 0.98 with skew-t `η = 8`, and compounding that through EGARCH's exponential over 66 steps
+  gives an h-step sum whose mean is dominated by rare explosive paths. For a sufficiently
+  heavy-tailed quantity the sample mean does not converge at `1/√S`, so buying paths buys
+  nothing there.
+
+  **This undercuts R90's stated justification for S=100,000**, which was that it brings the
+  residual error to 0.19-0.29% — inside the 0.2-1.5% band R72 set as this project's floor for a
+  believable difference. That holds for three of the four rows and fails for the fourth.
+
+  **The ruling, and what is deliberately *not* done.** `S` stays at 100,000: it demonstrably
+  helps everywhere else, and the measured error is printed beside every simulated figure, as R94
+  already does with `n_eff`. **No significance is claimed for EGARCH at h=66.** Lowering `S`
+  there was considered and refused — with six seeds against a heavy tail the spread estimate is
+  itself thin, so the honest claim is that the error is *insensitive to S in the measured range*,
+  not that 10,000 beats 100,000. A median or trimmed estimator was also refused: the target is a
+  mean, and changing the estimator to stabilise it would be answering a different question.
+  *Cost if wrong:* the longest horizon's EGARCH figure carries an error bar wide enough to be
+  uninformative, which is said out loud instead of being presented as a result.
+
+  Also re-measured, and **worse than the design thought**: the analytic GJR multistep is **9.4%
+  low at h=22 and 20.1% low at h=66** on the probe's series, against the design's 17.7% on its
+  own. EGARCH has no analytic multistep at all (`ValueError`). R90's conclusion stands and is
+  strengthened; only its figures were series-specific, which the probe's docstring now says.
+
+- **R103 — R96's lattice is "the trailing 60 lattice points **that have a completed target**",
+  not the trailing 60 lattice points.** Under the literal reading a lattice point only has a row
+  in `training` when `k·stride ≥ h`, leaving `61 − ⌈h/stride⌉` pairs: **39 at h=22**, under the 40
+  the ruling itself requires, so every origin would be refused — and **none at all at h=66**. The
+  literal reading would have silently deleted the contestant at exactly the horizons the
+  framework says recalibration matters most. Witness:
+  `test_a_horizon_longer_than_the_stride_does_not_eat_the_sample`, on a hand-built 600-session
+  view at h=1, 5, 22 and 66, confirmed to fail under the literal reading. *Cost if wrong:* a
+  contestant that reports "refused" everywhere and looks like a data problem.
+
+- **R104 — conformance clause 2 cannot see a leak sourced from a target frame the model captured
+  itself, and that is now a story rather than a comment.** The clause truncates the targets
+  handed to `evaluate`, so it catches a model that reads the frame it is given. It is blind to
+  one that kept its own reference — which is precisely the shape of R78, where the audit checked
+  the slice rather than what the fit consumed. Both implementers hit this independently; US-3.3's
+  own guard scales the unknowable targets rather than removing them, which does catch it, but
+  that guard lives in `test_recalibrated.py` and protects one contestant. **Every future
+  contestant inherits the weak clause**, so the strengthening is US-3.3b, below. Recorded because
+  the recalibrated implementer deleted a test that pinned the blind spot and reported it instead,
+  which was the right call and would otherwise have left no trace.
