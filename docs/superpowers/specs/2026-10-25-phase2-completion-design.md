@@ -15,7 +15,9 @@ proposed here as **R85** onwards for the coordinator to fold into
 `docs/superpowers/phase2-completion-decisions.md`; R82-R84 are not edited here.
 
 Every mechanical claim below names an executable witness, per **R32**. Where a witness does not
-exist yet, the test's name is given and the story that owns it is named with it.
+exist yet, the test's name is given and the story that owns it is named with it. Every number
+quoted from `arch` was measured during this design; section 11 names the probe that reproduces
+each one, because three of them contradicted the design's first draft.
 
 
 ## 1. The three decisions, in one paragraph each
@@ -26,7 +28,7 @@ exist yet, the test's name is given and the story that owns it is named with it.
    **and the daily log-return series ending at the origin**. GARCH needs the last field; the
    three existing models ignore it. The existing three keep their current arithmetic untouched
    and are reached through thin adapters, and the recorded figures are protected by freezing
-   `MODELS` and making the **contestant cohort** a parameter rather than a module global
+   `MODELS` and making the **contestant cohort** a named parameter rather than a module global
    (section 3). That is where the numbers would have moved, and it is not where it looks.
 
 2. **The h-step aggregation** is the sum of the per-step conditional variances of the
@@ -35,11 +37,12 @@ exist yet, the test's name is given and the story that owns it is named with it.
    squared daily returns — so the mean specification is `ZeroMean`, not `ConstantMean`, and
    `.variance` is then the right quantity rather than a quantity needing `+ h·μ̂²`.
 
-3. **DM, MCS and SPA** use an HAC lag of `max(⌊(h−1)/s⌋, ⌊4(n/100)^(2/9)⌋)`, the Harvey
-   correction in **sampling units** (`h_eff = ⌊(h−1)/s⌋ + 1`, never the daily `h`), and a
-   stationary-bootstrap block length of `max(q+1, ⌈Politis–White on the loss levels⌉)`. The
-   effective sample size `n_eff = n/(q+1)` is **stride-invariant** and is 17 at h=66, so MCS
-   membership at 10% is refused there and reported at 25% only (section 5).
+3. **DM, MCS and SPA** use a rectangular HAC estimator truncated at exactly `q = ⌊(h−1)/s⌋` with
+   the Harvey correction in **sampling units** (`h_eff = q + 1`, never the daily `h`), a
+   Bartlett–Newey–West column beside it for robustness, and a stationary-bootstrap block length
+   of `max(q+1, ⌈Politis–White on the loss levels⌉)`. The effective sample size `n_eff = n/(q+1)`
+   is 17 at h=66 and is **stride-invariant for h ≥ s**, so MCS membership at 10% is refused there
+   and reported at 25% only (section 5).
 
 
 ## 2. Scope
@@ -53,6 +56,9 @@ exist yet, the test's name is given and the story that owns it is named with it.
 - `src/volab/leaderboard/` — the reporting command, which reads and computes nothing (US-3.5).
 - One edit to `src/volab/walkforward/__init__.py`: the seam. It is the only change in this
   phase that can move a recorded number, so it is its own story and its own golden test.
+- `tools/measure_garch_forecast_error.py` — the probe that prints section 4's three measured
+  figures, because two of them are at the limit of what this project calls meaningful and a
+  figure without a command is an unverified claim (R32, R79).
 
 ### Out of scope
 
@@ -62,8 +68,8 @@ exist yet, the test's name is given and the story that owns it is named with it.
 - Relaxing `pyarrow`. R84 is resolved: the ledger is the sink, MLflow is refused for a stated
   reason, and section 6 keeps a later MLflow sink reachable without a rewrite.
 - `allow_holdout`, `VOLAB_HOLDOUT_UNLOCK`, `@pytest.mark.holdout`, and any new
-  `filterwarnings` entry. Nothing below needs one; two things below depend on a warning
-  **still being an error** (R89, R86's red cases).
+  `filterwarnings` entry. Nothing below needs one; three things below depend on a warning
+  **still being an error** (R89, R91, and R86's red cases).
 - Intraday RV, options, LightGBM, TTM, MS-HAR. The framework's later rows.
 
 ### Exit criteria for the sprint
@@ -166,17 +172,31 @@ class Forecaster(Protocol):
 @runtime_checkable
 class Model(Protocol):
     name: str
-    # False only for a model whose fit does not read the target side at all (GARCH). Section 3.4
+    # False only for a model whose fit reads no part of the target side (GARCH). Section 3.7
     # turns this into a test rather than a comment.
     fit_depends_on_horizon: bool
 
     def fit(self, view: TrainingView) -> Forecaster: ...
+
+
+@dataclass(frozen=True)
+class Cohort:
+    """A named set of contestants. The name is what reaches the ledger."""
+
+    name: str
+    models: tuple[Model, ...]
+
+    @property
+    def contestants(self) -> tuple[str, ...]:
+        return tuple(model.name for model in self.models)
 ```
 
-`Forecaster.forecast(horizon)` raises `SchemaError` when `horizon != view.horizon` and the
-model's fit was horizon-dependent. That keeps the framework's two-stage shape honest today and
-licenses the obvious later optimisation — fit once per origin, forecast all four horizons —
-without the interface changing when someone takes it.
+`Forecaster.forecast(horizon)` raises **`ValueError`** when `horizon != view.horizon` and the
+model's fit was horizon-dependent. `ValueError` deliberately, not `SchemaError`: `evaluate`
+catches `SchemaError` and records the origin as *"a fit refused the window"*, so a wiring bug
+would be filed under a data problem. The two-stage shape is the framework's, and it licenses the
+obvious later optimisation — fit once per origin, forecast all four horizons — without the
+interface changing when someone takes it.
 
 *Cost if wrong:* a view with eight fields is wider than any single model needs, so a model can
 read a field it has no business reading. The mitigation is that **every field is knowable at the
@@ -206,16 +226,21 @@ functions would be byte-identical and the headline figure would still have chang
 
 Proposed ruling:
 
-> **R86 — `MODELS` is frozen at the three baseline names, and the contestant cohort is a
+> **R86 — `MODELS` is frozen at the three baseline names, and the contestant cohort is a named
 > parameter of the run and a field on the trial.** `Evaluation` carries
 > `contestants: tuple[str, ...] = MODELS` and `comparable`/`trials` read **that**, never the
-> global. `evaluate` takes `cohort: Sequence[Model] = BASELINE_COHORT` as a keyword with a
-> default, so every existing caller — the walk-forward CLI, `tools/measure_calibration.py`, all
-> 32 walk-forward tests — is unchanged and reproduces its recorded figures exactly. `Trial`
-> carries `cohort: str`, because a HAR trial scored over a seven-contestant intersection is a
-> different experiment from one scored over three, by exactly the argument R75 made about the
-> stride. **The 72 existing ledger lines carry no `cohort` key, and its absence means
-> `"phase2-baseline"`** — stated here so a reader of the ledger does not have to guess.
+> global. `evaluate` takes `cohort: Cohort = BASELINE_COHORT` as a keyword with a default, so
+> every existing caller — the walk-forward CLI, `tools/measure_calibration.py`, all 32
+> walk-forward tests — is unchanged and reproduces its recorded figures exactly. `Trial` carries
+> `cohort: str`, taken from `Cohort.name`, because a HAR trial scored over a seven-contestant
+> intersection is a different experiment from one scored over three, by exactly the argument R75
+> made about the stride. **The 72 existing ledger lines carry no `cohort` key, and its absence
+> means `"phase2-baseline"`** — stated here so a reader of the ledger does not have to guess.
+>
+> **The baseline name is reserved.** `evaluate` raises if `cohort.name == "phase2-baseline"`
+> while `cohort.contestants != MODELS`. A cohort name is a claim about which experiment produced
+> a line, and the one thing that must not happen is 168 shootout lines labelled as the recorded
+> baseline run.
 
 So the recorded figures are preserved **as measurements of the baseline cohort**, and that is
 the only sense in which they could be preserved. Under the seven-contestant cohort the baseline
@@ -235,6 +260,8 @@ Witnesses, owned by US-3.1b:
 - `test_comparable_intersects_over_the_cohort_and_not_the_global_tuple` — a cohort whose names
   are not in `MODELS` still produces an intersection; planting an extra name in `MODELS` does
   not change a cohort run.
+- `test_a_cohort_that_is_not_the_baseline_cannot_carry_the_baseline_name` — the red case for the
+  reserved name.
 - `test_forcing_the_smearing_factor_still_reaches_the_baseline_cohort` —
   `tools/measure_calibration.py` works by assigning `wf.fit_ols = _forced_smearing(...)`, a
   **module-attribute** monkeypatch. The adapters must therefore call `fit_ols`,
@@ -259,8 +286,8 @@ Proposed ruling:
 > skipped for everyone, exactly as today. A new exception `volab.errors.ModelSkip` means *this
 > contestant* cannot answer here; the harness records `(origin, model, reason)` on
 > `Evaluation.refusals`, writes `float("nan")` into `forecasts[model]`, and leaves the
-> `OriginResult` in place. A bare NaN with no recorded reason is forbidden — that is R56
-> verbatim, one level down.
+> `OriginResult` in place. **Every new contestant's NaN carries a recorded reason** — that is
+> R56 verbatim, one level down.
 
 Consequences, priced rather than discovered:
 
@@ -270,6 +297,13 @@ Consequences, priced rather than discovered:
   already drops a non-positive `har_levels` forecast, and `Trial.dropped` already reports it.
 - `Trial` gains `refused: int`, the count of origins this contestant itself refused, so a
   reader can tell "my model refused 40 origins" from "someone else's model refused 40 origins".
+- **The two baseline NaNs are grandfathered, deliberately.** `har_semilog` returns a bare NaN
+  when `Fit.predict` hits a null regressor, and `random_walk` returns one on a null
+  `rv_proxy_d1`. Converting those to `ModelSkip` would not move a single forecast value, but it
+  *would* move `refused` from 0 on baseline-cohort ledger lines, and the recorded run's lines
+  have no such field to be consistent with. So R87 binds new contestants, the inconsistency is
+  recorded here rather than tidied, and `test_the_baseline_nans_are_not_counted_as_refusals`
+  pins the behaviour so it cannot change by accident.
 - **The empty-cohort case.** A contestant that refuses *every* origin empties the intersection
   and zeroes every trial in the configuration. The rule is that this is reported, not guarded
   against: `origins=0`, `value=null`, `refused=n`, one line per contestant, which is exactly
@@ -284,7 +318,7 @@ The three baseline adapters live **inside `src/volab/walkforward/__init__.py`**,
 existing private functions with no arithmetic change:
 
 ```python
-BASELINE_COHORT: tuple[Model, ...]   # (har_levels, har_semilog, random_walk), in that order
+BASELINE_COHORT: Cohort          # name "phase2-baseline", (har_levels, har_semilog, random_walk)
 MODELS: tuple[str, ...] = ("har_levels", "har_semilog", "random_walk")   # frozen, unchanged
 ```
 
@@ -299,7 +333,7 @@ import path, so `import volab.walkforward` would eventually pull `arch`. The rul
 Witness: `test_importing_the_walkforward_does_not_import_arch_or_scipy` — a subprocess asserting
 `"arch" not in sys.modules and "scipy" not in sys.modules` after `import volab.walkforward`. Not
 numpy: pandas loads numpy, so for numpy only a direct-import AST scan means anything, which is
-section 7's separate witness for R82.
+section 11's separate witness for R82.
 
 `src/volab/models/recalibrated.py` imports `fit_ols` from `volab.walkforward`. That direction is
 allowed and the alternative — moving `fit_ols`/`solve` into a new `volab/linalg.py` — is
@@ -312,6 +346,8 @@ Inside the origin loop, after the existing `minimum_training` and null-regressor
 **first and unchanged**), the hard-coded forecast block is replaced by:
 
 ```python
+        # Built from ``knowable``, not from a dict over the whole target frame: R77's rule
+        # applies to the as_of lookup for exactly the reason it applied to the value lookup.
         usable["target_as_of"] = [as_of_by_base[day] for day in as_of_dates(usable)]
         view = TrainingView(
             symbol=symbol, origin=origin, horizon=horizon, response=column,
@@ -323,7 +359,7 @@ Inside the origin loop, after the existing `minimum_training` and null-regressor
             audit.record_returns(origin, view.returns.index[-1])
         forecasts, observations = {}, 0
         try:
-            for index, model in enumerate(cohort):
+            for index, model in enumerate(cohort.models):
                 try:
                     answer = model.fit(view).forecast(horizon)
                 except ModelSkip as refused:
@@ -377,11 +413,11 @@ asserting, for that contestant:
 4. **Every configuration counted**, including one that forecast nothing: `origins=0`,
    `value=null`, `refused=n`.
 5. **Determinism** — two `fit().forecast()` calls on the same view return `==` values. This is
-   the clause that makes EGARCH's simulated forecast admissible (R90).
-6. **`forecast(h)` for `h != view.horizon`** raises when `fit_depends_on_horizon`, and for a
-   horizon-free fit, `fit` on a view with `horizon`, `response`, `training` and `row` replaced
-   by sentinels returns the identical forecast — which proves GARCH's fit never touches the
-   target side, by construction rather than by reading it.
+   the clause that makes a simulated forecast admissible at all (R90).
+6. **`forecast(h)` for `h != view.horizon`** raises `ValueError` when `fit_depends_on_horizon`,
+   and for a horizon-free fit, `fit` on a view with `horizon`, `response`, `training` and `row`
+   replaced by sentinels returns the identical forecast — which proves GARCH's fit never touches
+   the target side, by construction rather than by reading it.
 
 
 ## 4. Decision 2 — the h-step aggregation
@@ -477,6 +513,10 @@ Proposed ruling:
 > internally by a factor arch chooses, compounding ours and reporting parameters on a third
 > scale. `None` keeps the behaviour R83 relies on: in-band, nothing happens; out of band,
 > `DataScaleWarning` under `filterwarnings = ["error"]` is a failing test.
+>
+> **The warning is raised by `fit()`, not by the constructor**, and `show_warning=False` does
+> not suppress it — both measured. So R91's scoped warning filter needs to cover the `fit` call
+> and nothing else.
 
 Witnesses, owned by US-3.2:
 
@@ -485,39 +525,73 @@ Witnesses, owned by US-3.2:
 - `test_the_model_never_passes_rescale` — an AST assertion over `src/volab/models/garch.py`
   that the keyword does not appear. A rule a test enforces, not one a reviewer remembers.
 
-### 4.4 R90 — which forecast method each spec uses, and the EGARCH seed
+### 4.4 R90 — which forecast method each spec uses, and why the first answer was wrong
 
-Measured on arch 8.0.0, `ZeroMean` + skew-t, under `-W error`:
+This design's first draft said GARCH **and GJR** forecast analytically, on the strength of a
+probe run on iid Gaussian returns where GJR's analytic forecast matched a 200,000-path simulation
+to 0.0147%. That probe was worthless: a GARCH-family model fitted to iid data is nearly
+homoskedastic, and a symmetric distribution is precisely the case where the analytic leverage
+recursion is correct. Re-measured on a **persistent, leveraged, skewed** series — simulated from
+a GJR with `α=0.05, γ=0.10, β=0.87` and skew-t `(η=8, λ=−0.30)`, fitted `λ̂=−0.346`, h=66:
 
 ```
-garch11  analytic ok   | analytic 77.1254  sim 200k 77.1254  rel diff  0.0000 %
-gjr      analytic ok   | analytic 76.0869  sim 200k 76.0981  rel diff  0.0147 %
-egarch   analytic ERR  ValueError: Analytic forecasts not available for horizon > 1
-egarch   simulation ok | 6 seeds, S=10,000: spread 0.013 %;  S=1,000: spread 0.060 %
+GARCH(1,1)  analytic 64.879   sim 200k 64.677   rel  -0.31 %   (within the simulation's own error)
+GJR         analytic 39.737   sim 200k 48.288   rel +21.52 %   <- analytic is 17.7 % LOW
+EGARCH      analytic unavailable: ValueError "Analytic forecasts not available for horizon > 1"
+```
+
+and the Monte Carlo error of the simulation path, 6 seeds, same series:
+
+```
+            h=22  S=10,000  0.768 %      S=100,000  0.289 %   (1.00 s/call)
+GJR         h=66  S=10,000  1.404 %      S=100,000  0.239 %   (2.91 s/call)
+EGARCH      h=22  S=10,000  0.620 %      S=100,000  0.272 %   (0.76 s/call)
+            h=66  S=10,000  0.268 %      S=100,000  0.192 %   (2.37 s/call)
 ```
 
 Proposed ruling:
 
-> **R90 — GARCH(1,1) and GJR forecast analytically; EGARCH forecasts by simulation with
-> `simulations=10_000` and a deterministic seed.** `arch` has no analytic multi-step forecast for
-> EGARCH, which is a fact about the library and not a choice. Simulation is admissible here
-> because the harness's standard is *reproducibility*, not closed form: with a fixed seed the
-> forecast is bit-identical on every re-run, which is what the R78 equivalence test and the
-> conformance suite's determinism clause require. The Monte Carlo error at `S=10,000` was
-> measured at **0.013%** across six seeds, an order of magnitude below the 0.2%–1.5% band R72
-> established as the project's floor for "a difference that matters", and GJR's analytic
-> forecast agrees with a 200,000-path simulation to 0.0147%, which cross-validates the
-> simulation path itself.
+> **R90 — GARCH(1,1) forecasts analytically; GJR and EGARCH forecast by simulation with
+> `simulations=100_000` and a deterministic seed.** Three separate reasons, each measured:
 >
-> **The seed is `zlib.crc32` of `f"{name}|{symbol}|{origin.isoformat()}|{horizon}"`.** Never
-> the built-in `hash()` of a string: it is salted per process, so a ledger line would not
-> reproduce and an `==` comparison would fail for a reason that had nothing to do with
+> 1. `arch` has **no** analytic multi-step forecast for EGARCH. A fact about the library.
+> 2. `arch`'s analytic GJR recursion weights the leverage indicator by its symmetric probability.
+>    Under a fitted skew-t that is wrong, and the error is **17.7% low at h=66** — two orders of
+>    magnitude larger than anything else in this design, and invisible to a probe on symmetric
+>    data. The symmetric GARCH(1,1) recursion involves only `E[e²] = 1` and so stays exact,
+>    which the −0.31% line confirms.
+> 3. The residual Monte Carlo error at `S=100,000` is **0.19%–0.29%**, which is *inside* the
+>    0.2%–1.5% band R72 established as this project's floor for "a difference that matters". It
+>    is therefore recorded on the comparison record and printed by the leaderboard, not waved
+>    through. `S=10,000` would have been ten times cheaper and up to 1.4% uncertain, which is
+>    worse than the leak this project exists to catch.
+>
+> **The seed is `zlib.crc32` of `f"{name}|{symbol}|{origin.isoformat()}|{horizon}"`**, passed as
+> `random_state=np.random.RandomState(seed)` — the keyword that was measured working under
+> `-W error`. Never the built-in `hash()` of a string: it is salted per process, so a ledger line
+> would not reproduce and an `==` comparison would fail for a reason that had nothing to do with
 > forecasting. The seed depends on no property of the data, so it is identical in the
 > full-target and truncated-target runs of the R78 test.
 
-*Cost if wrong:* EGARCH's number carries ~0.01% Monte Carlo error and a 230 ms forecast at h=66
-against GJR's 1.3 ms. The runtime is section 8's problem; the error is below the project's own
-resolution and is reported rather than hidden.
+Rejected alternative: ship only GARCH(1,1), which is exact and 200× faster. The framework's row
+names the leverage specifications, and a measured 17.7% bias in a library's analytic forecast is
+a *finding* worth having on the record rather than a reason to retreat from the row.
+
+*Cost if wrong:* the shootout run costs roughly 2.5 hours instead of 15 minutes (section 9), and
+two of seven contestants carry a ~0.2% irreducible uncertainty that the other five do not. Both
+are stated beside every figure those contestants appear in.
+
+Witnesses, owned by US-3.2:
+
+- `test_the_analytic_method_is_used_only_for_the_symmetric_specification` — an AST assertion that
+  `method="analytic"` appears on the GARCH(1,1) path and nowhere else. This is the one that would
+  have caught the first draft.
+- `test_the_seed_is_derived_without_the_salted_builtin_hash` — AST: `hash(` does not appear;
+  `zlib.crc32` does.
+- `test_the_same_view_forecasts_the_same_number_twice` (also clause 5 of the conformance suite).
+- `tools/measure_garch_forecast_error.py` — prints all three figure blocks above. R32: the 17.7%
+  and the 0.19%–0.29% are the two numbers a reader is most likely to doubt, so they name the
+  command that reproduces them.
 
 ### 4.5 R91 — the three GARCH specs, and the convergence refusal
 
@@ -527,31 +601,37 @@ attaches to GARCH(1,1) as well. Resolved explicitly, so the trial count is not a
 | contestant | mean | volatility | distribution | forecast |
 |---|---|---|---|---|
 | `garch11_skewt` | `ZeroMean` | `GARCH(p=1, q=1)` | `SkewStudent` | analytic |
-| `gjr11_skewt` | `ZeroMean` | `GARCH(p=1, o=1, q=1)` | `SkewStudent` | analytic |
-| `egarch11_skewt` | `ZeroMean` | `EGARCH(p=1, o=1, q=1)` | `SkewStudent` | simulation, S=10,000 |
+| `gjr11_skewt` | `ZeroMean` | `GARCH(p=1, o=1, q=1)` | `SkewStudent` | simulation, S=100,000 |
+| `egarch11_skewt` | `ZeroMean` | `EGARCH(p=1, o=1, q=1)` | `SkewStudent` | simulation, S=100,000 |
 
 Skew-t across all three, so the only thing differing between them is the variance recursion,
 which is the comparison the row is asking for. A normal-errors GARCH(1,1) is one constructor
 argument away and its only cost is two more ledger lines per configuration; it is not shipped,
 and that is a scope decision rather than a finding.
 
-> **R91 — a convergence refusal is converted inside the model, from a named warning class, and
-> everything else re-raises.** The fit runs inside
-> `warnings.catch_warnings()` + `simplefilter("error")`, and exactly two categories become
-> `ModelSkip`: `arch.utility.exceptions.ConvergenceWarning` and `StartingValueWarning`.
-> `DataScaleWarning` is **deliberately not in that set** — it means the ×100 is wrong, which is
-> a bug and must fail the suite (R89). Any other warning propagates. `show_warning=False` is
-> passed to `fit` only in combination with an explicit `res.convergence_flag != 0` check that
-> raises `ModelSkip`; without that check it would be suppression, with it the optimiser's own
-> status is what decides.
+> **R91 — non-convergence is detected by `res.convergence_flag != 0`, and a scoped warning
+> filter makes the model behave identically under pytest and under the CLI.** Measured:
+> `options={"maxiter": 1}` returns `convergence_flag == 9`, and emits a `ConvergenceWarning`
+> *only when `show_warning=False` is not passed*. So:
+>
+> - `fit` is **not** passed `show_warning=False`. The warning is wanted.
+> - The `fit` call is wrapped in `warnings.catch_warnings()` + `simplefilter("error")`, so a
+>   warning is an exception regardless of the caller's filters. The CLI has no `-W error`, and
+>   without this wrapper it would print a warning and score a non-converged fit while pytest
+>   raised — the same behaviour under both is the whole point.
+> - Exactly two categories become `ModelSkip`:
+>   `arch.utility.exceptions.ConvergenceWarning` and `StartingValueWarning`.
+>   `DataScaleWarning` is **deliberately not** in that set: it means the ×100 is wrong, which is
+>   a bug and must fail the suite (R89). Every other warning propagates.
+> - **And** `res.convergence_flag != 0` raises `ModelSkip` independently, because the flag is the
+>   optimiser's own status and does not depend on a warning having been emitted. Two detectors
+>   for one condition, deliberately: the warning can be configured away, the flag cannot.
 
-The alternative — letting the warning escape — breaks differently in the two places that matter:
-pytest raises, while the CLI prints a warning and scores a non-converged fit. A refusal must look
-the same from both.
-
-Witnesses, owned by US-3.2: `test_a_non_converging_origin_is_a_recorded_skip_not_a_forecast`,
+Witnesses, owned by US-3.2: `test_a_non_converging_origin_is_a_recorded_skip_not_a_forecast`
+(planted with `options={"maxiter": 1}`, asserting `convergence_flag == 9` reaches a `ModelSkip`),
 `test_a_data_scale_warning_is_not_converted_into_a_skip`,
-`test_an_unexpected_warning_propagates_rather_than_becoming_a_skip`.
+`test_an_unexpected_warning_propagates_rather_than_becoming_a_skip`,
+`test_the_refusal_is_identical_with_and_without_the_callers_warning_filters`.
 
 ### 4.6 Missing bars, and the window GARCH actually fits
 
@@ -601,78 +681,92 @@ That is worth stating because "h=5 overlaps" is the intuitive and wrong answer.
 `q` is an **upper bound** on the realised overlap, because dropped origins only remove shared
 returns. Using the bound is the conservative direction.
 
-### 5.2 R92 — the HAC lag and the Harvey correction
+### 5.2 R92 — the HAC estimator and the Harvey correction, matched to each other
 
-> **R92 — the DM HAC lag is `L = max(q, ⌊4(n/100)^(2/9)⌋)` with a Bartlett kernel, and the
-> Harvey correction is applied in **sampling units** with `h_eff = q + 1`.**
+> **R92 — the headline DM statistic uses a rectangular HAC estimator truncated at exactly `q`,
+> with the Harvey-Leybourne-Newbold correction at `h_eff = q + 1` against `t(n−1)`. A
+> Bartlett-Newey-West statistic at `L = max(q, ⌊4(n/100)^(2/9)⌋)` is reported beside it, with no
+> Harvey factor and a standard-normal reference.**
 >
-> `q` is not a bandwidth guess: it is the MA order the overlap *implies*, so any `L < q` is
-> provably wrong. The second term is Newey–West's own automatic truncation rule, covering the
-> serial dependence that is not caused by overlap — volatility clustering makes QLIKE and
-> squared-error losses autocorrelated even at h=1. Taking the max satisfies both, and at h=22
-> they coincide at 4 (`4·(247/100)^(2/9) = 4.89`), which is a mild check on neither being
-> absurd. At h=1 and h=5 the max is the Newey–West term, 4 rather than 0: strictly conservative,
-> which is the direction to err in a project whose claim is not that it won.
->
-> **Harvey, Leybourne and Newbold's correction always applies**, because it converges to 1 and
-> is a strict improvement at finite `n`:
+> The pairing is the point. The HLN factor is derived for the **rectangular** estimator truncated
+> at the forecast horizon's own MA order; applying it to a Bartlett estimator at a longer
+> bandwidth is a correction for a variance nobody computed. The board requires Harvey, so the
+> headline is the combination Harvey is derived for:
 >
 > ```
-> DM* = DM · sqrt( (n + 1 − 2·h_eff + h_eff·(h_eff − 1)/n) / n ),   compared against t(n−1)
+> d_i = L_left,i − L_right,i                   aligned on comparable(loss), in origin order
+> γ_k = (1/n) Σ_{i=k+1..n} (d_i − d̄)(d_{i−k} − d̄)
+> V   = γ_0 + 2 Σ_{k=1..q} γ_k                 rectangular, truncated at q
+> DM  = d̄ / sqrt(V/n)
+> DM* = DM · sqrt( (n + 1 − 2·h_eff + h_eff·(h_eff − 1)/n) / n )        compared to t(n−1)
 > ```
 >
-> **with `h_eff`, never the daily `h`.** The difference is not cosmetic: at h=66 with n=238, the
-> daily `h` gives a factor of 0.725 and `h_eff = 14` gives 0.943. Passing 66 to a function whose
-> parameter means "horizon in units of the loss series" is the default that looks fine and is
-> wrong.
+> **With `h_eff`, never the daily `h`.** At h=66 with n=238, the daily `h` gives a factor of
+> 0.725 and `h_eff = 14` gives 0.943. Passing 66 to a parameter that means "horizon in units of
+> the loss series" is the default that looks fine and is wrong.
+>
+> `V ≤ 0` is a **recorded refusal**, checked before any `sqrt`. The rectangular estimator is not
+> positive semi-definite and this is a real possibility, not a defensive branch; `numpy` would
+> emit a `RuntimeWarning`, which under `filterwarnings = ["error"]` is a failing test rather
+> than a NaN. `V == 0` — a constant differential, i.e. two contestants with identical losses —
+> is refused separately, with that as its stated reason.
+>
+> The second column exists because volatility clustering makes QLIKE and squared-error losses
+> autocorrelated well beyond the overlap, which the rectangular estimator at `q` ignores
+> entirely — at h=1 and h=5, `q = 0`, so the headline statistic uses the plain sample variance.
+> Bartlett-NW with `1/n` autocovariances is positive semi-definite (Newey-West 1987), so it
+> cannot be refused for a non-positive variance, and `⌊4(n/100)^(2/9)⌋` is Newey-West's own
+> automatic truncation; at n=247 it is 4. **Where the two columns disagree about a sign at the
+> 5% level, the leaderboard prints both and claims neither.** That is the honest reading of a
+> disagreement between two variance estimators on 17 to 251 effective observations.
 
-The variance estimate itself:
-
-```
-d_i = L_left,i − L_right,i                      aligned on comparable(loss), in origin order
-γ_k = (1/n) Σ_{i=k+1..n} (d_i − d̄)(d_{i−k} − d̄)
-V   = γ_0 + 2 Σ_{k=1..L} (1 − k/(L+1)) γ_k      Bartlett
-DM  = d̄ / sqrt(V/n)
-```
-
-**`V ≤ 0` is a recorded refusal, checked before any `sqrt`.** A rectangular-kernel HAC can go
-negative and the Bartlett one can too in small samples; `numpy` would emit a `RuntimeWarning`,
-which under `filterwarnings = ["error"]` is a failing test rather than a NaN. Same for a
-non-positive Harvey radicand. The result carries `refusal: str | None` and the leaderboard prints
-the reason, which is R56's rule applied to a test statistic.
-
-`scipy.stats.t.sf` supplies the p-value. No `dieboldmariano` package and no statsmodels HAC:
-statsmodels is a transitive dependency of `arch`, and reaching into a transitive pin is the thing
-R82 declined to do for numpy.
+`scipy.stats.t.sf` and `scipy.stats.norm.sf` supply the p-values. No `dieboldmariano` package and
+no statsmodels HAC: statsmodels is a transitive dependency of `arch`, and reaching into a
+transitive pin is exactly what R82 declined to do for numpy.
 
 ### 5.3 R93 — the stationary-bootstrap block length
 
 > **R93 — the block length is `max(q + 1, ⌈Politis–White on the loss levels⌉)`, computed with
-> `arch.bootstrap.optimal_block_length`, and never on differences.** Measured on 238
-> observations:
+> `arch.bootstrap.optimal_block_length` on the **levels** matrix that MCS and SPA actually
+> consume, never on cross-model differentials.** Measured, n=238:
 >
 > ```
-> iid losses, levels         0.25     -> ceil 1, floored by q+1
-> iid losses, differences   47.0      -> spurious; first-order negative autocorrelation
->                                        breaks the Politis-White formula
-> MA(14)-overlapping levels 14.21     -> recovers the overlap structure almost exactly
+> MA(14)-overlapping loss, levels                14.21  (clean pair: 4.33 and 10.47)
+> the same pair's cross-model differential        0.20
+> iid loss, levels                                1.26
+> iid loss, cross-model differential              1.79
 > ```
 >
-> The 14.21 is the reason to trust the estimator and the 47.0 is the reason to feed it the
-> levels: MCS and SPA consume loss **levels** and difference internally, so levels are also what
-> the block length must be estimated from. The `q + 1` floor matters at h=1 and h=5, where
-> Politis–White returns a block under 1 — effectively iid resampling, which would destroy the
-> volatility clustering the losses actually have.
+> The 14.21 is why the estimator is trusted: on an overlapping series it recovers the overlap
+> order. The 0.20 is why it must see levels: two contestants that *share* the same overlapping
+> target differ mostly by idiosyncratic noise, so the common dependence **cancels in the
+> differential** and the estimated block collapses towards iid — which would resample the
+> overlapping losses as though they were independent, the single error this whole section exists
+> to avoid. MCS and SPA difference internally; the block length describes the dependence in the
+> data they are given, which is the levels.
 >
-> `reps = 10_000` and `seed = 20261025`, both fixed and both recorded on the comparison record,
-> so MCS and SPA membership is reproducible from the file. `bootstrap="stationary"`.
+> The `q + 1` floor matters at h=1 and h=5, where Politis-White returns a block near 1 —
+> effectively iid resampling, which would destroy the volatility clustering the losses have even
+> without overlap.
+>
+> `reps = 10_000`, `bootstrap="stationary"`, `seed = 20261025`, all three fixed and all three on
+> the comparison record, so membership is reproducible from the file.
+
+(A separate note, because it is an easy mistake and not the one above: estimating the block from
+a *time*-differenced series returns a spurious 47.0 on iid data, because over-differencing
+produces a non-invertible MA(1). Neither levels nor cross-model differentials are that, but the
+distinction cost this design one wrong rationale.)
 
 ### 5.4 R94 — what is unusable, and why no stride rescues it
 
 > **R94 — `n_eff = n/(q+1)` is printed beside every multiple-comparison figure, and MCS
-> membership is refused where `n_eff < 2/α`.** To report a confidence set at size α, the sample
-> must be able to put observations in an α tail at all; `1/α` effective observations is the bare
-> minimum and `2/α` is the margin. So **20 at α = 0.10 and 8 at α = 0.25**:
+> membership is refused where `n_eff < 2/α`.**
+>
+> The threshold is a **chosen** one, not a derivation, and is labelled as such: the bootstrap
+> distribution's tail is over replications, not observations, so no theorem fixes the number.
+> The reasoning is that a confidence set at size α needs the sample to be able to place an
+> observation in an α tail at all (`1/α`), with a factor of two for margin. So **20 at
+> α = 0.10 and 8 at α = 0.25**:
 >
 > | h | n_eff | 10% MCS | 25% MCS | DM |
 > |---|---|---|---|---|
@@ -681,12 +775,20 @@ R82 declined to do for numpy.
 > | 22 | 49.4 | reported, flagged thin | reported | reported |
 > | 66 | **17.0** | **refused, with the reason printed** | reported | reported with `n_eff` beside it and no significance claimed |
 >
-> **A smaller stride does not help.** With a window of `W` sessions, `n ≈ W/s` and
+> *Cost of the threshold:* at h=66 the 10% set is not reported at all, where the alternative
+> would be reporting a very wide set and letting the reader see `n_eff = 17`. The refusal is
+> preferred because a membership list is read as a conclusion and a footnote is not; but if the
+> coordinator prefers the wide set with its `n_eff`, that is a defensible reversal of exactly one
+> line of code.
+>
+> **A smaller stride does not help, for h ≥ s.** With a window of `W` sessions, `n ≈ W/s` and
 > `q + 1 ≈ h/s`, so `n_eff ≈ W/h` **independently of `s`**. At h=66 over 2021–2025 that is
 > `1253/66 ≈ 19` at stride 1 against 17 at stride 5 — the stride is not the problem, the window
 > is. Extending `--from` back across the whole dev window (≈2,245 sessions) would raise it to
 > ≈30, still thin. So **h=66 is underpowered for multiple comparison at any stride available to
-> this project**, and that is a property of five years of daily data, not of the harness.
+> this project**, and that is a property of five years of daily data, not of the harness. For
+> `h < s` the invariance does not hold and a smaller stride does buy observations: at h=1,
+> stride 1 gives roughly five times stride 5's `n_eff`.
 
 Witnesses, owned by US-3.4:
 
@@ -695,27 +797,32 @@ Witnesses, owned by US-3.4:
 - `test_the_harvey_correction_uses_sampling_units_not_the_daily_horizon` — asserts 0.943 rather
   than 0.725 at `(h=66, s=5, n=238)`, which is the specific wrong answer this ruling exists to
   prevent.
-- `test_a_non_positive_hac_variance_is_refused_before_the_square_root`.
+- `test_a_non_positive_rectangular_hac_variance_is_refused_before_the_square_root`, and
+  `test_an_identical_pair_of_contestants_is_refused_rather_than_divided_by_zero`.
 - `test_the_block_length_is_floored_by_the_overlap` and
-  `test_the_block_length_is_estimated_from_levels_not_differences`.
-- `test_effective_observations_are_invariant_to_the_stride`.
+  `test_the_block_length_is_estimated_from_loss_levels_not_from_cross_model_differentials` —
+  the second asserts the 14.21-against-0.20 contrast, so the rationale is in a test and not only
+  in this document.
+- `test_effective_observations_are_invariant_to_the_stride_when_the_horizon_exceeds_it` —
+  scoped to `h >= s`, because at h=1 it is false.
 - `test_the_model_confidence_set_is_refused_where_the_effective_sample_is_too_small` — h=66 at
   10%, with the reason on the record.
 - `test_the_bootstrap_is_reproducible_from_the_recorded_seed`.
 
 ### 5.5 MCS, SPA and multiplicity
 
-- **One bootstrap, two sizes.** `MCS(..., size=0.10)` and a second `MCS(..., size=0.25)` can in
-  principle disagree about nesting. Run the bootstrap once and read membership at both sizes from
-  the same p-values, which `arch`'s `MCS.pvalues` supports directly.
+- **One bootstrap, two sizes.** Running `MCS(..., size=0.10)` and `MCS(..., size=0.25)`
+  separately can produce sets that are not nested. Run the bootstrap once and read membership at
+  both sizes from the same `MCS.pvalues`, which `arch` exposes directly.
 - **SPA's benchmark is `har_levels`.** SPA answers "does anything beat the benchmark", and the
   question this project is organised around is whether anything beats HAR — its stated
   contribution is that it does *not* claim to. A second SPA against `random_walk` is reported
   beside it, because a contestant that cannot beat a scaled squared return is worth seeing.
 - **DM is reported for all pairs with the count of tests beside it.** Seven contestants is 21
-  pairs, times 4 horizons, 2 losses and 3 symbols: **504 DM tests.** No selection is made on
-  those p-values, and the MCS is the multiplicity-aware statement. The count goes on the
-  comparison record and on the leaderboard, for the same reason the trial count does.
+  pairs, times 4 horizons, 2 losses and 3 symbols: **504 DM tests**, each with two variance
+  columns. No selection is made on those p-values, and the MCS is the multiplicity-aware
+  statement. The count goes on the comparison record and on the leaderboard, for the same reason
+  the trial count does.
 
 
 ## 6. The sink boundary, and US-3.5
@@ -752,6 +859,12 @@ should assume the ledger is the only possible sink"*. Two facts force the shape:
 > record whose `(sha, at)` has no trials is a bug, and the leaderboard says so rather than
 > printing a ranking with no counts.
 
+`Comparison` carries, per `(symbol, horizon, loss, cohort)`: the stride, `origins`, `n_eff`, the
+rectangular lag `q` and the Bartlett lag `L`, the block length with both of its inputs, `reps`,
+`seed`, the per-pair DM results in both columns, the MCS p-values with membership at both sizes
+or the refusal reason, both SPA results, the number of DM tests performed, and the Monte Carlo
+error band for any simulated contestant in the cohort (R90).
+
 `data/comparisons.jsonl` needs a `.gitignore` exception in the manner of `data/trials.jsonl` and
 for the identical reason — an MCS membership `git clean -xdf` erases cannot be the membership a
 write-up reports. **That one-line edit is the coordinator's**, since US-3.4 and US-3.5 both
@@ -760,8 +873,9 @@ depend on the file existing.
 US-3.5 reads both files and computes nothing. Three definitions it must pin down rather than
 imply, because "how many trials were evaluated" is the board's acceptance criterion:
 
-- **Which trials count.** Every line of the ledger whose `cohort` matches the leaderboard's
-  cohort, cumulatively across runs, which is the number the write-up has to report.
+- **The headline count is every line in the ledger**, cumulative across runs and cohorts, with
+  the per-cohort breakdown beside it. Counting only the current cohort would let a new cohort
+  reset the number, which is R59's forking-paths point turned on the reporting layer.
 - **Dirty lines are shown, never silently ranked.** `git_dirty: true` or `null` prints a marker
   on the row, per the board.
 - **A line with no `cohort` key is `"phase2-baseline"`** (R86). Witness, owned by US-3.5:
@@ -769,20 +883,51 @@ imply, because "how many trials were evaluated" is the board's acceptance criter
   are the fixture.
 
 
-## 7. File sets: disjoint, and the shared seam named
+## 7. R97 — one driver loop, not two
 
-### US-3.1b — the seam (new story; see section 9)
+`python -m volab.compare run` would be a second per-configuration loop, and R76 deleted the last
+one of those for diverging from `evaluate`'s. Four rulings live in the walk-forward CLI's loop
+and all four are load-bearing: **R62** (no `--end`, `--to` past `dev_end` refused), **R63** (an
+audit violation exits non-zero), **R70** (sha and dirty flag captured at the start, scoped to the
+repository root), **R74** (append per configuration, with a flush on the refusal path). A second
+entry point that takes a date argument is precisely where the holdout seal reopens.
+
+> **R97 — the per-configuration driver is extracted into
+> `volab.walkforward.run_configuration(...)` and both entry points call it.**
+> `src/volab/walkforward/__main__.py` is reduced to argument parsing plus that call, so its
+> printed console shape and all of its existing tests are unchanged; `volab.compare.__main__`
+> parses the same arguments, passes a different cohort and a `Sink`, and inherits R62, R63, R70
+> and R74 by delegation rather than by re-implementation. Reads go through `load_for` and
+> `scoreable_origins` only — neither takes an `end` later than `dev_end`, and no new function
+> here does either.
+
+The extraction belongs to US-3.1b, with `__main__.py` in its file set. US-3.4's acceptance
+includes the existing CLI tests parametrized over **both** entry points:
+`test_the_entry_point_refuses_a_to_past_dev_end`,
+`test_an_audit_violation_exits_non_zero`,
+`test_the_refusal_path_still_flushes_the_trials_already_counted`,
+`test_every_ledger_line_names_the_tree_that_produced_it`.
+
+*Cost:* `__main__.py` joins the seam's edited file set, so the extraction and the cohort change
+land in one story rather than two. That is the intended trade: R76's lesson is that two loops
+with one of them unexercised is where the tested and the believed come apart.
+
+
+## 8. File sets: disjoint, and the shared seam named
+
+### US-3.1b — the seam (new story; see section 10)
 
 | path | state |
 |---|---|
-| `src/volab/walkforward/__init__.py` | edit |
+| `src/volab/walkforward/__init__.py` | edit — the view, the cohort, the refusals, `run_configuration` |
+| `src/volab/walkforward/__main__.py` | edit — delegate to `run_configuration` (R97) |
 | `src/volab/models/__init__.py` | new, docstring only — no imports, so `import volab.models` cannot pull `arch` |
 | `src/volab/models/base.py` | new |
 | `src/volab/errors.py` | edit — `ModelSkip` |
 | `tests/model_conformance.py` | new — helper module, not collected |
 | `tests/test_model_interface.py` | new |
 | `tests/goldens/baseline_toy_forecasts.json` | new — captured on HEAD **before** the edit |
-| `pyproject.toml`, `uv.lock` | edit — declare `scipy`, add its mypy override (section 10) |
+| `pyproject.toml`, `uv.lock` | edit — declare `scipy`, add its mypy override (section 11) |
 
 ### US-3.2 — the GARCH family
 
@@ -790,6 +935,7 @@ imply, because "how many trials were evaluated" is the board's acceptance criter
 |---|---|
 | `src/volab/models/garch.py` | new |
 | `tests/test_garch.py` | new |
+| `tools/measure_garch_forecast_error.py` | new — the probe behind R90's three figure blocks |
 
 ### US-3.3 — recalibrated HAR
 
@@ -804,12 +950,31 @@ imply, because "how many trials were evaluated" is the board's acceptance criter
 |---|---|
 | `src/volab/compare/__init__.py` | new |
 | `src/volab/compare/series.py` | new — `LossSeries`, the one way losses enter |
-| `src/volab/compare/dm.py` | new — `overlap_lag`, `hac_lag`, `harvey_factor`, `diebold_mariano` |
+| `src/volab/compare/dm.py` | new — `overlap_lag`, `newey_west_lag`, `harvey_factor`, `diebold_mariano` |
 | `src/volab/compare/multiple.py` | new — `block_length`, `model_confidence_set`, `superior_predictive_ability` |
 | `src/volab/compare/sink.py` | new — `Sink`, `JsonlSink`, `Comparison` |
 | `src/volab/compare/cohorts.py` | new — the named cohorts; the only module importing both model modules |
 | `src/volab/compare/__main__.py` | new — `python -m volab.compare run` |
 | `tests/test_compare.py` | new |
+
+`LossSeries` is the seam between the harness and the statistics, and it exists so a ragged matrix
+can never reach `MCS`:
+
+```python
+@dataclass(frozen=True)
+class LossSeries:
+    symbol: str
+    horizon: int
+    loss: str
+    cohort: str
+    stride: int
+    origins: tuple[dt.date, ...]              # sorted, exactly evaluation.comparable(loss)
+    values: dict[str, tuple[float, ...]]      # contestant -> loss per origin, aligned to origins
+
+def loss_series(evaluation: Evaluation, loss: str, *, cohort: str) -> LossSeries
+```
+
+Witness: `test_every_loss_series_is_rectangular_and_on_comparable_origins`.
 
 ### US-3.5 — the leaderboard
 
@@ -831,12 +996,10 @@ imply, because "how many trials were evaluated" is the board's acceptance criter
 **Disjointness.** US-3.2 and US-3.3 share no file, and neither touches anything US-3.4 or US-3.5
 owns. `src/volab/compare/cohorts.py` is the only module that imports both `garch.py` and
 `recalibrated.py`, and it belongs to US-3.4, which serialises after both — so no story imports a
-module that does not yet exist. `src/volab/walkforward/__main__.py` is **not** edited by anyone:
-the baseline cohort is the default, so the existing CLI keeps its behaviour and its recorded
-console shape, and the seven-contestant shootout runs only through `python -m volab.compare run`.
+module that does not yet exist.
 
 
-## 8. Recalibrated HAR — the design US-3.3 has to hit
+## 9. Recalibrated HAR — the design US-3.3 has to hit
 
 The board's acceptance is that *"the MZ regression is fitted on training-window forecasts only,
 so recalibration cannot see the origin it is scoring"*. The framework's line 27 is the source:
@@ -864,6 +1027,10 @@ is `â + b̂·f(origin)`.
 > target had completed by `t`, and the origin's own target completes `h` sessions *after* `t`, so
 > the origin's row is not in the frame at all. The exclusion is the same `as_of` slice the whole
 > harness rests on, not a condition someone remembered to write.
+>
+> **`target_as_of` is on the view for this reason**: without it the model would have to reach
+> back into the target frame to find out when each training row became knowable, which is the
+> R78 bypass class — the audit would pass and the fit would be reading the future.
 
 Shipped contestant: `har_levels_mz`. The class takes `base: Model` so `har_semilog_mz` is a
 constructor argument away; only one is on the roster, to keep the trial count honest.
@@ -898,28 +1065,28 @@ Witnesses, owned by US-3.3:
 - `test_the_recalibrated_forecast_reduces_to_the_base_forecast_when_a_is_zero_and_b_is_one`.
 
 
-## 9. What this costs, and the board changes it implies
+## 10. What this costs, and the board changes it implies
 
-- **A new story, US-3.1b**, between US-3.1 and the fan-out, owning the seam and the goldens.
-  US-3.2 and US-3.3 are blocked on it rather than on US-3.1.
+- **A new story, US-3.1b**, between US-3.1 and the fan-out, owning the seam, the goldens and
+  R97's extraction. US-3.2 and US-3.3 are blocked on it rather than on US-3.1.
 - **Trials roughly double and then some.** 7 contestants × 3 symbols × 4 horizons × 2 losses =
-  **168 trial lines** per shootout run, against the 72 already on the ledger. Plus 504 DM tests,
-  24 MCS computations (of which the h=66 10% ones are refusals) and 48 SPA computations per run.
-  The board already carries "more contestants is more trials" as a risk; this is the number.
-- **Runtime.** Measured per fit on 1,250 observations: GARCH 61 ms, GJR 23 ms, EGARCH 46 ms;
-  EGARCH's h=66 simulated forecast 230 ms. With the recalibrated model's ~0.3 s of inner fits,
-  one origin costs roughly 0.7 s against the baseline's feature rebuild. The recorded run was
-  400 s for 36 configurations; expect **40–80 minutes** for the shootout. Acceptable for a
-  once-per-phase run, and the knobs if it is not are `calibration_points` and EGARCH's
-  `simulations` — both of which change numbers and so belong on the ledger, not in a flag
-  someone passes.
+  **168 trial lines** per shootout run, against the 72 already on the ledger. Plus 504 DM tests
+  in two variance columns, 24 MCS computations (of which the six h=66 10% ones are refusals) and
+  48 SPA computations per run. The board already carries "more contestants is more trials" as a
+  risk; this is the number.
+- **Runtime, and it is the real cost of R90.** Measured per fit on 1,250 observations: GARCH
+  61 ms, GJR 23 ms, EGARCH 46 ms. Forecasts at `S=100,000`: 1.0 s at h=22 and 2.9 s at h=66 for
+  GJR, 0.76 s and 2.4 s for EGARCH. With the recalibrated model's ~0.3 s of inner fits, the
+  shootout is roughly **2.5 hours** against the recorded baseline run's 400 s. Acceptable for a
+  once-per-phase run. The knobs if it is not are `calibration_points` and `simulations`, and
+  both change numbers, so both belong on the ledger rather than in a flag someone passes.
 - **The baseline models' losses change under the seven-contestant cohort**, wherever a new
   contestant refuses an origin. Not a regression (section 3.3), but it means the leaderboard's
   headline figures are not the recorded run's figures, and the write-up must say which cohort
   each number belongs to.
 
 
-## 10. What I found that contradicts the board or the decisions logs
+## 11. What I found that contradicts the board or the decisions logs
 
 Reported rather than fixed, since none of it is this story's to change:
 
@@ -947,11 +1114,39 @@ Reported rather than fixed, since none of it is this story's to change:
 4. **The board's US-3.1 row names `docs/superpowers/phase2-completion-decisions.md` as this
    story's file.** My brief says a new spec under `docs/superpowers/specs/` and explicitly not to
    edit the decisions log. I followed the brief; the board's Files cell for US-3.1 should be
-   corrected to this path, with R85-R96 folded into the decisions log by the coordinator.
-5. **`rescale=False` is the plausible-looking choice and it silences R83's own red case**
+   corrected to this path, with R85-R97 folded into the decisions log by the coordinator.
+5. **The board's US-3.5 row says the leaderboard "reads `data/trials.jsonl`" and reports MCS
+   membership at 10% and 25%.** Those two cannot both be true: the ledger holds per-trial means,
+   and MCS membership can only come from the comparison records (section 6). The row should name
+   both files, with "computes nothing of its own" preserved — it is the *computation*, not the
+   single file, that the criterion is about.
+6. **`rescale=False` is the plausible-looking choice and it silences R83's own red case**
    (section 4.3, measured). Worth folding into R83 as an amendment, since R83 is the ruling a
    future reader will consult before writing an `arch_model(...)` call.
-6. **Recorded in the Phase 2 log as known and still open**, and this phase inherits all of it
+7. **Recorded in the Phase 2 log as known and still open**, and this phase inherits all of it
    unchanged: `evaluate` does not reject duplicate or unsorted origins; the skip message counts
    rows before `dropna`, so "only N knowable rows" is an upper bound; `(realized - forecast) ** 2`
    can raise `OverflowError` on a diverged fit; a dirty run records no diff hash.
+
+
+## 12. The probes behind every measured figure
+
+R32 applies to a design document too. Each figure above came from a probe run during this story;
+`tools/measure_garch_forecast_error.py` (US-3.2) is the committed home for the first three, and
+the rest are one-off and recorded here with enough detail to re-run.
+
+| figure | §| how it was measured |
+|---|---|---|
+| GJR analytic 17.7% low at h=66 | 4.4 | `ZeroMean` + `GARCH(1,1,1)` + skew-t fitted to a series simulated from `[ω=0.03, α=0.05, γ=0.10, β=0.87, η=8, λ=−0.30]`; analytic 39.737 against 200,000-path simulation 48.288 |
+| GARCH(1,1) analytic exact | 4.4 | same series, analytic 64.879 against 200,000-path 64.677, −0.31%, inside the simulation's own error |
+| EGARCH has no analytic multistep | 4.4 | `ValueError: Analytic forecasts not available for horizon > 1` |
+| MC spread 0.19–0.29% at S=100,000 | 4.4 | 6 seeds × {GJR, EGARCH} × {h=22, h=66}, same series; and 0.27–1.40% at S=10,000 |
+| forecast cost 0.76–2.91 s/call | 4.4, 10 | same grid, wall clock per call |
+| fit cost 23–61 ms | 10 | 1,250 observations, each spec |
+| `rescale`'s three-way behaviour | 4.3 | σ≈0.011 series under `-W error`: `None` raises, `True` sets `scale=100.0`, `False` silent |
+| `DataScaleWarning` comes from `fit()` | 4.3 | `catch_warnings(record=True)` around construction (empty) then around `fit` (fires, even with `show_warning=False`) |
+| `convergence_flag == 9`, warning only without `show_warning=False` | 4.5 | `options={"maxiter": 1}` |
+| Politis-White 14.21 / 0.20 / 1.26 / 1.79 / 47.0 | 5.3 | `optimal_block_length` on MA(14) levels, that pair's cross-model differential, iid levels, iid cross-model differential, and a time-differenced iid series |
+| Newey-West lag 4 at n=247 | 5.2 | `⌊4·(247/100)^(2/9)⌋ = ⌊4.89⌋` |
+| Harvey 0.943 against 0.725 | 5.2, 5.4 | the HLN factor at `(n=238, h_eff=14)` and at `(n=238, h=66)` |
+| `n_eff` 251 / 250 / 49.4 / 17.0 | 5.1 | `n/(q+1)` on the recorded run's SPY origin counts 251 / 250 / 247 / 238 |
