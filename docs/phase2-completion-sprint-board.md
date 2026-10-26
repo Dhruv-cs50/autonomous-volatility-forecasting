@@ -45,7 +45,7 @@ Each has already cost this project time, so each is stated rather than assumed:
 | US-3.2 | GARCH(1,1) and GJR/EGARCH with skew-t errors, behind that interface | `src/volab/models/garch.py`, `tests/test_garch.py` | fits warning-free under `filterwarnings=error` via R83's rescaling; a non-converging origin is a recorded skip; h-step forecasts on the variance scale the losses use | blocked on US-3.1 |
 | US-3.3 | Recalibrated HAR — Mincer-Zarnowitz, as the framework defines it at line 27 | `src/volab/models/recalibrated.py`, `tests/test_recalibrated.py` | the MZ regression is fitted on **training-window** forecasts only, so recalibration cannot see the origin it is scoring; a red case shows an in-sample fit scoring better and being refused | blocked on US-3.1 |
 | US-3.4 | Diebold-Mariano, MCS and SPA over every contestant, and the leaderboard per horizon | `src/volab/compare/`, `tests/test_compare.py` | DM carries the Harvey correction and an HAC lag justified by the horizon; MCS membership reported at 10% and 25%; the leaderboard states **how many trials were evaluated** beside every ranking | blocked on US-3.2, US-3.3 |
-| US-3.5 | The phase's exit criterion: a leaderboard logged in MLflow | — | — | **blocked on a user decision** (R84): MLflow 3.x needs `pyarrow<26`, the project pins `>=26`, and relaxing it touches the engine under `store.py` |
+| US-3.5 | The leaderboard as a committed command, reading the ledger | `src/volab/leaderboard/`, `tests/test_leaderboard.py` | `python -m volab.leaderboard` prints, per symbol and horizon, every contestant ranked on each loss with **the trial count beside it** and MCS membership at 10% and 25%; it reads `data/trials.jsonl` and computes nothing of its own, so the leaderboard cannot disagree with the ledger; a trial whose tree was dirty is shown as such rather than silently ranked | todo, depends on US-3.4 |
 | US-3.6 | `delivery-auditor` over this board against git at the sprint close | — | the board and the repository agree, and the board is corrected where they do not | todo |
 
 ## Parallelism
@@ -56,8 +56,12 @@ Never two implementers in one file, and the git index is shared state too: paths
 
 ## Risks and what is carried
 
-- **R84 leaves the phase's exit criterion open.** Four of five stories can finish without MLflow;
-  the row does not close until the pyarrow question is decided. Recorded rather than rounded up.
+- **The phase exits against a modified criterion, deliberately** (R84, resolved). The framework
+  says *"logged in MLflow"*; this phase logs to the append-only git-tracked ledger and **refuses
+  MLflow for a stated reason** — 3.x needs `pyarrow<26` and relaxing that pin would change the
+  engine under `store.py`, on which the byte-exact comparator and therefore the whole
+  point-in-time claim sits. The row is **not** recorded as satisfied. Any write-up citing Phase 2
+  must say which criterion it met.
 - **The semi-log specification still fits a log scale while the losses are on the variance
   scale** (R73), and `har_levels` can forecast a non-positive variance, which drops those origins
   from QLIKE for every model. Adding GARCH does not change either; it adds contestants that have

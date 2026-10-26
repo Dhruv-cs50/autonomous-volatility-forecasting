@@ -95,13 +95,26 @@ against is unchanged, and it is Phase 1's closing one:
   seen for what it was, and removed rather than left in the lock: a four-year-old tracker reached
   by accident is not a decision anyone made.
 
-  The live options are to relax `pyarrow>=26.0.0` so MLflow 3.x fits, or to grow the existing
-  `data/trials.jsonl` into the leaderboard. **Neither is taken here**, because the first one
-  touches the engine under `store.py` — the one module allowed to read Parquet, whose two
-  documented round-trip asymmetries (R69) were measured on the current version — and that is a
-  change to the foundation of the point-in-time guarantee in exchange for a reporting
-  convenience. It is the user's call, and this ruling records the phase as **not exiting** until
-  it is made.
+  The live options were to relax `pyarrow>=26.0.0` so MLflow 3.x fits, or to grow the existing
+  `data/trials.jsonl` into the leaderboard.
 
-  *Cost if wrong:* the phase's own exit criterion goes unmet while four of its five stories are
-  done, so the board says so instead of rounding the row up.
+  **Resolved: the ledger, and `pyarrow` is not touched.** Relaxing the pin would change the
+  engine under `store.py` — the one module allowed to read Parquet, whose two documented
+  round-trip asymmetries (R69) were *measured on the current version* — and the byte-exact
+  comparator that the whole point-in-time claim rests on sits directly on top of those. Trading
+  that for a reporting convenience is the wrong way round. The ledger also already carries more
+  provenance than a default MLflow run does: the git sha, a dirty flag, the origin stride,
+  `requested`, `skipped` and `dropped` counts, and one line per evaluated configuration whether
+  or not it forecast anything (R74, R75).
+
+  **This is a deliberate deviation from the framework's exit criterion, and the row is not
+  rounded up to meet it.** The framework's Phase 2 line ends *"logged in MLflow"*; this phase
+  will exit with *"logged in an append-only git-tracked ledger, with MLflow refused for a stated
+  reason"*. Said plainly because the alternative — recording the row as satisfied — is the kind
+  of adjacent truth this project has caught itself in twice (C1, and R35's "sweeps every
+  session"). MLflow remains available later behind a `pyarrow` bump, and nothing in the
+  leaderboard's design should assume the ledger is the only possible sink.
+
+  *Cost if wrong:* no MLflow UI, and a tracker the project maintains itself. The ledger is
+  ~100 lines of append-only JSON with its own tests, so the maintenance is small; the thing
+  genuinely given up is MLflow's run comparison view.
