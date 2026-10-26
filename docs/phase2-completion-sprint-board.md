@@ -48,6 +48,7 @@ Each has already cost this project time, so each is stated rather than assumed:
 | US-3.4 | Diebold-Mariano, MCS and SPA over every contestant, and the leaderboard per horizon | `src/volab/compare/`, `tests/test_compare.py` | DM carries the Harvey correction and an HAC lag justified by the horizon; MCS membership reported at 10% and 25%; the leaderboard states **how many trials were evaluated** beside every ranking | todo, unblocked — must **call** `run_configuration`, not reimplement it, and print the measured Monte-Carlo error beside every simulated figure (R102) |
 | US-3.5 | The leaderboard as a committed command, reading what the sink wrote | `src/volab/leaderboard/{__init__,__main__}.py`, `tests/test_leaderboard.py` | `python -m volab.leaderboard` prints, per symbol and horizon, every contestant ranked on each loss with **the trial count beside it**, plus MCS membership and `n_eff`; it **computes nothing of its own**, reading `data/trials.jsonl` for the losses and `data/comparisons.jsonl` for membership, so the leaderboard cannot disagree with what it reports; the headline trial count is every ledger line with the per-cohort breakdown beside it, so a new cohort cannot reset the number (R59); a trial whose tree was dirty is shown as such rather than silently ranked | todo, depends on US-3.4 |
 | US-3.3b | Strengthen conformance clause 2 so it catches a model that captured its own target frame | `tests/model_conformance.py`, `tests/test_model_interface.py` | a plant that keeps its own reference to the target frame — the R78 shape — is caught by the **shared** suite rather than by one contestant's own test; the existing contestants still pass unchanged | todo (R104), may run beside US-3.4 — disjoint files |
+| US-3.7 | **The recorded shootout run**: every contestant, every symbol, every horizon, against the real store, appended to the ledger | `data/trials.jsonl`, `data/comparisons.jsonl`, `docs/superpowers/phase2-completion-decisions.md` | one run on a clean tree whose sha resolves to the code that produced it; **7 contestants x 3 symbols x 4 horizons x 2 losses = 168 trials, 168 ledger lines**, each carrying its cohort; the per-origin truncation-equivalence by-product reported; the measured Monte-Carlo error beside every simulated figure and `n_eff` beside every MCS one; the run's console output quoted in the decisions log the way Phase 2's own recorded run was | todo, depends on US-3.4 and US-3.5 — **about 2.5 hours of compute** (R90, R102) |
 | US-3.6 | `delivery-auditor` over this board against git at the sprint close | — | the board and the repository agree, and the board is corrected where they do not | todo |
 
 **US-3.1b reported DONE_WITH_CONCERNS, and the concerns were right.** It kept the design as
@@ -63,6 +64,18 @@ refusal, the per-configuration append, the truncation report and the console lin
 (`--to` past `dev_end`) and R70 (the sha and dirty flag at run start) still live in
 `__main__.py`. US-3.4's entry point must **call `run_configuration` rather than reimplement it**,
 and keep R62 and R70 where they are. The flush that was the third item on that list is gone (R99).
+
+**US-3.7 was missing from the first version of this board, and the omission is worth recording.**
+Stories existed to *build* the contestants, the comparison and the leaderboard command, and none
+to **run** the experiment. The framework's exit criterion is a *reproducible* leaderboard per
+horizon, and Phase 2's own precedent is its "recorded walk-forward run" section: a named commit,
+a clean tree and 72 ledger lines. A leaderboard command with no recorded run behind it reports
+nothing, and the phase cannot exit on it. Found by being asked what remained, which is the same
+way a delivery audit finds things — by checking the board against the claim rather than against
+itself.
+
+**It roughly triples the trial count**, from 72 to 240, and that is the number any write-up has to
+report. More contestants is more trials; the ledger exists so that is stated rather than hidden.
 
 ## Parallelism
 
