@@ -45,7 +45,6 @@ from volab.walkforward import (
     BASELINE_COHORT,
     LOSSES,
     MODELS,
-    Trial,
     append_trials,
     count_trials,
     git_state,
@@ -77,18 +76,6 @@ def _persisted(settings: Settings, symbol: str) -> pd.DataFrame | None:
     return frame.sort_values("as_of").reset_index(drop=True)
 
 
-def _flush(trials: Sequence[Trial], settings: Settings, sha: str, dirty: bool | None) -> None:
-    """Last-resort append on the refusal path, so a refusal cannot erase counted trials."""
-    if trials:
-        append_trials(
-            trials,
-            root=settings.storage_root.parent,
-            at=dt.datetime.now(dt.UTC),
-            sha=sha,
-            dirty=dirty,
-        )
-
-
 def _run(settings: Settings, arguments: argparse.Namespace) -> int:
     started = time.perf_counter()
     # Captured now, before a single number is produced. Reading it when the ledger is
@@ -116,7 +103,6 @@ def _run(settings: Settings, arguments: argparse.Namespace) -> int:
     # Stamped at the start, with the sha, so every line of one run shares one timestamp and that
     # timestamp is when the numbers were produced rather than when they were written.
     started_at = dt.datetime.now(dt.UTC)
-    everything: list[Trial] = []
     written = 0
     failures = 0
 
@@ -151,15 +137,15 @@ def _run(settings: Settings, arguments: argparse.Namespace) -> int:
             )
             written += outcome.written
             if outcome.refused:
-                # Trials already produced are flushed first, so a refusal cannot erase numbers
-                # that were printed.
-                _flush(everything, settings, sha, dirty)
+                # Nothing to flush, and that is the fix rather than an omission. R74 made every
+                # configuration append as it finished, so by the time a later one refuses, the
+                # earlier trials are already on the ledger -- and the flush that used to run here
+                # appended them a *second* time, under ``datetime.now`` rather than this run's one
+                # timestamp, so the duplicates were not even grouped with their own run. The
+                # ledger's whole job is to say how many candidates were considered, and it was
+                # over-counting them on exactly the path R74 was written to protect.
                 return 2
             failures += outcome.disagrees
-            if outcome.evaluation is not None:
-                # As before the extraction: a configuration with nothing to score is counted on the
-                # ledger but is not among the trials a later refusal re-flushes.
-                everything.extend(outcome.trials)
 
     after = count_trials(settings.storage_root.parent)
     print(f"trials: {written} appended, ledger now {after} line(s), was {before}")

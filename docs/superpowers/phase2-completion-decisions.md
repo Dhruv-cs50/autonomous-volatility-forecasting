@@ -190,3 +190,61 @@ Monte-Carlo spread at S=10,000 was 0.27-1.40%, inside the 0.2-1.5% band R72 set 
 project's floor for a difference worth believing — makes the full shootout roughly **2.5 hours
 instead of about 15 minutes**. That is the price of not shipping a forecast that is biased by
 more than the leak this project was built to catch.
+
+---
+
+## R98, R99 — two defects US-3.1b surfaced, and only one of them was its own
+
+- **R98 — the `Model` and `Forecaster` Protocol members are read-only properties, not settable
+  attributes.** R85 specified `name: str`, `fit_depends_on_horizon: bool` and `observations: int`
+  as plain annotations. A settable Protocol member is satisfied only by a *mutable* attribute, so
+  `mypy --strict` rejects a frozen dataclass:
+
+  ```
+  error: Incompatible return value type (got "FrozenForecaster", expected "Forecaster")
+  note: Protocol member Forecaster.observations expected settable variable,
+        got read-only attribute
+  ```
+
+  **Frozen dataclasses are this project's dominant idiom** — `Fit`, `Trial`, `OriginResult`,
+  `Evaluation`, `Cohort` and `Forecast` are all frozen — so a seam that forbids them would have
+  made every contestant mutable to satisfy its own interface. That is backwards, and the
+  implementer was right to flag it rather than quietly dropping `frozen=True`. A read-only member
+  is strictly more permissive: it accepts a frozen dataclass, a plain class with an annotated
+  class attribute, and a property alike.
+
+  Verified **in both directions** rather than once, by type-checking a frozen-dataclass
+  contestant inside `src` where `mypy src` sees it: it passes with the properties and fails with
+  the exact error above without them. (`volab` ships no `py.typed`, so the probe had to live
+  inside the package — an incidental finding, noted for whenever this is consumed as a library.)
+  *Cost if wrong:* contestants are written mutable, and the seam's own idiom disagrees with the
+  rest of the codebase.
+
+- **R99 — the refusal path no longer re-appends trials R74 has already written, and this was a
+  live over-count in the one number the project exists to report.** `_flush` was the pre-R74
+  behaviour: append everything once, at the end, so a refusal could not erase printed numbers.
+  R74 then made each configuration append as it finished — and the flush stayed. The two
+  overlapped, so on a run where SPY succeeded and QQQ refused, **SPY's six trials were written
+  twice**, the second time under `datetime.now(dt.UTC)` rather than the run's single `started_at`,
+  so the duplicates were not even grouped with their own run and R70's one-timestamp rule broke
+  with them.
+
+  The ledger's entire purpose is the sentence in `walkforward`'s own docstring — *"a harness that
+  reports a winner without saying how many candidates it considered is the thing this project
+  refuses"* — and it was inflating that count on exactly the path R74 was written to protect.
+
+  **Why no test saw it, which is the part worth keeping.** The witness was
+  `test_the_refusal_path_still_flushes_the_trials_already_counted`, and it exercised `_flush` in
+  isolation: hand it trials, assert they are appended. They were. Nothing drove **two**
+  configurations, so nothing observed the interaction, and the test's name described a property
+  its body never checked. That is the same shape as R72 and R78 — a test that checks a helper
+  rather than the behaviour the helper exists to produce — and it is now the third instance in
+  this project, which is why it is a ruling rather than a commit note.
+
+  Replaced by `test_a_later_refusal_leaves_the_earlier_trials_counted_exactly_once`, which drives
+  the CLI over two configurations at two horizons, asserts the ledger holds the first
+  configuration's lines **exactly once**, and asserts all lines share one `at`. Confirmed to fail
+  on the pre-fix code at precisely that assertion before being relied on. *Cost if wrong:* the
+  trial count is the headline number, and a second kind of duplicate would corrupt it the same
+  way; the test is over the behaviour now rather than the helper, so a future refactor that
+  reintroduces a second writer fails here.

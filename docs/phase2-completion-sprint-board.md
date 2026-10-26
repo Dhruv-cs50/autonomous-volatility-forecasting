@@ -42,12 +42,26 @@ Each has already cost this project time, so each is stated rather than assumed:
 | Story | Goal | Files | Acceptance | State |
 |---|---|---|---|---|
 | US-3.1 | Architect the model-zoo interface and the comparison design before any model is written | `docs/superpowers/specs/2026-10-25-phase2-completion-design.md` | one `fit(train) -> forecast(h)` interface the existing three models can be expressed in without changing their numbers; the h-step aggregation defined against the `targets_rv_h*` definition rather than invented; DM's HAC lag and the MCS bootstrap's block length derived from the horizon and the stride-5 origins, not defaulted | done `ce9f781`, `d05f491` — R85-R97, ratified by reference in the decisions log |
-| US-3.1b | The shared seam: the `Model`/`Forecaster` interface, the cohort, and the one edit that can move a recorded number | `src/volab/models/{__init__,base}.py`, `src/volab/walkforward/__init__.py`, `src/volab/walkforward/__main__.py`, `src/volab/errors.py`, `tests/model_conformance.py`, `tests/test_model_interface.py`, `tests/goldens/baseline_toy_forecasts.json` | the three baseline models are expressed through the interface with **byte-identical per-origin forecasts**, against goldens captured *before* `evaluate` is touched; `MODELS` frozen and `Evaluation.contestants` added so appending a contestant cannot shrink the baseline's comparable set; `"phase2-baseline"` reserved so a shootout cannot be labelled as the recorded run | todo, depends on US-3.1 |
+| US-3.1b | The shared seam: the `Model`/`Forecaster` interface, the cohort, and the one edit that can move a recorded number | `src/volab/models/{__init__,base}.py`, `src/volab/walkforward/__init__.py`, `src/volab/walkforward/__main__.py`, `src/volab/errors.py`, `tests/model_conformance.py`, `tests/test_model_interface.py`, `tests/goldens/baseline_toy_forecasts.json` | the three baseline models are expressed through the interface with **byte-identical per-origin forecasts**, against goldens captured *before* `evaluate` is touched; `MODELS` frozen and `Evaluation.contestants` added so appending a contestant cannot shrink the baseline's comparable set; `"phase2-baseline"` reserved so a shootout cannot be labelled as the recorded run | done `2dbd454` + coordinator follow-up — all six recorded figures unmoved, 787 tests; the two defects it raised fixed under R98 and R99 |
 | US-3.2 | GARCH(1,1) and GJR/EGARCH with skew-t errors, behind that interface | `src/volab/models/garch.py`, `tests/test_garch.py` | fits warning-free under `filterwarnings=error` via R83's rescaling; a non-converging origin is a recorded skip; h-step forecasts on the variance scale the losses use | todo, depends on US-3.1b |
 | US-3.3 | Recalibrated HAR — Mincer-Zarnowitz, as the framework defines it at line 27 | `src/volab/models/recalibrated.py`, `tests/test_recalibrated.py` | the MZ regression is fitted on **training-window** forecasts only, so recalibration cannot see the origin it is scoring; a red case shows an in-sample fit scoring better and being refused | todo, depends on US-3.1b |
 | US-3.4 | Diebold-Mariano, MCS and SPA over every contestant, and the leaderboard per horizon | `src/volab/compare/`, `tests/test_compare.py` | DM carries the Harvey correction and an HAC lag justified by the horizon; MCS membership reported at 10% and 25%; the leaderboard states **how many trials were evaluated** beside every ranking | todo, depends on US-3.2, US-3.3 |
 | US-3.5 | The leaderboard as a committed command, reading what the sink wrote | `src/volab/leaderboard/{__init__,__main__}.py`, `tests/test_leaderboard.py` | `python -m volab.leaderboard` prints, per symbol and horizon, every contestant ranked on each loss with **the trial count beside it**, plus MCS membership and `n_eff`; it **computes nothing of its own**, reading `data/trials.jsonl` for the losses and `data/comparisons.jsonl` for membership, so the leaderboard cannot disagree with what it reports; the headline trial count is every ledger line with the per-cohort breakdown beside it, so a new cohort cannot reset the number (R59); a trial whose tree was dirty is shown as such rather than silently ranked | todo, depends on US-3.4 |
 | US-3.6 | `delivery-auditor` over this board against git at the sprint close | — | the board and the repository agree, and the board is corrected where they do not | todo |
+
+**US-3.1b reported DONE_WITH_CONCERNS, and the concerns were right.** It kept the design as
+written rather than departing from it silently, and raised two things it could not decide alone:
+a Protocol defect that would have forbidden frozen dataclasses (now R98), and a pre-existing
+ledger over-count it deliberately preserved rather than changing R74's behaviour unasked (now
+R99). Both are fixed, each with a red case. Its own refactor held: all six figures R73 records
+are unchanged to the digit, `data/trials.jsonl` is still 72 lines, and reverting `comparable` to
+read `MODELS` fails nine tests.
+
+**One hand-off for US-3.4.** R97's extraction is partial: `run_configuration` owns the audit
+refusal, the per-configuration append, the truncation report and the console lines, but R62
+(`--to` past `dev_end`) and R70 (the sha and dirty flag at run start) still live in
+`__main__.py`. US-3.4's entry point must **call `run_configuration` rather than reimplement it**,
+and keep R62 and R70 where they are. The flush that was the third item on that list is gone (R99).
 
 ## Parallelism
 

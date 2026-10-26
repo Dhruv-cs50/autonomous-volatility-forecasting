@@ -67,21 +67,29 @@ class Forecaster(Protocol):
     would then pass as a data problem. Witness:
     ``test_forecasting_a_horizon_the_fit_was_not_made_for_is_a_value_error``."""
 
-    observations: int
+    # A read-only ``@property`` rather than ``observations: int``. A settable Protocol member is
+    # satisfied only by a *mutable* attribute, so ``mypy --strict`` rejects a frozen dataclass
+    # with "expected settable variable, got read-only attribute" -- and frozen dataclasses are
+    # this project's dominant idiom (``Fit``, ``Trial``, ``OriginResult``, ``Evaluation``,
+    # ``Cohort``, ``Forecast``). A read-only member accepts a frozen dataclass, a plain class
+    # with an annotated class attribute, and a property alike, so it is strictly more permissive.
+    @property
+    def observations(self) -> int: ...
 
     def forecast(self, horizon: int) -> Forecast: ...
 
 
 @runtime_checkable
 class Model(Protocol):
-    # These are settable protocol attributes, as designed, and ``mypy --strict`` therefore rejects
-    # a *frozen* dataclass as a ``Model`` ("expected settable variable, got read-only attribute").
-    # Write a contestant as a plain class with annotated class-level defaults, as the baseline
-    # adapters in ``volab.walkforward`` are; the same goes for a ``Forecaster``'s ``observations``.
-    name: str
+    # Read-only, for the reason given on ``Forecaster.observations``: a contestant may be written
+    # as a frozen dataclass, which a settable member would have forbidden.
+    @property
+    def name(self) -> str: ...
+
     # False only for a model whose fit reads no part of the target side (GARCH). The conformance
     # suite turns this into a test rather than a comment.
-    fit_depends_on_horizon: bool
+    @property
+    def fit_depends_on_horizon(self) -> bool: ...
 
     def fit(self, view: TrainingView) -> Forecaster: ...
 

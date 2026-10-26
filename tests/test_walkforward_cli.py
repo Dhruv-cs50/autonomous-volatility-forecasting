@@ -183,30 +183,85 @@ def test_a_run_writes_one_ledger_line_per_configuration_it_evaluated(
     assert {line["loss"] for line in lines} == set(module.LOSSES)
 
 
-def test_the_refusal_path_still_flushes_the_trials_already_counted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_a_later_refusal_leaves_the_earlier_trials_counted_exactly_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    """A number that was computed must not vanish because a later configuration refused.
+    """The real property, over **two** configurations, which is where the defect lived.
 
-    Appending once at the end of the run was the earlier behaviour: a run that printed SPY's
-    results and then tripped the refusal on QQQ reached no ledger at all. That is the
-    forking-paths hole the ledger exists to close -- a number seen but not counted.
+    A number that was computed must not vanish because a later configuration refused -- that is
+    the forking-paths hole the ledger exists to close, and R74 closed it by appending as each
+    configuration finishes. But the refusal path kept its earlier last-resort flush, so once R74
+    landed the two overlapped: on a run where SPY succeeded and QQQ refused, SPY's six trials
+    were appended **twice**, the second time under ``datetime.now`` instead of the run's single
+    timestamp. The ledger's one job is to report how many candidates were considered, and it was
+    inflating that number on exactly the path R74 was written to protect.
+
+    The previous test for this exercised ``_flush`` in isolation and asserted it appends what it
+    is handed, which it did. Nothing drove two configurations, so nothing saw the double count.
+    That is the shape this project keeps finding: a test that checks a helper rather than the
+    behaviour the helper exists to produce.
     """
     settings = _settings_with_root(load_settings(), tmp_path)
-    trials = module.Evaluation(
-        symbol="SPY",
-        horizon=1,
-        results=(),
-        features=pd.DataFrame(),
-        skipped=(),
-        requested=3,
-        every=1,
-    ).trials()
-    cli._flush(trials, settings, "abc123", False)
-    assert count_trials(tmp_path) == len(trials)
-    # And it is a no-op on an empty list rather than writing a blank line.
-    cli._flush([], settings, "abc123", False)
-    assert count_trials(tmp_path) == len(trials)
+    monkeypatch.setattr(cli, "load_settings", lambda: settings)
+    monkeypatch.setattr(cli, "_persisted", lambda *_: None)
+    # Two configurations on ONE symbol, at two horizons. The toy panel carries only SPY bars, so
+    # a second *symbol* would fail for want of data and test the wrong thing.
+    panel, by_horizon = _toy_panel_and_targets_by_horizon()
+    monkeypatch.setattr(
+        cli, "load_for", lambda _s, _sym, horizon, **k: (panel, by_horizon[horizon])
+    )
+
+    # The first configuration is clean, the second trips the audit. Patched on the audit rather
+    # than contrived in the data, so the test says what it means: the refusal is not the subject,
+    # the ledger's count across the boundary is.
+    seen = {"configurations": 0}
+    violation = [("panel", dt.date(2024, 4, 1), dt.date(2024, 4, 30))]
+
+    def violations(self: RunAudit) -> list[tuple[str, dt.date, dt.date]]:
+        seen["configurations"] += 1
+        return [] if seen["configurations"] == 1 else violation
+
+    monkeypatch.setattr(module.RunAudit, "violations", violations)
+
+    assert count_trials(tmp_path) == 0
+    code = cli.main(
+        [
+            "run",
+            "--symbol",
+            "SPY",
+            "--horizon",
+            "1",
+            "--horizon",
+            "5",
+            "--from",
+            "2024-03-01",
+            "--to",
+            "2024-06-28",
+            "--minimum-training",
+            "20",
+            "--every",
+            "2",
+        ]
+    )
+    capsys.readouterr()
+
+    assert code == 2, "R63: an audit violation exits non-zero rather than warning"
+    assert seen["configurations"] == 2, "the second configuration must have been reached"
+
+    one_configuration = len(module.MODELS) * len(module.LOSSES)
+    assert count_trials(tmp_path) == one_configuration, (
+        "the first configuration's trials must be on the ledger exactly once: "
+        "neither erased by the refusal nor appended twice by a flush R74 superseded"
+    )
+    lines = [
+        json.loads(line)
+        for line in (tmp_path / TRIAL_LEDGER).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert {line["horizon"] for line in lines} == {1}, "the refused configuration wrote nothing"
+    # One run, one timestamp (R70). The duplicate lines carried ``datetime.now`` instead, so this
+    # assertion is the one that would have caught the defect even without the count.
+    assert len({line["at"] for line in lines}) == 1
 
 
 def test_an_unknown_git_state_is_not_reported_as_clean(
@@ -257,6 +312,23 @@ def _toy_panel_and_targets() -> tuple[pd.DataFrame, pd.DataFrame]:
     bars = synthetic.panel[synthetic.panel["symbol"] == "SPY"].reset_index(drop=True)
     targets = build_targets(target_panel_for(bars, calendar), horizon=1, calendar=calendar)
     return synthetic.panel, targets
+
+
+def _toy_panel_and_targets_by_horizon() -> tuple[pd.DataFrame, dict[int, pd.DataFrame]]:
+    """The toy panel, plus its targets built for each horizon the CLI may be asked for."""
+    from test_truncation_equivalence import _synthetic
+
+    from volab.features.targets import build_targets
+    from volab.sessions import get_calendar
+    from volab.walkforward import target_panel_for
+
+    calendar = get_calendar(load_settings())
+    synthetic = _synthetic(calendar)
+    bars = synthetic.panel[synthetic.panel["symbol"] == "SPY"].reset_index(drop=True)
+    frame = target_panel_for(bars, calendar)
+    return synthetic.panel, {
+        horizon: build_targets(frame, horizon=horizon, calendar=calendar) for horizon in (1, 5)
+    }
 
 
 def test_the_audit_object_the_cli_builds_reports_both_kinds() -> None:
