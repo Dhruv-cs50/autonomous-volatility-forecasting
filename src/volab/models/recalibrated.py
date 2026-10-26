@@ -29,6 +29,9 @@ Witnesses (``tests/test_recalibrated.py``):
 * ``test_the_calibration_sample_never_contains_a_target_that_completed_after_the_origin`` -- the
   sample, read through the model.
 * ``test_every_inner_fit_is_handed_only_what_was_knowable_at_its_own_origin`` and its two plants.
+* the a=0, b=1 test, which also witnesses the scaling in ``mincer_zarnowitz`` (its name is 97
+  characters and does not fit a bullet):
+test_the_recalibrated_forecast_reduces_to_the_base_forecast_when_a_is_zero_and_b_is_one
 * ``test_the_inner_forecasts_are_what_the_walk_forward_itself_produces_at_those_origins`` -- the
   inner pairs equal what ``evaluate`` produces at those origins, compared with ``==``.
 
@@ -67,11 +70,12 @@ from volab.panel import as_of_dates
 # The trailing lattice points the regression looks back over, and the fewest usable pairs it will
 # be fitted on. Both are constructor arguments; these are the shipped values, R96's.
 #
-# 40 because the regression has two parameters and the slope is the one that matters: with the
-# usual twenty observations per parameter that is the floor below which the slope's standard
-# error is wide enough that "recalibrated" would mostly mean "noisier". It is a refusal
-# threshold, not a tuned one -- nothing was searched over -- and ``minimum_pairs`` exists as an
-# argument so a test on a short panel can lower it without a second code path.
+# 60 and 40 are R96's, not chosen here. The reading of 40 offered in support is this module's own
+# gloss and not the design's: two parameters at twenty observations each, below which the slope's
+# standard error is wide enough that "recalibrated" would mostly mean "noisier". It is a refusal
+# threshold and nothing was searched over. ``minimum_pairs`` is an argument so a test on a short
+# panel can lower it without a second code path (the shipped values are exercised by
+# ``test_the_shipped_defaults_conform_where_forty_pairs_are_reachable``).
 CALIBRATION_POINTS = 60
 MINIMUM_PAIRS = 40
 
@@ -108,7 +112,8 @@ def calibration_sample(base: Model, view: TrainingView, points: int) -> pd.DataF
     ``_knowable_at``, the row stripped of its response and ``target_as_of``, and the returns
     stopped there. A pair is dropped, never raised, when the inner fit is unfittable or too thin or
     its forecast is null: a ``SchemaError`` escaping from here would skip the origin for the whole
-    cohort (R87) over one contestant's inner problem.
+    cohort (R87) over one contestant's inner problem. Witness:
+    ``test_an_unfittable_inner_fit_costs_a_pair_and_never_the_origin``.
     """
     training = view.training
     sessions = list(view.returns.index)
@@ -164,6 +169,9 @@ def mincer_zarnowitz(sample: pd.DataFrame) -> tuple[float, float]:
     and ``solve``'s singularity test is relative per *column*, so a forecast column of order 1e-6
     beside a column of ones can read as collinear when it merely has a small relative spread. That
     happened on the synthetic panel. Scaled, "singular" means collinear and not "in small units".
+    Witness: the a=0, b=1 test named in the module docstring
+    -- its toy forecasts have a relative spread near 1e-3 at order 1e-6, and the unscaled fit was
+    refused as singular there.
     ``SchemaError`` from the solve is left to the caller, which turns it into a ``ModelSkip``.
     """
     scale = float(sample["forecast"].abs().mean())

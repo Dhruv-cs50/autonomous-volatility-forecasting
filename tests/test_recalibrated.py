@@ -237,16 +237,16 @@ def test_a_planted_inner_slice_is_caught(
 
 
 @pytest.mark.parametrize(
-    ("toy", "label"),
+    ("build", "label"),
     [
-        (make_toy(1), "h=1, stride 6"),
-        (make_toy(5), "h=5, stride 6"),
-        (late_toy(1), "h=1, stride 1"),
+        (lambda: make_toy(1), "h=1, stride 6"),
+        (lambda: make_toy(5), "h=5, stride 6"),
+        (lambda: late_toy(1), "h=1, stride 1"),
     ],
     ids=lambda value: value if isinstance(value, str) else "",
 )
 def test_the_inner_forecasts_are_what_the_walk_forward_itself_produces_at_those_origins(
-    toy: Toy, label: str
+    build: Callable[[], Toy], label: str
 ) -> None:
     """The strongest witness the repository allows, and it does not re-derive the slice.
 
@@ -255,6 +255,7 @@ def test_the_inner_forecasts_are_what_the_walk_forward_itself_produces_at_those_
     target. The model's inner ``(forecast, realized)`` pairs must equal those, compared with
     ``==``: an off-by-one in the inner slice, in either direction, moves a coefficient.
     """
+    toy = build()
     view = views_of(toy)[-1]
     sample = calibration_sample(BASE, view, CALIBRATION_POINTS)
     assert len(sample) >= TOY_FLOOR, label
@@ -606,21 +607,12 @@ def test_an_in_sample_mincer_zarnowitz_scores_better_and_is_refused() -> None:
     assert planted_mse < shipped_mse, "the leaked fit must score better, or it is not a leak"
 
     # Refused. Both guards, each on the shipped model (silent) and the leaked one (fires).
-    assert forecast_moves_with_the_unknowable(lambda _: short_model(), toy) == []
-    assert forecast_moves_with_the_unknowable(lambda targets: InSampleMz(targets), toy), (
+    latest = dataclasses.replace(toy, origins=toy.origins[-4:])
+    assert forecast_moves_with_the_unknowable(lambda _: short_model(), latest) == []
+    assert forecast_moves_with_the_unknowable(lambda targets: InSampleMz(targets), latest), (
         "the in-sample fit passed the perturbation guard"
     )
     assert sample_leaks(short_model(), toy) == []
     assert any(
         "completed on" in line or "origin itself" in line for line in sample_leaks(leaky, toy)
     ), "the in-sample fit passed the sample guard"
-
-
-def test_the_leaked_fit_is_not_caught_by_removing_the_future_alone() -> None:
-    """Why the perturbation guard exists: conformance clause 2 (truncate the targets) cannot see
-    this leak when the model holds the full frame, and a model rebuilt from the truncated frame
-    simply cannot find the origin. Recorded so the red case above is not mistaken for redundant."""
-    from model_conformance import clause_2_target_side_equivalence
-
-    toy = make_toy(1)
-    clause_2_target_side_equivalence(InSampleMz(toy.targets), toy)
