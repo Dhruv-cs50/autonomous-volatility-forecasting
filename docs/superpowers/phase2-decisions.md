@@ -565,6 +565,9 @@ interpreters does.
 - **R57** The linear algebra is **pure Python**: a 4×4 normal-equation solve by Gaussian
   elimination with partial pivoting. numpy is only a transitive dependency of pandas and is absent
   from `pyproject.toml`, so importing it is forbidden here as everywhere else (Phase 1's R4).
+  **Still true of this solver after R82** admitted numpy and scipy for the model zoo and the
+  comparison layer: the walk-forward's own fit stays pure Python, so nothing scipy does can move
+  a number the point-in-time tests compare byte-exactly.
   Partial pivoting is not decoration — the HAR regressors are squared daily returns of order
   1e-8 — and `test_solve_needs_partial_pivoting_to_be_accurate` carries the red case.
 - **R58** The singularity threshold is relative **per column**, and it took two attempts.
