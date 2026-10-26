@@ -1,8 +1,10 @@
 """R90 -- how wrong ``arch``'s analytic multistep forecast is, and how noisy the simulation is.
 
-Reproduces the three figure blocks recorded under **R90** in
-the Phase 2 completion design (``docs/superpowers/specs/2026-10-25-phase2-completion-design.md``,
-section 4.4), which is why GARCH(1,1) forecasts analytically and GJR and EGARCH are *simulated*:
+Prints the three figure blocks recorded under **R90** in the Phase 2 completion design
+(``docs/superpowers/specs/2026-10-25-phase2-completion-design.md``, section 4.4), which is why
+GARCH(1,1) forecasts analytically and GJR and EGARCH are *simulated*. **The figures depend on the
+series**: the design does not state its series' length or seed, so this prints the same blocks on
+a stated one and the numbers differ from the design's (see the output, not the design, for these):
 
 1. analytic against a 200,000-path simulation, per specification, on a series that is
    **persistent, leveraged and skewed** -- ``alpha=0.05, gamma=0.10, beta=0.87`` with skew-t
@@ -14,9 +16,8 @@ section 4.4), which is why GARCH(1,1) forecasts analytically and GJR and EGARCH 
    paths, at h=22 and h=66.
 
 The series is simulated here and the fit and the forecasts are made by ``volab.models.garch``
-itself, so the figures describe the code that ships and not a second implementation. The
-simulation uses the module's own ``rng`` seeding: six seeds are six different ``symbol`` strings
-fed to the same ``zlib.crc32`` key.
+itself, so the figures describe the code that ships and not a second implementation. Six seeds
+are six different ``symbol`` strings fed to the same ``zlib.crc32`` key.
 
 **It reads no market data and appends nothing to the trial ledger.** It needs no store.
 

@@ -32,7 +32,7 @@ import pandas as pd
 import pytest
 from arch.univariate.distribution import SkewStudent
 from arch.utility.exceptions import ConvergenceWarning, DataScaleWarning, StartingValueWarning
-from model_conformance import conformance_suite, make_toy
+from model_conformance import alone, conformance_suite, make_toy, run_cohort
 
 import volab.models.garch as garch
 from volab.errors import ModelSkip
@@ -426,6 +426,25 @@ def test_a_non_converging_origin_is_a_recorded_skip_not_a_forecast() -> None:
     """``options={"maxiter": 1}`` returns ``convergence_flag == 9``, and that reaches a skip."""
     with pytest.raises(ModelSkip, match="convergence_flag=9"):
         _planted().fit(_view(_returns()))
+
+
+def test_a_non_converging_fit_is_recorded_against_the_model_and_leaves_the_origin() -> None:
+    """The harness half of the name above (R87): not a forecast, but not a deleted origin either.
+
+    Driven through ``evaluate``: every origin stays in ``results`` with a NaN for this model, and
+    ``refusals`` carries ``(origin, model, reason)`` with the optimiser's flag in the reason. A
+    ``SchemaError`` in its place would drop the origin for everyone, which this asserts against.
+    """
+    toy = make_toy(1)
+    evaluation = run_cohort(toy, alone(_planted()))
+    assert evaluation.results, "the origins vanished: a model problem was filed as a data problem"
+    # Every origin an honest model is scored at is still there, since the toy's own window drops
+    # some origins for everybody.
+    assert len(evaluation.results) == len(run_cohort(toy, alone(GARCH11_SKEWT)).results)
+    assert all(math.isnan(r.forecasts["garch11_skewt"]) for r in evaluation.results)
+    assert len(evaluation.refusals) == len(evaluation.results)
+    assert {name for _, name, _ in evaluation.refusals} == {"garch11_skewt"}
+    assert all("convergence_flag=9" in reason for _, _, reason in evaluation.refusals)
 
 
 @pytest.mark.parametrize("caller", ["error", "ignore", "always", "default"])
