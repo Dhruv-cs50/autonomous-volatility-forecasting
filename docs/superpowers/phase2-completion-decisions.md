@@ -50,10 +50,30 @@ against is unchanged, and it is Phase 1's closing one:
   **statistical comparison** layer, which are new packages and own no part of the point-in-time
   guarantee.
 
+  **The witness, which this ruling claimed before it had one.** The sentence below used to end
+  "which is why the ban keeps a witness rather than becoming a convention", and there was no
+  such test: `grep -rn "numpy\|scipy" tests/` found three comments. An architect review caught
+  it — **R32 turned on the ruling that cites R32, for the second time in this phase** after R79
+  did the same thing. The ban is now scanned:
+  `test_the_point_in_time_path_imports_no_numpy_or_scipy` walks the AST of every module in
+  `features/`, plus `panel.py`, `store.py`, `walkforward/__init__.py` and `models/base.py`, with
+  `test_the_numeric_scan_detects_each_spelling` as its red case and
+  `test_the_sealed_set_is_not_empty_and_holds_what_it_claims` guarding against a rename quietly
+  emptying the set. Imports only, not `sys.modules`: pandas imports numpy itself, so a
+  module-object check would fire everywhere, and `Series.to_numpy()` is pandas' own API reaching
+  no numpy name.
+
   *Cost if wrong:* a reader of R4 who does not reach this ruling believes a ban that has since
-  been scoped. Mitigated by amending R4 in place with a pointer here. The sharper risk is scope
-  creep — numpy quietly appearing in the feature path because it is now installed — which is why
-  the ban keeps a witness rather than becoming a convention.
+  been scoped. Mitigated by amending R4 in place with a pointer here. The sharper risk was scope
+  creep — numpy quietly appearing in the feature path because it is now installed — and that is
+  now a failing test rather than a convention.
+
+  **scipy is declared too**, which the first version of this ruling admitted in prose and left
+  out of `pyproject.toml`: it was present only as `arch`'s transitive dependency, and
+  `mypy --strict` failed on it (`Library stubs not installed for "scipy"`). Declared, with
+  `scipy-stubs` in the dev group rather than an `ignore_missing_imports` override — the override
+  was the precedent set for `exchange_calendars` and `pyarrow`, but it makes every scipy call
+  `Any`, and a statistical comparison layer is the last place to give up type checking.
 
 - **R83 — GARCH is fitted on returns rescaled by 100, and the variance divided back by 1e4.**
   Measured, not assumed, because `pyproject.toml` sets `filterwarnings = ["error"]` and a warning
@@ -77,6 +97,16 @@ against is unchanged, and it is Phase 1's closing one:
   reports how many — and R56's rule applies unchanged: an origin is scored or recorded as
   skipped, never silently dropped. Adding a `filterwarnings` entry to make a fit quiet would be
   the opposite of this project's posture.
+
+  **Amended by R89 after measurement: `rescale` is left at its default and both `True` and
+  `False` are forbidden.** This is the trap a reader of this ruling would otherwise walk into.
+  `arch_model(..., rescale=False)` **emits nothing at all** on a badly scaled series, so it does
+  not fix the scale — it silences the warning that tells you the scale is wrong, and with it this
+  ruling's own red case. `rescale=True` silently sets `scale=100.0`, doing the rescaling behind
+  your back so the ÷1e4 below would then be applied twice. Also measured: the warning comes from
+  `fit()`, not the constructor, and `show_warning=False` suppresses the convergence branch
+  entirely — which is why R91 detects non-convergence by `convergence_flag != 0` rather than by
+  catching a warning. See R89 and R91 in the design doc.
 
   *Cost if wrong:* a factor of 1e4 in the wrong direction is a forecast four orders of magnitude
   out, which QLIKE and MSE would both show immediately rather than subtly.
@@ -118,3 +148,45 @@ against is unchanged, and it is Phase 1's closing one:
   *Cost if wrong:* no MLflow UI, and a tracker the project maintains itself. The ledger is
   ~100 lines of append-only JSON with its own tests, so the maintenance is small; the thing
   genuinely given up is MLflow's run comparison view.
+
+---
+
+## R85-R97 — ratified, and recorded where they were written
+
+US-3.1's design is `docs/superpowers/specs/2026-10-25-phase2-completion-design.md`, and it
+carries thirteen rulings with their derivations, their probes and their costs. **They are
+ratified as written and are not copied here.** Duplicating them would create two texts that can
+disagree, which is the defect this project has already hit twice — R49's section-number
+correction, and the three places R38's timing went stale. One home, indexed here:
+
+| Ruling | What it settles | Section |
+|---|---|---|
+| **R85** | one interface, `fit(view) -> forecast(h)`, over a view of everything knowable at the origin | 3.2 |
+| **R86** | `MODELS` frozen at the three baseline names; the contestant set is a named cohort | 3.3 |
+| **R87** | a structural refusal skips the origin, a model's own refusal is recorded against it | 3.4 |
+| **R88** | the h-step forecast is the **sum** of per-step conditional variances, `mean="Zero"`, ÷1e4 once | 4.2 |
+| **R89** | `rescale` stays at its default; `True` and `False` are both forbidden | 4.3 |
+| **R90** | GARCH(1,1) analytic; **GJR and EGARCH simulate**, because the analytic path is 17.7% low | 4.4 |
+| **R91** | non-convergence is `convergence_flag != 0`, under a scoped warning filter | 4.5 |
+| **R92** | rectangular HAC truncated at `q = ⌊(h−1)/s⌋`, paired with Harvey at `h_eff = q+1` | 5.2 |
+| **R93** | block length `max(q+1, ⌈Politis–White on loss **levels**⌉)` — levels, not differentials | 5.3 |
+| **R94** | `n_eff = n/(q+1)` printed beside every figure; **h=66 reports MCS at 25% only** | 5.4 |
+| **R95** | the comparison layer hands results to a `Sink` and never opens a path itself | 6 |
+| **R96** | the MZ sample is an inner walk-forward at the outer stride, from knowable rows only | 7 |
+| **R97** | the per-configuration driver is extracted, so one loop serves the CLI and the shootout | 8 |
+
+**Three of them overturned the architect's own first draft**, which is recorded because a design
+that was revised under measurement is worth more on the record than one that was not. The first
+pass judged `arch`'s analytic GJR multistep forecast accurate to 0.0147% — measured on **iid
+Gaussian** returns, the single case where a symmetric leverage recursion cannot fail. On a
+persistent leveraged skew-t series it is **17.7% low** at h=66, 39.737 against 48.288 from
+200,000 paths. The same pass put the bootstrap block length on the loss *differentials*, where
+the shared overlap cancels: Politis–White returns 14.21 on the loss levels and **0.20** on the
+differential of the same pair, so estimating from differentials would have resampled heavily
+overlapping losses as if they were independent.
+
+**What that costs, stated because it is not small.** Simulation at S=100,000 — chosen because the
+Monte-Carlo spread at S=10,000 was 0.27-1.40%, inside the 0.2-1.5% band R72 set as this
+project's floor for a difference worth believing — makes the full shootout roughly **2.5 hours
+instead of about 15 minutes**. That is the price of not shipping a forecast that is biased by
+more than the leak this project was built to catch.

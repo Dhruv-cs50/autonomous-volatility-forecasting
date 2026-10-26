@@ -255,3 +255,104 @@ def test_the_unlock_scan_ignores_prose_that_only_names_it(source: str) -> None:
     this project has been wrong about before.
     """
     assert _unlocks(source) == []
+
+
+# ---------------------------------------------------------------------------
+# The numeric ban, where it is still aimed. R82 admitted numpy and scipy for the model zoo and
+# the comparison layer and said the ban "keeps a witness rather than becoming a convention" --
+# and then shipped without one, which an architect review caught. R32 turned on the ruling that
+# cites R32, for the second time in this project. This is the witness.
+# ---------------------------------------------------------------------------
+
+# The point-in-time path: the modules whose output the byte-exact comparator and truncation
+# equivalence compare. Nothing here may reach for numpy or scipy, whatever is installed.
+SEALED: tuple[str, ...] = (
+    "panel.py",
+    "store.py",
+    "walkforward/__init__.py",
+    "models/base.py",
+)
+# Every module under this subpackage is sealed too, named by directory so a new feature module
+# is covered the day it is written rather than the day someone remembers to list it.
+SEALED_PACKAGES: tuple[str, ...] = ("features",)
+
+NUMERIC_ROOTS = {"numpy", "scipy"}
+
+
+def _sealed_modules() -> list[Path]:
+    found = [SRC / name for name in SEALED if (SRC / name).is_file()]
+    for package in SEALED_PACKAGES:
+        found.extend(sorted((SRC / package).rglob("*.py")))
+    return found
+
+
+def _numeric_imports(source: str) -> list[str]:
+    """Every direct import of numpy or scipy in ``source``.
+
+    Imports only, deliberately. ``Series.to_numpy()`` is pandas' own API and is used in this
+    repository; it reaches no numpy *name*. And the check cannot be done on ``sys.modules``,
+    because pandas imports numpy itself -- it would fire on every module in the project.
+    """
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found.extend(
+                f"imports {alias.name}"
+                for alias in node.names
+                if alias.name.split(".")[0] in NUMERIC_ROOTS
+            )
+        elif isinstance(node, ast.ImportFrom):
+            root = (node.module or "").split(".")[0]
+            if root in NUMERIC_ROOTS:
+                found.append(f"imports from {node.module}")
+    return found
+
+
+def test_the_sealed_set_is_not_empty_and_holds_what_it_claims() -> None:
+    """Guards against the scan quietly covering nothing after a rename."""
+    sealed = {path.relative_to(SRC).as_posix() for path in _sealed_modules()}
+    assert {"panel.py", "store.py", "walkforward/__init__.py"} <= sealed
+    assert any(name.startswith("features/") for name in sealed), "the feature package vanished"
+    assert sealed, "the sealed set is empty, so this ban checks nothing"
+
+
+@pytest.mark.parametrize("module", _sealed_modules(), ids=lambda p: p.relative_to(SRC).as_posix())
+def test_the_point_in_time_path_imports_no_numpy_or_scipy(module: Path) -> None:
+    """R82's ban, where R4 and R57 aimed it: the path the guarantee rests on stays pure pandas."""
+    found = _numeric_imports(module.read_text())
+    assert not found, (
+        f"{module.relative_to(SRC)}: {found}. R82 admits numpy and scipy for the model zoo and "
+        "the comparison layer only; this path's output is compared byte-exactly."
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("import numpy\n", "imports numpy"),
+        ("import numpy as np\n", "imports numpy"),
+        ("import scipy.stats\n", "imports scipy.stats"),
+        ("from numpy import array\n", "imports from numpy"),
+        ("from scipy.optimize import minimize\n", "imports from scipy.optimize"),
+        ("from scipy import stats\n", "imports from scipy"),
+    ],
+    ids=lambda value: value.strip().replace("\n", " ; "),
+)
+def test_the_numeric_scan_detects_each_spelling(source: str, expected: str) -> None:
+    """The red case. Without it this is a ban nobody has watched fail."""
+    assert expected in _numeric_imports(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import pandas as pd\nvalues = frame['x'].to_numpy()\n",
+        "# numpy is deliberately not imported here\nimport pandas as pd\n",
+        '"""This module imports no numpy."""\nimport pandas as pd\n',
+        "from volab.store import load_panel\n",
+    ],
+    ids=("to_numpy is pandas' own API", "a comment", "a docstring", "an ordinary import"),
+)
+def test_the_numeric_scan_ignores_prose_and_pandas_own_api(source: str) -> None:
+    """``to_numpy()`` reaches no numpy name, and prose naming the ban is not the ban."""
+    assert _numeric_imports(source) == []

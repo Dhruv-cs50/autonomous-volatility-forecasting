@@ -81,8 +81,10 @@ TRIAL_LEDGER = Path("data") / "trials.jsonl"
 
 
 # ---------------------------------------------------------------------------
-# Linear algebra, in pure Python. numpy is a transitive dependency of pandas and is absent from
-# pyproject.toml, so importing it is forbidden here as everywhere else in this package.
+# Linear algebra, in pure Python. numpy is declared in pyproject.toml since R82, but it stays
+# forbidden here: this module is on the sealed point-in-time path, whose output the byte-exact
+# comparator checks, so the solve is ours. R57 explains the pivoting;
+# test_the_point_in_time_path_imports_no_numpy_or_scipy is the witness for the ban.
 # ---------------------------------------------------------------------------
 
 
