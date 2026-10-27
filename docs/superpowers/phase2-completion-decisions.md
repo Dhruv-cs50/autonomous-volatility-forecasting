@@ -392,3 +392,69 @@ committed probe rather than taken from the reports.
   kept as a passing red case (`volab.panel's pure frame helpers`), so the ban cannot quietly
   broaden again. *Cost if wrong:* a contestant with its own read path, invisible to the primary
   point-in-time test.
+
+---
+
+## R107-R110 — the comparison layer's rulings, and three more places the design was wrong
+
+US-3.4 planted **24 defects** and reported that two survived until it closed them, which is the
+kind of number that makes a mutation claim worth believing. It anchored the hard part on closed
+forms rather than on plausibility: at `q = 0` the headline DM equals `scipy.stats.ttest_1samp` to
+1e-12, and on the alternating series `d = c + (−1)^i` the rectangular `V`, the Bartlett `V` and
+the non-PSD case are all exact arithmetic. Gates verified by the coordinator: **1040 tests**,
+`mypy` clean over 35 modules, `data/trials.jsonl` still 72 lines.
+
+- **R107 — a model is in the confidence set when `p > α`, which is `arch`'s rule and not
+  Hansen-Lunde-Nason's `≥`.** They differ only at an exact tie, roughly one draw in ten thousand
+  with 10,000 replications, and the ruling is to follow the implementation that computes the
+  p-value rather than to post-process its output into a different convention. Both a tie test and
+  a surviving mutation pin it — the mutation is how the difference was found at all. *Cost if
+  wrong:* a boundary case excluded where the paper would include it, in a set already reported at
+  two levels.
+
+- **R108 — five refusals the design did not name, each detected rather than warned about.**
+  Politis-White divides by zero at `n ≤ 10` (measured), so the bootstrap refuses below 11
+  origins; DM refuses at `n ≤ q+1`; identical or constant loss series refuse for MCS and SPA,
+  because `arch` otherwise emits a `RuntimeWarning` and R101 is the precedent for detecting the
+  condition instead of catching the warning; and `loss_series` refuses a cohort label that does
+  not match its evaluation.
+
+  The fifth is a **generalisation beyond the design, and the right direction**: DM significance is
+  withheld wherever `n_eff < 20`, not only at h=66, with `dm_significance_claimed` and a per-pair
+  `claimed` flag on the record. R94 derived the threshold for the MCS and named h=66; the same
+  thinness applies to DM at any `(h, stride)` reaching it. *Cost if wrong:* significance withheld
+  on a window someone later judges adequate — recoverable, and the opposite error is not.
+
+- **R109 — only the sink opens a path, and the scan that proves it cannot go blind.**
+  `test_only_the_sink_opens_a_path` is an AST scan over every `compare/*.py` banning `open`,
+  `write_*`, `read_*`, `to_json`, `to_csv`, `to_parquet`, `mkdir` and `dump`, with a red case per
+  spelling — **and it requires `sink.py` itself to still show `.open` and `.mkdir`**, so the day
+  the writer moves, the scan fails instead of passing over an empty set. That second half is the
+  lesson from `test_store_is_actually_exempt` and from
+  `test_the_sealed_set_is_not_empty_and_holds_what_it_claims`, applied a third time.
+
+  Confirmed behaviourally as well as structurally: a run through an in-memory `Sink` creates
+  nothing under the storage root, which is what keeps `MlflowSink` reachable after R84 refused
+  MLflow; and after `append_comparisons`, `count_trials` is **0**, so a comparison can never
+  reach the trial ledger and corrupt the one number the write-up reports.
+
+- **R110 — three more corrections to the design, found by building it.** The pattern from R100-R103
+  continues, and the count now stands at six of the architect's rulings corrected by the
+  implementers who used them.
+
+  1. **§5.3 is wrong about where the `q+1` floor bites.** It says the floor matters at h=1 and
+     h=5; at stride 5, `q+1` is 1 at both, so it does nothing there. It binds at **h=22 and
+     h=66**, where `q+1` is 5 and 14.
+  2. **§7 names `test_the_refusal_path_still_flushes_the_trials_already_counted`**, which **R99
+     deleted** — it was the test whose isolation hid the ledger over-count. The parametrised
+     `test_a_later_refusal_leaves_the_earlier_trials_counted_exactly_once` stands in its place,
+     now running against both entry points.
+  3. **R93's 14.21-against-0.20 is series-specific**, as R102 already said of R90's figures. On
+     the implementer's own MA(13) pair at n=238 Politis-White gives **15.51 and 15.72 on the
+     levels against 0.34 on the differential**, and three seeds put the differential at 0.34,
+     0.89 and 1.04. The *conclusion* — estimate the block length from levels, never differentials,
+     because the shared overlap cancels — is unchanged and is what the test asserts (levels > 13,
+     differential < 2). Only the two decimals were ever specific to one series.
+
+  *Cost if wrong:* a reader takes a figure for a property. Which is the whole reason this document
+  separates "a `tools/` command", "an existing test id" and "historical" at the top.
