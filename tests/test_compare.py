@@ -39,7 +39,12 @@ import volab.compare.__main__ as compare_cli
 import volab.walkforward as wf
 import volab.walkforward.__main__ as walkforward_cli
 from volab.compare import MC_ERROR_CEILING_PERCENT, analyse, describe, multiple
-from volab.compare.cohorts import COHORTS, SHOOTOUT, monte_carlo_error
+from volab.compare.cohorts import (
+    COHORTS,
+    MONTE_CARLO_ERROR_SOURCE,
+    SHOOTOUT,
+    monte_carlo_error,
+)
 from volab.compare.dm import (
     Column,
     bartlett_lag,
@@ -779,6 +784,7 @@ def test_spa_names_a_benchmark_the_series_does_not_hold() -> None:
 # ---------------------------------------------------------------------------
 
 BASELINE = ("har_levels", "har_semilog", "random_walk")
+SOURCE = "synthetic probe series, not SPY"
 
 
 def _big_evaluation(
@@ -882,7 +888,9 @@ def test_analyse_records_an_empty_configuration_rather_than_failing() -> None:
 
 
 def test_the_record_is_strict_json_and_carries_what_the_design_names() -> None:
-    comparison = _comparison(monte_carlo_error={"rival": 0.514, "random_walk": None})
+    comparison = _comparison(
+        monte_carlo_error={"rival": 0.514, "random_walk": None}, monte_carlo_source=SOURCE
+    )
     record = comparison.record()
     text = json.dumps(record, allow_nan=False)
     assert json.loads(text) == record
@@ -934,7 +942,8 @@ def test_a_simulated_contestant_above_the_error_floor_has_no_significance_claime
     printed lines say so; the unmeasured and the below-floor are not flagged."""
     assert MC_ERROR_CEILING_PERCENT == 1.5
     comparison = _comparison(
-        monte_carlo_error={"har_levels": 0.514, "rival": 3.273, "random_walk": None}
+        monte_carlo_error={"har_levels": 0.514, "rival": 3.273, "random_walk": None},
+        monte_carlo_source=SOURCE,
     )
     assert comparison.unclaimed == ("rival",)
     assert comparison.record()["unclaimed"] == ["rival"]
@@ -964,7 +973,10 @@ def test_every_line_naming_a_simulated_contestant_carries_its_error_in_or_out_of
     """
     series = _named_contenders(247, 4, ("har", "garch", "gjr", "egarch"), (0.0, 0.0, 0.01, 3.0))
     comparison = analyse(
-        series, benchmarks=("har",), monte_carlo_error={"gjr": 0.207, "egarch": 3.273}
+        series,
+        benchmarks=("har",),
+        monte_carlo_error={"gjr": 0.207, "egarch": 3.273},
+        monte_carlo_source=SOURCE,
     )
     assert comparison.claims_withheld is False
     assert all("egarch" not in members for members in comparison.mcs.members.values()), (
@@ -985,14 +997,18 @@ def test_every_line_naming_a_simulated_contestant_carries_its_error_in_or_out_of
         if "egarch" in line:
             assert "egarch 3.273%, no claim" in line, line
             assert "=>" not in line, "a verdict was stated about a contestant with no claim"
-    printed = [part for line in lines for part in re.findall(r"\[MC error: ([^\]]*)\]", line)]
+    printed = [
+        part for line in lines for part in re.findall(r"\[MC error \([^)]*\): ([^\]]*)\]", line)
+    ]
     names = {item.split()[0] for part in printed for item in part.split("; ")}
     assert names == {"gjr", "egarch"}, "only simulated contestants carry a simulation error"
 
 
 def test_a_verdict_is_stated_only_where_it_is_claimed() -> None:
     series = _named_contenders(247, 4, ("har", "garch", "gjr", "egarch"), (0.0, 0.0, 0.01, 3.0))
-    comparison = analyse(series, monte_carlo_error={"gjr": 0.207, "egarch": 3.273})
+    comparison = analyse(
+        series, monte_carlo_error={"gjr": 0.207, "egarch": 3.273}, monte_carlo_source=SOURCE
+    )
     by_pair = {(p.left, p.right): p for p in comparison.pairs}
     clear = by_pair[("har", "gjr")]
     assert comparison.pair_claimed(clear)
@@ -1598,7 +1614,89 @@ def test_the_drivers_trial_lines_carry_the_error_of_a_simulated_contestant(
     shootout.main(["--symbol", "SPY", "--horizon", "1", *WINDOW])
     printed = capsys.readouterr().out.splitlines()
     scaled = [line for line in printed if line.startswith("  rw_scaled ")]
-    assert len(scaled) == len(LOSSES) and all(line.endswith("[MC error 0.500%]") for line in scaled)
+    assert len(scaled) == len(LOSSES) and all(
+        line.endswith(f"[MC error 0.500% ({MONTE_CARLO_ERROR_SOURCE})]") for line in scaled
+    )
     plain = [line for line in printed if line.startswith("  har_levels ")]
     assert plain and not any("MC error" in line for line in plain)
     assert any(line.startswith("  Monte Carlo error (R102)") for line in printed)
+
+
+# -- provenance of the Monte Carlo error, and SPA under the same n_eff rule ---------------
+
+
+def test_a_monte_carlo_error_cannot_be_recorded_without_the_series_it_came_from() -> None:
+    """``3.273%`` beside an SPY result reads as EGARCH's error on SPY. It was measured on a
+    synthetic probe series (R102), so the number does not travel without that."""
+    series = _contenders(60, 0)
+    with pytest.raises(ValueError, match="series"):
+        analyse(series, monte_carlo_error={"a": 0.5})
+    with pytest.raises(ValueError, match="series"):
+        analyse(series, monte_carlo_error={"a": 0.5}, monte_carlo_source="")
+    assert analyse(series).monte_carlo_source is None, "no simulated contestant, nothing to source"
+
+
+def test_every_printed_monte_carlo_error_names_the_series_it_was_measured_on() -> None:
+    comparison = _comparison(
+        _big_evaluation(),
+        monte_carlo_error={"rival": 3.273, "har_levels": None},
+        monte_carlo_source="the probe's synthetic series, not SPY",
+    )
+    lines = describe(comparison)
+    mentioning = [line for line in lines if "3.273%" in line]
+    assert len(mentioning) >= 4, "cohort-wide lines, a pair line and the summary"
+    assert all("the probe's synthetic series, not SPY" in line for line in mentioning), mentioning
+    assert (
+        comparison.record()["monte_carlo_error_source"] == "the probe's synthetic series, not SPY"
+    )
+
+
+def test_the_shipped_source_says_it_is_not_the_run_s_series() -> None:
+    """When US-3.7 re-measures on the real panel this constant is what changes, and the printed
+    form follows it; until then it must not read as SPY's."""
+    assert "not SPY" in MONTE_CARLO_ERROR_SOURCE and "probe" in MONTE_CARLO_ERROR_SOURCE
+
+
+def test_spa_is_withheld_where_the_effective_sample_is_thin_exactly_as_dm_is() -> None:
+    """SPA bootstraps the same overlapping series, so n_eff = 17 at h=66 does not become enough
+    because the null changed. The ``claimed`` machinery is reused, not a second mechanism."""
+    thin = analyse(_series_with_benchmarks(238, 13))
+    assert thin.claims_withheld
+    assert all(spa.refusal is None for spa in thin.spa), "the fixture must produce SPA p-values"
+    assert not any(thin.spa_claimed(spa) for spa in thin.spa)
+    assert all(entry["claimed"] is False for entry in thin.record()["spa"])  # type: ignore[union-attr]
+    spa_lines = [line for line in describe(thin) if line.lstrip().startswith("SPA")]
+    assert len(spa_lines) == 2
+    assert all("n_eff=17.0" in x and "no significance claimed" in x for x in spa_lines)
+    assert not any("=>" in line for line in spa_lines)
+
+
+def test_spa_states_a_verdict_where_the_sample_supports_one() -> None:
+    thick = analyse(_series_with_benchmarks(247, 4))
+    assert not thick.claims_withheld
+    spa_lines = [line for line in describe(thick) if line.lstrip().startswith("SPA")]
+    assert all("no significance claimed" not in line and "=>" in line for line in spa_lines)
+    assert all(entry["claimed"] is True for entry in thick.record()["spa"])  # type: ignore[union-attr]
+
+
+def test_spa_is_withheld_when_a_contestant_it_tests_has_no_claim() -> None:
+    """The test is over the whole cohort, so an over-floor contestant is inside it."""
+    series = _series_with_benchmarks(247, 4)
+    flagged = analyse(
+        series,
+        monte_carlo_error={"gjr11_skewt": 3.273},
+        monte_carlo_source=SOURCE,
+    )
+    assert not flagged.claims_withheld and flagged.unclaimed == ("gjr11_skewt",)
+    assert not any(flagged.spa_claimed(spa) for spa in flagged.spa)
+    lines = [line for line in describe(flagged) if line.lstrip().startswith("SPA")]
+    assert all("no claim" in line for line in lines)
+
+
+def _series_with_benchmarks(n: int, q: int) -> LossSeries:
+    """Contestants carrying the two SPA benchmark names and a simulated one."""
+    base = _contenders(n, q, gaps=(0.0, 0.01, 0.02, 3.0))
+    names = ("har_levels", "random_walk", "gjr11_skewt", "worse")
+    return dataclasses.replace(
+        base, values={name: v for name, v in zip(names, base.values.values(), strict=True)}
+    )

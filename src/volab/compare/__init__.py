@@ -48,6 +48,7 @@ def analyse(
     series: LossSeries,
     *,
     monte_carlo_error: Mapping[str, float | None] | None = None,
+    monte_carlo_source: str | None = None,
     benchmarks: tuple[str, ...] = BENCHMARKS,
     reps: int = REPS,
     seed: int = SEED,
@@ -56,7 +57,9 @@ def analyse(
 
     ``monte_carlo_error`` maps each simulated contestant to its measured error in percent, or to
     ``None`` where none was measured. The caller supplies it because the figures belong to the
-    model layer and this module imports no model.
+    model layer and this module imports no model. ``monte_carlo_source`` names the series they
+    were measured on and is **required with them**: the number is printed beside a result, and
+    without its source it reads as that result's own error.
     """
     q = overlap_lag(series.horizon, series.stride)
     pairs = pairwise(series, q=q)
@@ -83,6 +86,11 @@ def analyse(
                 )
             )
     errors = dict(monte_carlo_error or {})
+    if errors and not monte_carlo_source:
+        raise ValueError(
+            "a Monte Carlo error needs the series it was measured on (monte_carlo_source): "
+            "printed bare it reads as the error on the series being compared"
+        )
     block = mcs.block or next((s.block for s in spa if s.block is not None), None)
     return Comparison(
         symbol=series.symbol,
@@ -105,6 +113,7 @@ def analyse(
         mcs=mcs,
         spa=tuple(spa),
         monte_carlo_error=errors,
+        monte_carlo_source=monte_carlo_source if errors else None,
         unclaimed=tuple(
             name
             for name, value in errors.items()
@@ -148,7 +157,9 @@ def _error_parts(comparison: Comparison, names: Sequence[str]) -> list[str]:
 
 def _error_text(comparison: Comparison, names: Sequence[str]) -> str:
     parts = _error_parts(comparison, names)
-    return f"  [MC error: {'; '.join(parts)}]" if parts else ""
+    if not parts:
+        return ""
+    return f"  [MC error ({comparison.monte_carlo_source}): {'; '.join(parts)}]"
 
 
 def _pair_line(comparison: Comparison, pair: PairResult) -> str:
@@ -218,11 +229,16 @@ def describe(comparison: Comparison, *, trials: int | None = None) -> list[str]:
                 f"  SPA (benchmark {spa.benchmark}): REFUSED [{tag}] -- {spa.refusal}{cohort_wide}"
             )
         else:
-            lines.append(
+            line = (
                 f"  SPA (benchmark {spa.benchmark}): p lower={_number(spa.lower, '.4f')} "
                 f"consistent={_number(spa.consistent, '.4f')} "
-                f"upper={_number(spa.upper, '.4f')} [{tag}]{cohort_wide}"
+                f"upper={_number(spa.upper, '.4f')} [{tag}]"
             )
+            if c.claims_withheld:
+                line += f"  [n_eff={c.n_eff:.1f}: no significance claimed]"
+            line += cohort_wide
+            verdict = c.spa_verdict(spa)
+            lines.append(line + (f"  => {verdict}" if verdict else ""))
     lines.append(
         f"  DM: {c.dm_tests} pairwise test(s), no selection made on their p-values; "
         "d = left - right, so a negative statistic favours left"
@@ -231,8 +247,8 @@ def describe(comparison: Comparison, *, trials: int | None = None) -> list[str]:
     if c.monte_carlo_error:
         parts = _error_parts(c, tuple(c.monte_carlo_error))
         lines.append(
-            f"  Monte Carlo error (R102), no claim above {MC_ERROR_CEILING_PERCENT:g}%: "
-            + "; ".join(parts)
+            f"  Monte Carlo error (R102), measured on the {c.monte_carlo_source}, "
+            f"no claim above {MC_ERROR_CEILING_PERCENT:g}%: " + "; ".join(parts)
         )
     return lines
 

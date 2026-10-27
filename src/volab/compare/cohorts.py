@@ -37,6 +37,13 @@ SHOOTOUT = Cohort(
 # recorded run to be confused with something else.
 COHORTS: dict[str, Cohort] = {SHOOTOUT.name: SHOOTOUT}
 
+# Where the figures below were measured, **printed beside every one of them**. They come from the
+# probe's synthetic persistent, leveraged, skew-t series -- not from SPY, QQQ or any series a
+# shootout runs on -- so a bare ``3.273%`` beside a real result would read as that result's own
+# error: true of the probe, false of the run. The day the figures are re-measured on the real
+# panel, this string and the table change together, and the printed form follows.
+MONTE_CARLO_ERROR_SOURCE = "synthetic probe series, not SPY"
+
 # Percent, ``(contestant, horizon) -> sd over six seeds as a percentage of the mean``, at
 # S = 100_000. R102's table, re-measured by the coordinator from the committed probe.
 MONTE_CARLO_ERROR_PERCENT: dict[tuple[str, int], float] = {

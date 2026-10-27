@@ -34,7 +34,12 @@ from pathlib import Path
 import pandas as pd
 
 from volab.compare import analyse, describe
-from volab.compare.cohorts import COHORTS, SHOOTOUT, monte_carlo_error
+from volab.compare.cohorts import (
+    COHORTS,
+    MONTE_CARLO_ERROR_SOURCE,
+    SHOOTOUT,
+    monte_carlo_error,
+)
 from volab.compare.series import loss_series
 from volab.compare.sink import Comparison, JsonlSink, Sink
 from volab.config import Settings, load_settings
@@ -87,7 +92,8 @@ def _report(errors: dict[str, float | None], line: str) -> None:
     words = line.split()
     if words and words[0] in errors:
         value = errors[words[0]]
-        line += "  [MC error not measured]" if value is None else f"  [MC error {value:.3f}%]"
+        shown = "not measured" if value is None else f"{value:.3f}%"
+        line += f"  [MC error {shown} ({MONTE_CARLO_ERROR_SOURCE})]"
     print(line)
 
 
@@ -158,7 +164,11 @@ def _run(settings: Settings, arguments: argparse.Namespace, sink: Sink) -> int:
                 cohort=cohort.name,
             )
             comparisons: list[Comparison] = [
-                analyse(loss_series(evaluation, loss, cohort=cohort.name), monte_carlo_error=errors)
+                analyse(
+                    loss_series(evaluation, loss, cohort=cohort.name),
+                    monte_carlo_error=errors,
+                    monte_carlo_source=MONTE_CARLO_ERROR_SOURCE,
+                )
                 for loss in LOSSES
             ]
             comparisons_written += sink.append_comparisons(

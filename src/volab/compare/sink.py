@@ -100,7 +100,7 @@ def _mcs(mcs: McsResult) -> dict[str, object]:
     }
 
 
-def _spa(spa: SpaResult) -> dict[str, object]:
+def _spa(spa: SpaResult, claimed: bool) -> dict[str, object]:
     return {
         "benchmark": spa.benchmark,
         "n_eff": _finite(spa.n_eff),
@@ -109,6 +109,8 @@ def _spa(spa: SpaResult) -> dict[str, object]:
         "consistent": _finite(spa.consistent),
         "upper": _finite(spa.upper),
         "refusal": spa.refusal,
+        # Whether a verdict may be stated (see ``Comparison.spa_claimed``).
+        "claimed": claimed,
     }
 
 
@@ -143,6 +145,8 @@ class Comparison:
     spa: tuple[SpaResult, ...]
     # Percent, for each simulated contestant in the cohort; ``None`` where it was never measured.
     monte_carlo_error: dict[str, float | None]
+    # The series those errors were measured on, printed beside each (``None`` with no errors).
+    monte_carlo_source: str | None
     # Contestants whose measured error is above the floor: no significance is claimed for them.
     unclaimed: tuple[str, ...]
     # Why the whole record is empty, if it is.
@@ -177,6 +181,19 @@ class Comparison:
         better = pair.left if verdict == -1 else pair.right
         return f"{better} significantly better at 5% (both columns)"
 
+    def spa_claimed(self, spa: SpaResult) -> bool:
+        """SPA bootstraps the same overlapping series DM does, so it is withheld on the same terms:
+        where ``n_eff`` is too thin, and where a contestant in the tested cohort has no claim."""
+        return spa.refusal is None and not self.claims_withheld and not self.unclaimed
+
+    def spa_verdict(self, spa: SpaResult) -> str | None:
+        """The 5% reading of the consistent p-value, only where :meth:`spa_claimed`."""
+        if not self.spa_claimed(spa) or spa.consistent is None:
+            return None
+        if spa.consistent < 0.05:
+            return f"some contestant beats {spa.benchmark} at 5% (consistent p)"
+        return f"no contestant shown to beat {spa.benchmark} at 5% (consistent p)"
+
     def record(self) -> dict[str, object]:
         return {
             "symbol": self.symbol,
@@ -198,8 +215,9 @@ class Comparison:
             "dm_significance_claimed": not self.claims_withheld,
             "dm": [_pair(pair, self.pair_claimed(pair)) for pair in self.pairs],
             "mcs": _mcs(self.mcs),
-            "spa": [_spa(spa) for spa in self.spa],
+            "spa": [_spa(spa, self.spa_claimed(spa)) for spa in self.spa],
             "monte_carlo_error": {name: _finite(v) for name, v in self.monte_carlo_error.items()},
+            "monte_carlo_error_source": self.monte_carlo_source,
             "unclaimed": list(self.unclaimed),
             "refusal": self.refusal,
         }
