@@ -336,3 +336,59 @@ committed probe rather than taken from the reports.
   contestant inherits the weak clause**, so the strengthening is US-3.3b, below. Recorded because
   the recalibrated implementer deleted a test that pinned the blind spot and reported it instead,
   which was the right call and would otherwise have left no trace.
+
+---
+
+## R105, R106 — how far the conformance clause reaches, and the hole it made me look for
+
+- **R105 — clause 7 closes the same-object case of R104, and the rest is named rather than
+  implied.** `clause_7_unknowable_targets_are_out_of_reach` scales every target dated after the
+  origin — the origin's own included — **in place, in `toy.targets` itself**, and requires the
+  contestant's forecast to be unchanged, restoring the cells in a `finally` and asserting the
+  frame came back bit-equal. Scaling rather than removing is what makes it work: a model holding
+  the frame sees changed values, where removal can be invisible to it. It is wired into
+  `conformance_suite` with the signature unchanged, so all seven existing contestants and every
+  future one inherit it with no edits — and all seven pass. Cost is about clause 2's, measured per
+  contestant.
+
+  **What it does not reach**, stated because an unstated limit is how R104 happened in the first
+  place: a contestant that `.copy()`d the frame at construction, derived a Series from it (pandas
+  3.0.6 copy-on-write separates that from later writes to the parent), or loaded its own frame.
+  Those need the model **rebuilt** from a perturbed frame, which is what
+  `test_recalibrated.py`'s `forecast_moves_with_the_unknowable` guard does for one contestant.
+
+  **Why that is not simply added as an optional argument**, which is the implementer's argument
+  and it is correct: an opt-in `rebuild=` would be skipped by exactly the contestant that needed
+  it, which is R104 over again. Closing the class needs it **mandatory**, so no contestant can
+  decline, and that is a signature change touching three caller files — **US-3.3c**, below. Note
+  what it would and would not buy: none of the seven current contestants takes a frame at
+  construction, so for all of them a mandatory factory passes trivially. Its value is entirely
+  prospective, against the contestant someone writes next.
+  *Cost if wrong:* a leak that enters through a captured copy rather than a captured reference
+  survives the shared suite, as it does today, with one contestant's own test as the only cover.
+
+- **R106 — a contestant may not reach the store, and nothing enforced that until now.** Found by
+  asking what else the clause-7 boundary implied rather than by anything failing. A model receives
+  everything it may see in its `TrainingView`; `src/volab/models/` was nevertheless free to write
+  `from volab.store import load_panel`. `load_panel` requires an explicit `end` and refuses to
+  cross `dev_end`, so the holdout was never reachable — but every session **up to** `dev_end` was,
+  which at a 2021 origin is four years of future.
+
+  **Truncation equivalence could not have caught it**, which is why this is a ruling and not a
+  tidy-up. The comparison perturbs the panel handed to the engine; a contestant bypassing that
+  panel returns the same answer on both sides and the test passes. That is R78's shape one level
+  over — the check watches the input, and the leak does not arrive through the input.
+
+  Now scanned: `test_a_contestant_cannot_reach_the_store` over every module in
+  `src/volab/models/`, with a red case per spelling (module import, `from`-import, attribute call,
+  bare name) and a vacuity guard.
+
+  **The first version of the ban was too broad, and the suite caught it immediately.** It banned
+  `volab.panel` by module, and `models/recalibrated.py` legitimately imports `as_of_dates` from
+  it. `volab.panel` is a *mixed* module: `load_curated_panel`, `load_bars` and `load_exogenous`
+  read, while `as_of_dates`, `truncate` and `collapse_superseded_observations` are pure frame
+  helpers that open nothing. So `volab.store` is banned by module — it has no other purpose — and
+  the read *functions* are banned by name wherever they are reached from. The rejected version is
+  kept as a passing red case (`volab.panel's pure frame helpers`), so the ban cannot quietly
+  broaden again. *Cost if wrong:* a contestant with its own read path, invisible to the primary
+  point-in-time test.

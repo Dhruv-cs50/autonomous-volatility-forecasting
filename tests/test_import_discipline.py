@@ -356,3 +356,124 @@ def test_the_numeric_scan_detects_each_spelling(source: str, expected: str) -> N
 def test_the_numeric_scan_ignores_prose_and_pandas_own_api(source: str) -> None:
     """``to_numpy()`` reaches no numpy name, and prose naming the ban is not the ban."""
     assert _numeric_imports(source) == []
+
+
+# ---------------------------------------------------------------------------
+# The model zoo's own boundary. A contestant is handed everything it may see in its
+# ``TrainingView``: the knowable training rows, the origin's feature row, and the return series
+# ending at the origin. It therefore needs no read path of its own -- and nothing enforced that
+# until this scan. ``load_panel`` requires an explicit ``end`` and refuses to cross ``dev_end``,
+# so a contestant calling it could not reach the holdout; it could, however, read every session
+# up to ``dev_end``, which at a 2021 origin is four years of future. That is a forward peek with
+# the store's own blessing, and the point-in-time tests would not see it: both panels in a
+# truncation comparison would be bypassed identically.
+# ---------------------------------------------------------------------------
+
+MODEL_PACKAGE = "models"
+
+# ``volab.store`` is banned by *module*: it exists to read Parquet and has no other purpose, so
+# importing it at all is a path the view does not control.
+STORE_MODULES = {"volab.store", "store"}
+# ``volab.panel`` is NOT banned by module, and the first version of this scan got that wrong.
+# It is a *mixed* module: alongside ``load_curated_panel`` and friends it holds ``as_of_dates``,
+# ``truncate`` and ``collapse_superseded_observations``, which are pure frame helpers that open
+# nothing -- and ``models/recalibrated.py`` legitimately imports ``as_of_dates``. A module-wide
+# ban flagged it, which is a false positive on a side-effect-free helper. So the read *functions*
+# are banned by name instead, from whichever module they are reached through.
+STORE_READS = {"load_panel", "load_curated_panel", "load_bars", "load_exogenous", "load_targets"}
+
+
+def _model_modules() -> list[Path]:
+    package = SRC / MODEL_PACKAGE
+    return sorted(package.rglob("*.py")) if package.is_dir() else []
+
+
+def _store_reaches(source: str) -> list[str]:
+    """Every way ``source`` could read the store instead of using the view it was handed."""
+    found: list[str] = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found.extend(
+                f"imports {alias.name}" for alias in node.names if alias.name in STORE_MODULES
+            )
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module in STORE_MODULES:
+                found.append(f"imports from {module}")
+            found.extend(
+                f"imports {alias.name} from {module}"
+                for alias in node.names
+                if alias.name in STORE_READS
+            )
+        elif isinstance(node, ast.Attribute) and node.attr in STORE_READS:
+            found.append(f"calls {node.attr}")
+        elif isinstance(node, ast.Name) and node.id in STORE_READS:
+            found.append(f"names {node.id}")
+    return found
+
+
+def test_the_model_package_exists_so_this_scan_is_not_vacuous() -> None:
+    assert (SRC / MODEL_PACKAGE).is_dir(), "the model zoo is gone and this ban checks nothing"
+    assert _model_modules(), "no contestant modules found to scan"
+
+
+@pytest.mark.parametrize("module", _model_modules(), ids=lambda p: p.relative_to(SRC).as_posix())
+def test_a_contestant_cannot_reach_the_store(module: Path) -> None:
+    """A contestant takes what the view gives it and has no read path of its own.
+
+    Not a style rule. A model that read the panel itself would see every session to ``dev_end``
+    regardless of its origin, and **truncation equivalence could not catch it**: the comparison
+    perturbs the panel handed to the engine, and a model bypassing that panel produces the same
+    answer on both sides. This is the same shape as R78 one level over -- the check watches the
+    input, and the leak does not come through the input.
+    """
+    found = _store_reaches(module.read_text())
+    assert not found, (
+        f"{module.relative_to(SRC)}: {found}. A contestant receives its data in the "
+        "TrainingView; reading the store directly would bypass the origin entirely."
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("from volab.store import load_panel\n", "imports load_panel from volab.store"),
+        (
+            "from volab.panel import load_curated_panel\n",
+            "imports load_curated_panel from volab.panel",
+        ),
+        ("import volab.store\n", "imports volab.store"),
+        (
+            "from volab.walkforward import load_targets\n",
+            "imports load_targets from volab.walkforward",
+        ),
+        ("frame = store.load_panel('x', end=e)\n", "calls load_panel"),
+        ("frame = load_panel('x', end=e)\n", "names load_panel"),
+    ],
+    ids=lambda value: value.strip().replace("\n", " ; "),
+)
+def test_the_store_reach_scan_detects_each_spelling(source: str, expected: str) -> None:
+    """The red case. Without it this is a ban nobody has watched fail."""
+    assert expected in _store_reaches(source)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import pandas as pd\nfrom volab.models.base import TrainingView\n",
+        "from volab.errors import ModelSkip\n",
+        '"""A contestant never calls load_panel; it uses the view."""\nimport pandas as pd\n',
+        "# no load_panel here\nfrom volab.walkforward import fit_ols\n",
+        # The case that caught the first version of this ban being too broad.
+        "from volab.panel import as_of_dates, truncate\n",
+    ],
+    ids=(
+        "the interface",
+        "an error type",
+        "a docstring",
+        "a comment plus a legitimate import",
+        "volab.panel's pure frame helpers",
+    ),
+)
+def test_the_store_reach_scan_accepts_what_a_contestant_legitimately_needs(source: str) -> None:
+    assert _store_reaches(source) == []
