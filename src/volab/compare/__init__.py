@@ -15,7 +15,7 @@ statistics live in ``dm`` and ``multiple`` and the only writer is ``sink`` (R95)
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 
 from volab.compare.dm import DMResult, PairResult, bartlett_lag, overlap_lag, pairwise
 from volab.compare.multiple import (
@@ -126,6 +126,31 @@ def _column_text(
     return f"{label} {symbol}={_number(column_statistic)} p={_number(p, '.4f')}"
 
 
+def _error_parts(comparison: Comparison, names: Sequence[str]) -> list[str]:
+    """The measured Monte Carlo error of each simulated contestant among ``names`` (R102).
+
+    Empty if none of them is simulated. ``no claim`` marks one above the floor, **whether it is in
+    a set or out of it**: an exclusion is as much a significance claim as an inclusion.
+    """
+    parts = []
+    for name in names:
+        if name not in comparison.monte_carlo_error:
+            continue
+        value = comparison.monte_carlo_error[name]
+        if value is None:
+            parts.append(f"{name} not measured")
+        elif name in comparison.unclaimed:
+            parts.append(f"{name} {value:.3f}%, no claim")
+        else:
+            parts.append(f"{name} {value:.3f}%")
+    return parts
+
+
+def _error_text(comparison: Comparison, names: Sequence[str]) -> str:
+    parts = _error_parts(comparison, names)
+    return f"  [MC error: {'; '.join(parts)}]" if parts else ""
+
+
 def _pair_line(comparison: Comparison, pair: PairResult) -> str:
     dm: DMResult = pair.dm
     text = (
@@ -142,20 +167,29 @@ def _pair_line(comparison: Comparison, pair: PairResult) -> str:
         text += "  [columns disagree at 5%: both shown, neither claimed]"
     if comparison.claims_withheld:
         text += f"  [n_eff={comparison.n_eff:.1f}: no significance claimed]"
-    flagged = [name for name in (pair.left, pair.right) if name in comparison.unclaimed]
-    if flagged:
-        errors = ", ".join(f"{name} {comparison.monte_carlo_error[name]:.3f}%" for name in flagged)
-        text += f"  [no claim: Monte Carlo error {errors}]"
+    text += _error_text(comparison, (pair.left, pair.right))
+    verdict = comparison.pair_verdict(pair)
+    if verdict is not None:
+        text += f"  => {verdict}"
     return text
 
 
-def describe(comparison: Comparison) -> list[str]:
-    """The console lines for one comparison. Every multiple-comparison figure carries ``n_eff``."""
+def describe(comparison: Comparison, *, trials: int | None = None) -> list[str]:
+    """The console lines for one comparison. Every multiple-comparison figure carries ``n_eff``,
+    and every line naming a simulated contestant carries its measured Monte Carlo error.
+
+    ``trials`` is the ledger's line count when the sink is one that has a count, printed beside the
+    ranking it supports: a leaderboard that reports a winner without saying how many candidates
+    were considered is the thing this project refuses.
+    """
     c = comparison
     tag = f"n_eff={c.n_eff:.1f}"
+    # MCS and SPA are cohort-wide: every contestant's membership or p-value depends on all of them.
+    cohort_wide = _error_text(c, c.contestants)
+    counted = "" if trials is None else f"; {trials} trial line(s) on the ledger"
     lines = [
         f"{c.symbol} h{c.horizon} {c.loss} [{c.cohort}]: n={c.origins} stride={c.stride} "
-        f"q={c.q} bartlett_lag={c.bartlett_lag} {tag}"
+        f"q={c.q} bartlett_lag={c.bartlett_lag} {tag}{counted}"
     ]
     if c.refusal is not None:
         lines.append(f"  REFUSED: {c.refusal}")
@@ -168,24 +202,26 @@ def describe(comparison: Comparison) -> list[str]:
     for size in sorted({*c.mcs.members, *c.mcs.refusals}):
         label = f"MCS {size:.0%}"
         if size in c.mcs.refusals:
-            lines.append(f"  {label}: REFUSED [{tag}] -- {c.mcs.refusals[size]}")
+            lines.append(f"  {label}: REFUSED [{tag}] -- {c.mcs.refusals[size]}{cohort_wide}")
         else:
-            members = ", ".join(
-                name + (" (no claim)" if name in c.unclaimed else "")
-                for name in c.mcs.members[size]
-            )
-            lines.append(f"  {label}: {members} [{tag}]")
+            lines.append(f"  {label}: {', '.join(c.mcs.members[size])} [{tag}]{cohort_wide}")
     if c.mcs.pvalues is not None:
         ordered = sorted(c.mcs.pvalues.items(), key=lambda item: -item[1])
-        lines.append("  MCS p-values: " + ", ".join(f"{name} {p:.3f}" for name, p in ordered))
+        lines.append(
+            "  MCS p-values: "
+            + ", ".join(f"{name} {p:.3f}" for name, p in ordered)
+            + f" [{tag}]{cohort_wide}"
+        )
     for spa in c.spa:
         if spa.refusal is not None:
-            lines.append(f"  SPA (benchmark {spa.benchmark}): REFUSED [{tag}] -- {spa.refusal}")
+            lines.append(
+                f"  SPA (benchmark {spa.benchmark}): REFUSED [{tag}] -- {spa.refusal}{cohort_wide}"
+            )
         else:
             lines.append(
                 f"  SPA (benchmark {spa.benchmark}): p lower={_number(spa.lower, '.4f')} "
                 f"consistent={_number(spa.consistent, '.4f')} "
-                f"upper={_number(spa.upper, '.4f')} [{tag}]"
+                f"upper={_number(spa.upper, '.4f')} [{tag}]{cohort_wide}"
             )
     lines.append(
         f"  DM: {c.dm_tests} pairwise test(s), no selection made on their p-values; "
@@ -193,15 +229,11 @@ def describe(comparison: Comparison) -> list[str]:
     )
     lines.extend(_pair_line(c, pair) for pair in c.pairs)
     if c.monte_carlo_error:
-        parts = []
-        for name, value in c.monte_carlo_error.items():
-            if value is None:
-                parts.append(f"{name} not measured")
-            elif name in c.unclaimed:
-                parts.append(f"{name} {value:.3f}% (above {MC_ERROR_CEILING_PERCENT:g}%: no claim)")
-            else:
-                parts.append(f"{name} {value:.3f}%")
-        lines.append("  Monte Carlo error (R102): " + ", ".join(parts))
+        parts = _error_parts(c, tuple(c.monte_carlo_error))
+        lines.append(
+            f"  Monte Carlo error (R102), no claim above {MC_ERROR_CEILING_PERCENT:g}%: "
+            + "; ".join(parts)
+        )
     return lines
 
 

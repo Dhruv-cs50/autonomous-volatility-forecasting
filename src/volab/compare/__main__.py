@@ -78,6 +78,19 @@ def _persisted(settings: Settings, symbol: str) -> pd.DataFrame | None:
     return frame.sort_values("as_of").reset_index(drop=True)
 
 
+def _report(errors: dict[str, float | None], line: str) -> None:
+    """``print``, with the measured Monte Carlo error appended to a simulated contestant's line.
+
+    ``run_configuration`` prints one line per trial that begins with the contestant's name
+    (``evaluation.trials()``), and R102 puts the error beside every simulated figure.
+    """
+    words = line.split()
+    if words and words[0] in errors:
+        value = errors[words[0]]
+        line += "  [MC error not measured]" if value is None else f"  [MC error {value:.3f}%]"
+    print(line)
+
+
 def _run(settings: Settings, arguments: argparse.Namespace, sink: Sink) -> int:
     started = time.perf_counter()
     cohort = COHORTS[arguments.cohort]
@@ -107,6 +120,7 @@ def _run(settings: Settings, arguments: argparse.Namespace, sink: Sink) -> int:
         for horizon in arguments.horizons:
             print(f"{symbol} h{horizon}:")
             panel, targets = load_for(settings, symbol, horizon, report=print)
+            errors = monte_carlo_error(cohort, horizon)
             outcome = run_configuration(
                 settings,
                 symbol,
@@ -123,6 +137,8 @@ def _run(settings: Settings, arguments: argparse.Namespace, sink: Sink) -> int:
                 append=lambda trials: sink.append_trials(
                     trials, at=started_at, sha=sha, dirty=dirty
                 ),
+                # The driver prints each trial's mean; a simulated contestant's carries its error.
+                report=partial(_report, errors),
             )
             trials_written += outcome.written
             if outcome.refused:
@@ -141,7 +157,6 @@ def _run(settings: Settings, arguments: argparse.Namespace, sink: Sink) -> int:
                 contestants=cohort.contestants,
                 cohort=cohort.name,
             )
-            errors = monte_carlo_error(cohort, horizon)
             comparisons: list[Comparison] = [
                 analyse(loss_series(evaluation, loss, cohort=cohort.name), monte_carlo_error=errors)
                 for loss in LOSSES
@@ -149,9 +164,11 @@ def _run(settings: Settings, arguments: argparse.Namespace, sink: Sink) -> int:
             comparisons_written += sink.append_comparisons(
                 comparisons, at=started_at, sha=sha, dirty=dirty
             )
+            # The ledger's count, cumulative and not this cohort's, printed beside the ranking.
+            ledger = count_trials(sink.root) if isinstance(sink, JsonlSink) else None
             for comparison in comparisons:
                 dm_tests += comparison.dm_tests
-                for line in describe(comparison):
+                for line in describe(comparison, trials=ledger):
                     print(line)
 
     print(

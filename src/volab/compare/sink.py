@@ -51,6 +51,9 @@ def _column(column: Column) -> dict[str, object]:
         "p_value": _finite(column.p_value),
         "variance": _finite(column.variance),
         "refusal": column.refusal,
+        # The 5% verdict (-1 left better, 0 neither, 1 right better), so a reader of the file need
+        # not re-derive the rule.
+        "verdict": column.verdict(),
     }
 
 
@@ -64,7 +67,7 @@ def _block(block: BlockLength | None) -> dict[str, object] | None:
     }
 
 
-def _pair(pair: PairResult) -> dict[str, object]:
+def _pair(pair: PairResult, claimed: bool) -> dict[str, object]:
     dm = pair.dm
     return {
         "left": pair.left,
@@ -76,6 +79,8 @@ def _pair(pair: PairResult) -> dict[str, object]:
         "headline": _column(dm.headline),
         "bartlett": _column(dm.bartlett),
         "disagree": dm.disagree,
+        # Whether a verdict may be stated for this pair (see ``Comparison.pair_claimed``).
+        "claimed": claimed,
     }
 
 
@@ -149,6 +154,29 @@ class Comparison:
         support a claim, and R94 says to print it and claim nothing."""
         return self.n_eff < 2 / min(SIZES)
 
+    def pair_claimed(self, pair: PairResult) -> bool:
+        """Whether a verdict may be stated for this pair: the effective sample supports one, both
+        contestants' simulation error is below the floor, and both columns answered and agree."""
+        dm = pair.dm
+        return (
+            not self.claims_withheld
+            and pair.left not in self.unclaimed
+            and pair.right not in self.unclaimed
+            and dm.headline.refusal is None
+            and dm.bartlett.refusal is None
+            and not dm.disagree
+        )
+
+    def pair_verdict(self, pair: PairResult) -> str | None:
+        """The 5% verdict in words, only where :meth:`pair_claimed`; ``None`` claims nothing."""
+        if not self.pair_claimed(pair):
+            return None
+        verdict = pair.dm.headline.verdict()
+        if verdict == 0:
+            return "no significant difference at 5% (both columns)"
+        better = pair.left if verdict == -1 else pair.right
+        return f"{better} significantly better at 5% (both columns)"
+
     def record(self) -> dict[str, object]:
         return {
             "symbol": self.symbol,
@@ -168,7 +196,7 @@ class Comparison:
             "mcs_method": self.method,
             "dm_tests": self.dm_tests,
             "dm_significance_claimed": not self.claims_withheld,
-            "dm": [_pair(pair) for pair in self.pairs],
+            "dm": [_pair(pair, self.pair_claimed(pair)) for pair in self.pairs],
             "mcs": _mcs(self.mcs),
             "spa": [_spa(spa) for spa in self.spa],
             "monte_carlo_error": {name: _finite(v) for name, v in self.monte_carlo_error.items()},

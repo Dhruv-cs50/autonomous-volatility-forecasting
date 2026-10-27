@@ -25,6 +25,7 @@ import dataclasses
 import datetime as dt
 import json
 import math
+import re
 from collections.abc import Sequence
 from fractions import Fraction
 from pathlib import Path
@@ -913,7 +914,8 @@ def test_the_record_is_strict_json_and_carries_what_the_design_names() -> None:
     dm = record["dm"]
     assert isinstance(dm, list) and len(dm) == 6
     assert set(dm[0]) >= {"left", "right", "mean_difference", "headline", "bartlett", "disagree"}
-    assert set(dm[0]["headline"]) == {"statistic", "p_value", "variance", "refusal"}
+    assert set(dm[0]["headline"]) == {"statistic", "p_value", "variance", "refusal", "verdict"}
+    assert set(dm[0]) >= {"claimed"}
     assert record["monte_carlo_error"] == {"rival": 0.514, "random_walk": None}
 
 
@@ -946,6 +948,74 @@ def test_a_simulated_contestant_above_the_error_floor_has_no_significance_claime
     assert clean and not any("no claim" in line for line in clean)
 
 
+def _named_contenders(n: int, q: int, names: tuple[str, ...], gaps: tuple[float, ...]):
+    """``_contenders`` with distinguishable names, so a line can be searched for one of them."""
+    base = _contenders(n, q, gaps=gaps)
+    return dataclasses.replace(
+        base, values={name: v for name, v in zip(names, base.values.values(), strict=True)}
+    )
+
+
+def test_every_line_naming_a_simulated_contestant_carries_its_error_in_or_out_of_the_set() -> None:
+    """R102 asks for the error *beside every simulated figure*, and an exclusion is a figure.
+
+    h=22, n=247, q=4, so ``n_eff = 49.4`` and DM verdicts are claimable. ``gjr`` is measured below
+    the floor, ``egarch`` above it and **excluded from every set**, and ``garch`` is analytic.
+    """
+    series = _named_contenders(247, 4, ("har", "garch", "gjr", "egarch"), (0.0, 0.0, 0.01, 3.0))
+    comparison = analyse(
+        series, benchmarks=("har",), monte_carlo_error={"gjr": 0.207, "egarch": 3.273}
+    )
+    assert comparison.claims_withheld is False
+    assert all("egarch" not in members for members in comparison.mcs.members.values()), (
+        "the fixture must exclude the over-floor contestant, or the exclusion is untested"
+    )
+    lines = describe(comparison)
+    cohort_wide = [
+        line for line in lines if line.lstrip().startswith(("MCS", "SPA", "Monte Carlo"))
+    ]
+    assert len(cohort_wide) >= 4
+    for line in cohort_wide:
+        assert "gjr 0.207%" in line and "egarch 3.273%, no claim" in line, line
+    pair_lines = [line for line in lines if " vs " in line and line.startswith("    ")]
+    assert len(pair_lines) == 6
+    for line in pair_lines:
+        if "gjr" in line:
+            assert "gjr 0.207%" in line, line
+        if "egarch" in line:
+            assert "egarch 3.273%, no claim" in line, line
+            assert "=>" not in line, "a verdict was stated about a contestant with no claim"
+    printed = [part for line in lines for part in re.findall(r"\[MC error: ([^\]]*)\]", line)]
+    names = {item.split()[0] for part in printed for item in part.split("; ")}
+    assert names == {"gjr", "egarch"}, "only simulated contestants carry a simulation error"
+
+
+def test_a_verdict_is_stated_only_where_it_is_claimed() -> None:
+    series = _named_contenders(247, 4, ("har", "garch", "gjr", "egarch"), (0.0, 0.0, 0.01, 3.0))
+    comparison = analyse(series, monte_carlo_error={"gjr": 0.207, "egarch": 3.273})
+    by_pair = {(p.left, p.right): p for p in comparison.pairs}
+    clear = by_pair[("har", "gjr")]
+    assert comparison.pair_claimed(clear)
+    assert comparison.pair_verdict(clear) in {
+        "no significant difference at 5% (both columns)",
+        "har significantly better at 5% (both columns)",
+    }
+    assert not comparison.pair_claimed(by_pair[("har", "egarch")])
+    assert comparison.pair_verdict(by_pair[("har", "egarch")]) is None
+    flags = {(d["left"], d["right"]): d["claimed"] for d in comparison.record()["dm"]}  # type: ignore[union-attr]
+    assert flags[("har", "gjr")] is True and flags[("har", "egarch")] is False
+    # And not where the effective sample is thin.
+    thin = analyse(_contenders(238, 13))
+    assert not any(thin.pair_claimed(pair) for pair in thin.pairs)
+    assert all(d["claimed"] is False for d in thin.record()["dm"])  # type: ignore[union-attr]
+
+
+def test_the_ledger_count_is_printed_beside_the_ranking_when_the_sink_has_one() -> None:
+    comparison = _comparison()
+    assert "72 trial line(s) on the ledger" in describe(comparison, trials=72)[0]
+    assert "trial line(s)" not in describe(comparison)[0]
+
+
 def test_the_effective_sample_and_the_refusal_are_printed_beside_every_figure_at_h66() -> None:
     """h=66, n=238: ``n_eff = 17.0``. The 10% set is refused with its reason printed, the 25% set
     is reported, and the DM lines carry ``n_eff`` and claim no significance."""
@@ -962,6 +1032,9 @@ def test_the_effective_sample_and_the_refusal_are_printed_beside_every_figure_at
     pair_lines = [line for line in lines if " vs " in line]
     assert pair_lines and all("no significance claimed" in line for line in pair_lines)
     assert comparison.claims_withheld is True
+    assert all("n_eff=17.0" in line for line in lines if line.lstrip().startswith("MCS")), (
+        "the p-value line is a multiple-comparison figure too"
+    )
     assert f"seed={SEED}" in text and f"reps={REPS}" in text
     assert "politis-white" in text.lower()
 
@@ -1467,6 +1540,7 @@ def test_a_shootout_run_writes_trials_and_comparisons_under_one_join_key(
 
     assert {key(line) for line in comparisons} == {key(line) for line in trials}
     assert "MCS 25%" in printed and "Monte Carlo error" not in printed, "no simulated contestant"
+    assert "trial line(s) on the ledger" in printed, "the count must sit beside each ranking"
     assert f"{len(comparisons)} comparison record(s)" in printed
 
 
@@ -1510,3 +1584,21 @@ def test_a_run_through_another_sink_writes_no_file_at_all(shootout: _Entry, caps
     assert len(sink.stamps) == 1, "trials and comparisons share one (at, sha, dirty)"
     assert not (shootout.root / "data").exists()
     assert not list(shootout.root.iterdir()), "something wrote to the storage root"
+
+
+def test_the_drivers_trial_lines_carry_the_error_of_a_simulated_contestant(
+    shootout: _Entry, capsys
+) -> None:
+    """``run_configuration`` prints one line per trial and those are where a reader first sees a
+    mean. The shootout passes a ``report`` that appends the measured error to a simulated
+    contestant's line (R102), and leaves every other line alone."""
+    shootout.monkeypatch.setattr(
+        compare_cli, "monte_carlo_error", lambda cohort, horizon: {"rw_scaled": 0.5, "ghost": None}
+    )
+    shootout.main(["--symbol", "SPY", "--horizon", "1", *WINDOW])
+    printed = capsys.readouterr().out.splitlines()
+    scaled = [line for line in printed if line.startswith("  rw_scaled ")]
+    assert len(scaled) == len(LOSSES) and all(line.endswith("[MC error 0.500%]") for line in scaled)
+    plain = [line for line in printed if line.startswith("  har_levels ")]
+    assert plain and not any("MC error" in line for line in plain)
+    assert any(line.startswith("  Monte Carlo error (R102)") for line in printed)
