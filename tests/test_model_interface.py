@@ -27,6 +27,7 @@ from model_conformance import (
     clause_2_target_side_equivalence,
     clause_5_determinism,
     clause_6_horizon_contract,
+    clause_7_unknowable_targets_are_out_of_reach,
     conformance_suite,
     make_toy,
     run_cohort,
@@ -675,3 +676,45 @@ def test_the_conformance_suite_can_fail(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(wf, "knowable_targets", lambda targets, origin: targets)
     with pytest.raises(AssertionError, match="future present|whether the origin"):
         clause_2_target_side_equivalence(Future(), toy)
+
+
+def test_a_contestant_holding_its_own_target_frame_is_caught_by_clause_7_and_not_by_clause_2() -> (
+    None
+):
+    """R104: clause 2 truncates the frame ``evaluate`` is handed, so it is blind to a model that
+    kept its own reference to the target frame (R78's shape). Clause 7 changes the cells of the
+    frame itself, in place, where such a reference sees them."""
+    toy = make_toy(1)
+
+    class Captured:
+        """Forecasts the origin's own target, read from the frame it was built with -- never from
+        the view, which is why the structural refusal does not stop it."""
+
+        name = "captured"
+        fit_depends_on_horizon = False
+
+        def __init__(self, targets: pd.DataFrame) -> None:
+            self.targets = targets
+
+        def fit(self, view: TrainingView) -> Forecaster:
+            stamps = [stamp.date() for stamp in pd.to_datetime(self.targets["ts"], utc=True)]
+            at = stamps.index(view.origin)
+            return Answer(float(self.targets[view.response].iloc[at]))
+
+    plant = Captured(toy.targets)
+    # The defect, demonstrated: the weak clause passes a model that is reading the future.
+    clause_2_target_side_equivalence(plant, toy)
+    with pytest.raises(AssertionError, match="unknowable"):
+        clause_7_unknowable_targets_are_out_of_reach(plant, toy)
+
+    # The control: a model that reads only its view is not accused, and the frame is left as found.
+    class Reads:
+        name = "reads-its-view"
+        fit_depends_on_horizon = False
+
+        def fit(self, view: TrainingView) -> Forecaster:
+            return Answer(float(view.training[view.response].iloc[-1]))
+
+    before = toy.targets.copy()
+    clause_7_unknowable_targets_are_out_of_reach(Reads(), toy)
+    assert toy.targets.equals(before)

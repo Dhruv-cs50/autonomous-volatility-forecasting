@@ -28,9 +28,9 @@ from test_truncation_equivalence import Synthetic, _synthetic
 from volab.config import Settings, load_settings
 from volab.errors import ModelSkip
 from volab.features.build import build_features
-from volab.features.targets import build_targets
+from volab.features.targets import build_targets, target_column
 from volab.models.base import Cohort, Forecast, Forecaster, Model, TrainingView
-from volab.panel import truncate
+from volab.panel import as_of_dates, truncate
 from volab.sessions import get_calendar
 from volab.walkforward import (
     LOSSES,
@@ -350,6 +350,61 @@ def clause_6_horizon_contract(model: Model, toy: Toy) -> None:
     assert exercised >= 1, "the model declined every view, so the contract was not exercised"
 
 
+def clause_7_unknowable_targets_are_out_of_reach(model: Model, toy: Toy) -> None:
+    """R104: a forecast does not move when the targets unknown at the origin are *changed*.
+
+    Clause 2 truncates the frame ``evaluate`` is handed, so it sees only a model that reads that
+    frame. A model that kept its own reference to the target frame (R78's shape: the audit checked
+    the slice, not what the fit consumed) reads the same untruncated values in both runs and
+    passes it. This clause instead writes into ``toy.targets`` **in place** -- scaling by ten
+    every cell of the response column whose ``as_of`` is after the origin, the origin's own target
+    included -- and runs ``evaluate`` on that same object, so a reference to it sees the new
+    values. Scaling rather than removing is the point: a removed value can be invisible to a
+    model, a changed one cannot. The cells are restored from a saved copy in a ``finally``, and
+    the frame is asserted equal to its snapshot afterwards.
+
+    Only the forecast is compared; ``realized`` legitimately scales with the origin's own target.
+
+    The boundary, stated rather than hidden: this reaches a reference to ``toy.targets`` itself.
+    A model that copied the frame at construction, derived a Series from it (copy-on-write, on
+    for pandas >= 3, separates that from later writes to the parent) or loaded its own from a
+    store is out of reach of any suite that is handed only a built model. Witness for what it
+    does reach, and for clause 2 passing the same plant:
+    ``test_a_contestant_holding_its_own_target_frame_is_caught_by_clause_7_and_not_by_clause_2``.
+    """
+    column = target_column(toy.horizon)
+    snapshot = toy.targets.copy()
+    checked = 0
+    for origin in toy.origins[::3]:
+        single = dataclasses.replace(toy, origins=(origin,))
+        honest = run_cohort(single, alone(model))
+        unknowable = pd.Series(
+            [done > origin for done in as_of_dates(toy.targets)], index=toy.targets.index
+        )
+        assert unknowable.any(), f"{origin}: no target was unknowable, so nothing was perturbed"
+        try:
+            toy.targets.loc[unknowable, column] = snapshot.loc[unknowable, column] * 10.0
+            moved = run_cohort(single, alone(model))
+        finally:
+            toy.targets.loc[unknowable, column] = snapshot.loc[unknowable, column]
+        assert len(honest.results) == len(moved.results), (
+            f"{origin}: changing unknowable targets changed whether the origin was forecast"
+        )
+        if not honest.results:
+            continue
+        checked += 1
+        mine, theirs = (
+            honest.results[0].forecasts[model.name],
+            moved.results[0].forecasts[model.name],
+        )
+        assert _same(mine, theirs), (
+            f"{origin}: forecast {mine!r} became {theirs!r} when only unknowable targets "
+            "were scaled, so the model is reading a target frame of its own"
+        )
+    assert toy.targets.equals(snapshot), "the clause did not restore the target frame it moved"
+    assert checked >= 2, f"only {checked} origin(s) were actually compared"
+
+
 def conformance_suite(model: Model, *, toy: Toy) -> None:
     """Run every clause against ``model`` on ``toy``. See the module docstring for how to call."""
     assert isinstance(model, Model), "the contestant does not satisfy the Model protocol"
@@ -359,3 +414,4 @@ def conformance_suite(model: Model, *, toy: Toy) -> None:
     clause_4_every_configuration_is_counted(model, toy)
     clause_5_determinism(model, toy)
     clause_6_horizon_contract(model, toy)
+    clause_7_unknowable_targets_are_out_of_reach(model, toy)
