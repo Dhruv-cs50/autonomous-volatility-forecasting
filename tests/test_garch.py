@@ -574,3 +574,100 @@ def test_egarch11_conforms_at_a_horizon_where_the_seed_matters() -> None:
     conformance_suite(
         _few(EGARCH11_SKEWT), toy=make_toy(22), rebuild=lambda _: _few(EGARCH11_SKEWT)
     )
+
+
+# ---------------------------------------------------------------------------
+# kappa = E[z**2 1{z<0}] in closed form (R117, R118): the identities, over the full bounds.
+# ---------------------------------------------------------------------------
+
+# arch's bounds are eta in [2.05, 300] and lambda in [-1, 1], both closed. The grid reaches the
+# edges of both, because the closed form is exact where a quadrature is not.
+ETAS = (2.05, 2.5, 4.0, 6.0, 30.0, 300.0)
+LAMBDAS = (-0.999, -0.5, -0.0419, 0.0, 0.35, 0.999)
+GRID = [(eta, lam) for eta in ETAS for lam in LAMBDAS]
+CORNERS = [(eta, lam) for eta in (2.05, 300.0) for lam in (-1.0, 1.0)]
+
+
+@pytest.mark.parametrize(("eta", "lam"), [*GRID, *CORNERS])
+def test_the_standardised_skew_t_integrates_to_mass_one_mean_zero_variance_one(
+    eta: float, lam: float
+) -> None:
+    """``S0/S1/S2`` over the whole line: fails if the ``(eta-1)/(eta-2)`` constant is wrong."""
+    mass, mean, second = garch._skewt_moments(eta, lam, negative=False)
+    assert mass == pytest.approx(1.0, abs=1e-12)
+    assert mean == pytest.approx(0.0, abs=1e-12)
+    assert second == pytest.approx(1.0, abs=1e-12)
+
+
+@pytest.mark.parametrize("eta", [*ETAS, 2.1, 3.0])
+def test_a_symmetric_law_puts_exactly_half_the_second_moment_below_zero(eta: float) -> None:
+    """``kappa(eta, 0) = 1/2``. ``abs=1e-12`` and not equality: 7.5e-15 off at ``eta = 300``."""
+    assert garch._kappa(eta, 0.0) == pytest.approx(0.5, abs=1e-12)
+
+
+@pytest.mark.parametrize(("eta", "lam"), [*GRID, *CORNERS])
+def test_the_mirror_image_law_takes_the_other_half(eta: float, lam: float) -> None:
+    """``z -> -z, lambda -> -lambda``: ``kappa(lam) + kappa(-lam) = E[z**2] = 1``. No oracle."""
+    assert garch._kappa(eta, lam) + garch._kappa(eta, -lam) == pytest.approx(1.0, abs=1e-12)
+
+
+@pytest.mark.parametrize(("eta", "lam"), [*GRID, *CORNERS])
+def test_kappa_is_a_strict_fraction_of_the_unit_variance(eta: float, lam: float) -> None:
+    """A truncated second moment of a unit-variance law lies in ``[0, 1]``; interior is strict."""
+    kappa = garch._kappa(eta, lam)
+    assert math.isfinite(kappa)
+    if abs(lam) < 1.0:
+        assert 0.0 < kappa < 1.0
+    else:
+        assert 0.0 <= kappa <= 1.0
+
+
+@pytest.mark.parametrize("lam", [-1.0, 1.0])
+@pytest.mark.parametrize("eta", [2.05, 6.0, 300.0])
+def test_the_degenerate_scale_at_lambda_plus_or_minus_one_is_skipped_not_divided_by(
+    eta: float, lam: float
+) -> None:
+    """At ``lambda = +-1`` one scale is exactly 0 and ``y / d`` would be a NaN; it has no mass.
+
+    arch's bound is the closed interval, so this is reachable. The value is not 0 or 1 -- the
+    shifted origin ``a`` puts mass of the other piece on both sides of ``z = 0`` -- so what is
+    asserted is that it is a number, that the whole line still integrates to (1, 0, 1), and that
+    the mirror identity holds across the degenerate edge.
+    """
+    assert math.isfinite(garch._kappa(eta, lam))
+    mass, mean, second = garch._skewt_moments(eta, lam, negative=False)
+    assert (mass, mean, second) == pytest.approx((1.0, 0.0, 1.0), abs=1e-12)
+    assert garch._kappa(eta, lam) + garch._kappa(eta, -lam) == pytest.approx(1.0, abs=1e-12)
+
+
+def _kappa_by_quadrature(eta: float, lam: float, *, u_max: float = 30.0, n: int = 200_000) -> float:
+    """``E[z**2 1{z<0}]`` by composite Simpson over ``z = sinh(u)``, from arch's own density.
+
+    Valid for ``eta >= 4`` only: the ``z**2`` tail is too heavy to truncate below that, and at
+    ``eta = 2.1`` this integral answers 0.4755 where the mirror symmetry forces exactly 1/2.
+    ``sinh`` turns the polynomial tail into exponential decay; Simpson's ``du**4`` error is then
+    far below the 1e-10 asserted. Never ``leggauss`` at large n: an O(n**3) eigensolve that
+    allocates 3.2 GB at n=20,000.
+    """
+    u = np.linspace(-u_max, u_max, n + 1)  # n even
+    weights = np.ones(n + 1)
+    weights[1:-1:2], weights[2:-1:2] = 4.0, 2.0
+    weights *= (u[1] - u[0]) / 3.0
+    z = np.sinh(u)
+    density = (
+        np.exp(SkewStudent().loglikelihood([eta, lam], z, np.ones_like(z), individual=True))
+        * np.cosh(u)
+        * weights
+    )
+    return float((z[z < 0] ** 2 * density[z < 0]).sum())
+
+
+# ``eta >= 4`` ONLY, and the restriction is the point. At ``eta = 2.1`` the Simpson integral is
+# wrong by 0.0245 and at ``(2.05, -0.9)`` by 0.228, because the ``z**2`` tail is too heavy to
+# truncate; a wider parametrisation would fail, someone would loosen ``abs``, and the closed
+# form's real error budget would be hidden behind the oracle's truncation. Full-bounds coverage
+# comes from the identities above, which need no oracle.
+@pytest.mark.parametrize("eta", [4.0, 5.09, 6.44, 8.0, 30.0])
+@pytest.mark.parametrize("lam", [-0.9, -0.5, -0.2, 0.0, 0.35, 0.8])
+def test_the_closed_form_matches_an_independent_quadrature(eta: float, lam: float) -> None:
+    assert garch._kappa(eta, lam) == pytest.approx(_kappa_by_quadrature(eta, lam), abs=1e-10)

@@ -71,6 +71,7 @@ from arch import arch_model
 from arch.univariate.base import ARCHModelResult
 from arch.univariate.distribution import SkewStudent
 from arch.utility.exceptions import ConvergenceWarning, StartingValueWarning
+from scipy.special import gammaln, stdtr
 
 from volab.errors import ModelSkip
 from volab.models.base import Forecast, Forecaster, TrainingView
@@ -120,6 +121,73 @@ def _tail(returns: pd.Series) -> np.ndarray[Any, np.dtype[np.float64]]:
     values = returns.to_numpy(dtype="float64", na_value=np.nan)
     nulls = np.flatnonzero(np.isnan(values))
     return values[(nulls[-1] + 1 if nulls.size else 0) :]
+
+
+def _density_constant(eta: float) -> float:
+    """``c`` in the unit-variance Student-t density ``c * (1 + w**2/(eta-2))**(-(eta+1)/2)``."""
+    return math.exp(gammaln((eta + 1.0) / 2.0) - gammaln(eta / 2.0)) / math.sqrt(
+        math.pi * (eta - 2.0)
+    )
+
+
+def _truncated(eta: float, x: float) -> tuple[float, float, float]:
+    """``(S0, S1, S2)(x)``: mass, first and second moment of unit-variance ``t(eta)`` below ``x``.
+
+    ``S0`` is the Student-t CDF at ``x * sqrt(eta/(eta-2))``; ``S1`` and ``S2`` are elementary, with
+    ``S2`` built from the CDF of ``t(eta-2)``. The ``(eta-1)/(eta-2)`` in ``S2`` is the exact ratio
+    of the two normalisers, not a fit, and ``S2(inf) = 1`` is the unit-variance check.
+    """
+    if x == -math.inf:
+        return 0.0, 0.0, 0.0
+    s0 = float(stdtr(eta, x * math.sqrt(eta / (eta - 2.0))))
+    s1 = (
+        -_density_constant(eta)
+        * ((eta - 2.0) / (eta - 1.0))
+        * (1.0 + x * x / (eta - 2.0)) ** (-(eta - 1.0) / 2.0)
+    )
+    s2 = (eta - 2.0) * (((eta - 1.0) / (eta - 2.0)) * float(stdtr(eta - 2.0, x)) - s0)
+    return s0, s1, s2
+
+
+def _skewt_moments(eta: float, lam: float, *, negative: bool) -> tuple[float, float, float]:
+    """``(P, E[z], E[z**2])`` of arch's standardised Hansen skew-t, over ``z < 0`` or everywhere.
+
+    Hansen's skew-t as arch implements it is a two-piece scaled unit-variance Student t: with
+    ``y = b*z + a`` the density of ``y`` is ``s(y/(1-lam))`` below zero and ``s(y/(1+lam))`` above,
+    ``s`` the unit-variance ``t(eta)`` density. So every moment is a sum of two elementary
+    integrals, and ``z < 0`` is ``y < a``. Whole-line ``(1, 0, 1)`` is the machinery's own check.
+
+    A piece whose scale ``d`` is zero has mass ``d/2 = 0`` and is skipped: arch's bound on
+    ``lam`` is the *closed* interval, and at ``lam = +-1`` ``y / d`` would be a NaN.
+    """
+    c = math.exp(gammaln((eta + 1.0) / 2.0) - gammaln(eta / 2.0)) / math.sqrt(math.pi * (eta - 2.0))
+    a = 4.0 * lam * c * (eta - 2.0) / (eta - 1.0)
+    b = math.sqrt(1.0 + 3.0 * lam * lam - a * a)
+    cut = a if negative else math.inf
+    pieces = [(1.0 - lam, -math.inf, min(cut, 0.0))]
+    if cut > 0.0:
+        pieces.append((1.0 + lam, 0.0, cut))
+    mass = first = second = 0.0
+    for d, lower, upper in pieces:
+        if d == 0.0:
+            continue
+        lo0, lo1, lo2 = _truncated(eta, lower / d)
+        hi0, hi1, hi2 = _truncated(eta, upper / d)
+        d0, d1, d2 = hi0 - lo0, hi1 - lo1, hi2 - lo2
+        mass += d * d0
+        first += d * (d * d1 - a * d0) / b
+        second += d * (d * d * d2 - 2.0 * a * d * d1 + a * a * d0) / (b * b)
+    return mass, first, second
+
+
+def _kappa(eta: float, lam: float) -> float:
+    """``E[z**2 1{z<0}]`` for arch's standardised Hansen skew-t, in closed form (R118's kappa).
+
+    Exact up to the Student-t CDF. A quadrature is *not* used: Simpson over ``sinh`` is accurate
+    for ``eta >= 4`` and wrong by 0.0245 at ``eta = 2.1``, and arch's bound is 2.05. It survives
+    only as a test oracle. Floating point loses at most ~3e-14 here, at ``eta = 300``.
+    """
+    return _skewt_moments(eta, lam, negative=True)[2]
 
 
 @dataclass(frozen=True)
