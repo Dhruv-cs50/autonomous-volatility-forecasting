@@ -33,6 +33,19 @@ two identical contestants, and Politis-White divides by zero below 11 origins (m
 ``filterwarnings = ["error"]`` either is a failing test, and R101 is the precedent for detecting the
 condition instead. Both are recorded refusals.
 
+**So is a contestant that swamps the others' loss scale.** ``arch`` 8.0.0's ``MCS._compute_r`` reads
+the eliminated model as ``loc.squeeze()[0]``, which is a scalar only when the argmax of the
+standardized loss differential is unique. With one mean loss at 1.7e12 and the rest near 1e-5,
+``L_i - L_j`` is below half an ulp of the large value, the standardized row is one repeated float,
+and ``[0]`` returns an ``(i, j)`` *pair*: an ``ndarray`` in ``eliminated`` (an ``IndexError`` out of
+``Index.__getitem__``) and two models eliminated in one step. The fix is **not** to format the
+losses so arch never indexes that Index: measured, that turns the crash into a silently wrong set
+that eliminates the SPA benchmark alongside the exploding contestant. The condition is detected in
+``_unestimable`` instead, on the mean losses, with ``same_losses``' scaled tolerance one level up.
+It is a conservative superset of arch's tie and refuses some matrices arch would survive; that is
+the right direction. Witness, on its own line so it can be grepped:
+``test_a_contestant_that_dominates_the_loss_scale_makes_the_confidence_set_a_refusal``.
+
 ``reps``, ``seed`` and the bootstrap are fixed and recorded on every result, so membership is
 reproducible from the file (``test_the_bootstrap_is_reproducible_from_the_recorded_seed``).
 """
@@ -97,11 +110,42 @@ def _matrix(series: LossSeries) -> pd.DataFrame:
     return pd.DataFrame({name: list(values) for name, values in series.values.items()})
 
 
-def _unestimable(series: LossSeries, names: tuple[str, ...] | None = None) -> str | None:
+def _swamped(columns: dict[str, np.ndarray]) -> str | None:
+    """Two contestants whose mean losses float64 cannot tell apart at the scale of the largest.
+
+    Refuses if for some contestant ``i`` there are two others ``j != k`` with
+    ``|mean_j - mean_k| <= 4 * eps * max_m |mean_m|``: then ``mean_i - mean_j`` and
+    ``mean_i - mean_k`` are the same float when ``i`` dominates, the standardized differentials tie
+    and arch's elimination is ill-defined (see the module docstring). With three or more
+    contestants that is any such pair, since any third contestant can be ``i``; the largest mean is
+    the one named, because it sets the scale that annihilates the difference.
+    """
+    if len(columns) < 3:
+        return None
+    means = {name: float(np.mean(column)) for name, column in columns.items()}
+    dominant = max(means, key=lambda name: abs(means[name]))
+    tolerance = 4 * np.finfo(np.float64).eps * abs(means[dominant])
+    names = list(means)
+    for position, j in enumerate(names):
+        for k in names[position + 1 :]:
+            if abs(means[j] - means[k]) <= tolerance:
+                return (
+                    f"{dominant} dominates the loss scale (mean loss {means[dominant]:.3g}) and "
+                    f"the mean losses of {j} and {k} differ by {abs(means[j] - means[k]):.3g}, "
+                    f"within float64 rounding of it: its differentials against the others are "
+                    f"equal to rounding, so no confidence set can be formed"
+                )
+    return None
+
+
+def _unestimable(
+    series: LossSeries, names: tuple[str, ...] | None = None, *, confidence_set: bool = True
+) -> str | None:
     """Why the bootstrap cannot be run on ``series``, or ``None``. Detected, never caught.
 
     ``names`` restricts the identical-pair check to pairs involving the first name (SPA only
-    differences against its benchmark); ``None`` checks every pair.
+    differences against its benchmark); ``None`` checks every pair. ``confidence_set=False`` skips
+    the check that is arch's MCS elimination alone (SPA never reaches it).
     """
     if len(series.values) < 2:
         return f"{len(series.values)} contestant(s): there is nothing to compare"
@@ -119,12 +163,17 @@ def _unestimable(series: LossSeries, names: tuple[str, ...] | None = None) -> st
     for a, b in pairs:
         if same_losses(columns[a], columns[b]):
             return f"{a} and {b} have identical losses, so their bootstrap spread is zero"
+    if confidence_set:
+        return _swamped(columns)
     return None
 
 
-def block_length(series: LossSeries, *, q: int) -> BlockLength:
-    """``max(q + 1, ceil(Politis-White on the loss levels))``, from the matrix MCS consumes."""
-    reason = _unestimable(series)
+def block_length(series: LossSeries, *, q: int, confidence_set: bool = True) -> BlockLength:
+    """``max(q + 1, ceil(Politis-White on the loss levels))``, from the matrix MCS consumes.
+
+    ``confidence_set=False`` is SPA's: it is refused only for what SPA cannot survive.
+    """
+    reason = _unestimable(series, confidence_set=confidence_set)
     if reason is not None:
         raise ValueError(f"no block length can be estimated: {reason}")
     pw = politis_white(_matrix(series).to_numpy())
@@ -243,10 +292,10 @@ def superior_predictive_ability(
     def refused(reason: str) -> SpaResult:
         return SpaResult(benchmark, n, q, n_eff, None, reps, seed, None, None, None, reason)
 
-    reason = _unestimable(series, names=(benchmark,))
+    reason = _unestimable(series, names=(benchmark,), confidence_set=False)
     if reason is not None:
         return refused(reason)
-    block = block_length(series, q=q)
+    block = block_length(series, q=q, confidence_set=False)
     losses = _matrix(series)
     procedure = SPA(
         losses[benchmark],

@@ -18,6 +18,14 @@ beside them. The figures are those R102 records, from ``tools/measure_garch_fore
 series-dependent). h=1 and h=5 were never measured and are reported as ``None``, not interpolated.
 EGARCH at h=66 is 3.273% -- *more* paths made it worse than 0.951% at S=10,000 -- which is why
 ``volab.compare`` withholds significance for it.
+
+**These figures can only withhold a claim, never authorise one.** They were measured on a series
+that is not the one a shootout compares, and ``analyse`` lets a figure clear the ceiling only if
+its source is the evaluated series (``volab.compare.series_source``). EGARCH at h=22 reads 0.163%
+here and 230.79% on SPY at the same path count: the probe's process (alpha 0.05, beta 0.87) is far
+gentler than SPY's fit (alpha ~0.25, beta ~0.96), and a six-seed sd of an estimator with no finite
+mean is not evidence of precision. So every entry below is withheld wherever it is used, and
+re-measuring on the real panel -- with the source changed to name it -- is what would change that.
 """
 
 from __future__ import annotations

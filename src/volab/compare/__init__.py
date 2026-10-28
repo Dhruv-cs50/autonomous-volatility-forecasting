@@ -10,7 +10,9 @@ statistics live in ``dm`` and ``multiple`` and the only writer is ``sink`` (R95)
   membership is refused where ``n_eff < 2/alpha``;
 * R95 -- results go to a ``Sink``; nothing here opens a path;
 * R102 -- the measured Monte Carlo error is printed beside every simulated contestant, and no
-  significance is claimed for one above ``MC_ERROR_CEILING_PERCENT``.
+  significance is claimed for one above ``MC_ERROR_CEILING_PERCENT`` **or measured on a series
+  other than the one compared**: a figure from another series withholds a claim and never
+  authorises one.
 """
 
 from __future__ import annotations
@@ -40,8 +42,21 @@ BENCHMARKS: tuple[str, ...] = ("har_levels", "random_walk")
 
 # R72's band for a difference worth believing is 0.2-1.5% of Monte Carlo error. A simulated
 # contestant measured above the top of it has no significance claimed (R102): EGARCH at h=66 is
-# 3.273% at S = 100,000.
+# 3.273% at S = 100,000. The ceiling can only *withhold*. Clearing it is no evidence of precision
+# unless the figure was measured on the series being compared: EGARCH at h=22 is 0.163% on the
+# probe's gentler synthetic process and 230.79% on SPY at the same path count, and a six-seed sd
+# of an estimator with no finite mean is not a measurement of it.
 MC_ERROR_CEILING_PERCENT = 1.5
+
+
+def series_source(series: LossSeries) -> str:
+    """The name a Monte Carlo error carries when it was measured on exactly ``series``.
+
+    A figure's ``monte_carlo_source`` is compared to this by equality: it is the only way a figure
+    can clear :data:`MC_ERROR_CEILING_PERCENT` (see ``analyse``). The horizon is part of it because
+    the error is a property of the forecast at one horizon on one symbol's history.
+    """
+    return f"{series.symbol} h{series.horizon}"
 
 
 def analyse(
@@ -60,6 +75,12 @@ def analyse(
     model layer and this module imports no model. ``monte_carlo_source`` names the series they
     were measured on and is **required with them**: the number is printed beside a result, and
     without its source it reads as that result's own error.
+
+    **A figure authorises a claim only if it was measured on this series**, i.e. its source equals
+    :func:`series_source`. Any other source puts every measured contestant in ``unclaimed``
+    whatever the value; a figure above the ceiling is withheld on its own series too. A
+    contestant with no figure (``None``) is not flagged either way, as before. Witness:
+    ``test_a_figure_measured_on_another_series_can_withhold_a_claim_but_never_authorise_one``.
     """
     q = overlap_lag(series.horizon, series.stride)
     pairs = pairwise(series, q=q)
@@ -117,7 +138,8 @@ def analyse(
         unclaimed=tuple(
             name
             for name, value in errors.items()
-            if value is not None and value > MC_ERROR_CEILING_PERCENT
+            if value is not None
+            and (monte_carlo_source != series_source(series) or value > MC_ERROR_CEILING_PERCENT)
         ),
         refusal=None if series.n else "no origin is comparable on this loss: nothing to compare",
     )
@@ -248,9 +270,18 @@ def describe(comparison: Comparison, *, trials: int | None = None) -> list[str]:
         parts = _error_parts(c, tuple(c.monte_carlo_error))
         lines.append(
             f"  Monte Carlo error (R102), measured on the {c.monte_carlo_source}, "
-            f"no claim above {MC_ERROR_CEILING_PERCENT:g}%: " + "; ".join(parts)
+            f"no claim above {MC_ERROR_CEILING_PERCENT:g}% nor on a figure measured on another "
+            f"series: " + "; ".join(parts)
         )
     return lines
 
 
-__all__ = ["BENCHMARKS", "MC_ERROR_CEILING_PERCENT", "SIZES", "McsResult", "analyse", "describe"]
+__all__ = [
+    "BENCHMARKS",
+    "MC_ERROR_CEILING_PERCENT",
+    "SIZES",
+    "McsResult",
+    "analyse",
+    "describe",
+    "series_source",
+]

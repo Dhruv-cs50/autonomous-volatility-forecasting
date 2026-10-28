@@ -38,7 +38,7 @@ from scipy import stats
 import volab.compare.__main__ as compare_cli
 import volab.walkforward as wf
 import volab.walkforward.__main__ as walkforward_cli
-from volab.compare import MC_ERROR_CEILING_PERCENT, analyse, describe, multiple
+from volab.compare import MC_ERROR_CEILING_PERCENT, analyse, describe, multiple, series_source
 from volab.compare.cohorts import (
     COHORTS,
     MONTE_CARLO_ERROR_SOURCE,
@@ -779,6 +779,97 @@ def test_spa_names_a_benchmark_the_series_does_not_hold() -> None:
         superior_predictive_ability(_contenders(60, 0), "missing", q=0)
 
 
+def _dynamic_range(n: int = 247, *, big: float = 1.7e12, seed: int = 0) -> LossSeries:
+    """Three contestants near 1e-5 and ``egarch`` near ``big``: SPY's h=22 MSE, as recorded."""
+    rng = np.random.default_rng(seed)
+    columns = {
+        name: np.abs(rng.normal(1e-5, 3e-6, n)) for name in ("har_levels", "har_semilog", "garch")
+    }
+    columns["egarch"] = np.abs(rng.normal(big, big * 0.3, n))
+    return _series(columns, horizon=22, stride=5)
+
+
+def test_a_contestant_that_dominates_the_loss_scale_makes_the_confidence_set_a_refusal() -> None:
+    """Numerical degeneracy, which no other fixture in this file reaches.
+
+    Every MCS fixture above is ``common + gap + 0.3 * normal`` with ``gap <= 3``, so the largest
+    ratio between two contestants' mean losses anywhere in the suite is about 1.4. The suite
+    tested statistical correctness on well-conditioned input and structural degeneracy (identical
+    and constant contestants), but never **numerical** degeneracy -- and ``multiple._unestimable``
+    shows the project already knew how to reason about float64 resolution one level down
+    (``same_losses``' scaled tolerance). Here one mean loss is 1.7e12 and the rest are 1e-5, so
+    ``L_i - L_j`` is below half an ulp of the large value and arch 8.0.0's standardized row is one
+    repeated float: ``MCS._compute_r`` then takes ``loc.squeeze()[0]`` of a ``(m, 2)`` array, puts
+    an ``ndarray`` into ``eliminated`` and raised ``IndexError`` from ``Index.__getitem__``
+    (``probe/p7.py``). Witness for the refusal: this test, through ``analyse``'s own path at the
+    suite's reps=200, at both sizes."""
+    series = _dynamic_range()
+    assert (
+        max(map(np.mean, series.values.values())) / min(map(np.mean, series.values.values())) > 1e16
+    )
+    result = model_confidence_set(series, q=4, reps=200)
+    assert result.pvalues is None and result.members == {} and result.block is None
+    assert set(result.refusals) == {0.10, 0.25}, "refused at both sizes, not crashed"
+    for reason in result.refusals.values():
+        assert "egarch" in reason and "float64" in reason and "no confidence set" in reason
+    # The rest of ``analyse`` still runs on the same series: DM and SPA are not the tie's victims.
+    comparison = analyse(series, reps=200)
+    assert comparison.mcs.refusals == result.refusals
+    assert all(p.dm.headline.refusal is None for p in comparison.pairs)
+
+
+def _with_means(means: dict[str, float], n: int = 40) -> LossSeries:
+    """Independent noisy columns, each recentred so its mean is ``means[name]`` to rounding.
+
+    Independent noise, because a column that is another plus a constant is refused earlier by
+    ``same_losses`` and would never reach the guard under test.
+    """
+    columns = {}
+    for k, (name, mean) in enumerate(means.items()):
+        noise = np.random.default_rng(50 + k).normal(size=n)
+        columns[name] = mean + 0.1 * (noise - noise.mean())
+    return _series(columns, horizon=22, stride=5)
+
+
+def test_the_dynamic_range_guard_is_a_tolerance_and_is_tested_either_side_of_it() -> None:
+    """The guard refuses where two contestants' mean losses differ by at most
+    ``4 * eps * max|mean|`` (``same_losses``' tolerance, one level up) and some third contestant
+    exists to be differenced against them. Scale 1e6 puts the line at 8.9e-10."""
+    scale = 4 * np.finfo("float64").eps * 1.0e6
+    assert scale == pytest.approx(8.9e-10, rel=0.01)
+    clear = multiple._unestimable(_with_means({"a": 1.0, "b": 1.0 + 10 * scale, "huge": 1.0e6}))
+    assert clear is None, "ten tolerances apart is resolved, whatever the scale"
+    tied = multiple._unestimable(_with_means({"a": 1.0, "b": 1.0 + scale / 4, "huge": 1.0e6}))
+    assert tied is not None and "huge" in tied and "float64" in tied
+    # A pair has no third contestant to be differenced against them, so nothing can tie.
+    assert multiple._unestimable(_with_means({"a": 1.0, "b": 1.0 + scale / 4})) is None
+
+
+def test_the_dynamic_range_guard_is_a_conservative_superset_of_the_tie_arch_cannot_survive() -> (
+    None
+):
+    """Deliberately so. Means a quarter of the tolerance apart leave arch's standardized
+    differentials unequal in their last bits, so arch 8.0.0 runs (measured, this fixture); the
+    guard refuses anyway, because a result that depends on a one-ulp difference surviving the
+    subtraction is not one to report. The refusal direction is the safe one: the alternative
+    failure is a set that eliminates two models in a step."""
+    from arch.bootstrap import MCS
+
+    tolerance = 4 * np.finfo("float64").eps * 1.0e6
+    series = _with_means({"a": 1.0, "b": 1.0 + tolerance / 4, "huge": 1.0e6}, n=60)
+    assert multiple._unestimable(series) is not None
+    losses = pd.DataFrame({k: list(v) for k, v in series.values.items()})
+    MCS(losses, 0.1, reps=100, block_size=5, method="R", bootstrap="stationary", seed=1).compute()
+
+
+def test_the_dynamic_range_guard_is_for_the_confidence_set_and_not_for_spa() -> None:
+    """SPA differences against its benchmark and never reaches arch's ``_compute_r``, so the tie
+    is no reason to refuse it (``block_length`` is shared and must not raise on SPA's behalf)."""
+    series = _dynamic_range()
+    result = superior_predictive_ability(series, "har_levels", q=4, reps=200)
+    assert result.refusal is None and result.consistent is not None
+
+
 # ---------------------------------------------------------------------------
 # __init__.py and sink.py -- the analysis, its record, and the one thing that writes it
 # ---------------------------------------------------------------------------
@@ -943,9 +1034,9 @@ def test_a_simulated_contestant_above_the_error_floor_has_no_significance_claime
     assert MC_ERROR_CEILING_PERCENT == 1.5
     comparison = _comparison(
         monte_carlo_error={"har_levels": 0.514, "rival": 3.273, "random_walk": None},
-        monte_carlo_source=SOURCE,
+        monte_carlo_source="SPY h22",
     )
-    assert comparison.unclaimed == ("rival",)
+    assert comparison.unclaimed == ("rival",), "the figure is on this series, so only size decides"
     assert comparison.record()["unclaimed"] == ["rival"]
     text = "\n".join(describe(comparison))
     assert "3.273%" in text and "0.514%" in text
@@ -955,6 +1046,57 @@ def test_a_simulated_contestant_above_the_error_floor_has_no_significance_claime
     assert all("no claim" in line for line in rival_lines)
     clean = [line for line in describe(comparison) if "rival" not in line and " vs " in line]
     assert clean and not any("no claim" in line for line in clean)
+
+
+def test_a_figure_measured_on_another_series_can_withhold_a_claim_but_never_authorise_one() -> None:
+    """R102 follow-up. ``("egarch11_skewt", 22)`` is 0.163% on the probe's series, under the 1.5%
+    ceiling, so EGARCH at h=22 was *not* withheld -- while its measured spread on SPY at the same
+    path count is 230.79%. The probe's series is a gentler process (alpha 0.05, beta 0.87 against
+    SPY's ~0.25, ~0.96), and a six-seed sd is not a measurement of an estimator with no finite
+    mean: a small spread there is no evidence of precision. So a figure from another series is
+    withhold-only, whatever its value."""
+    own = series_source(_contenders(60, 0))
+    assert own == "SPY h1" and own != MONTE_CARLO_ERROR_SOURCE
+    series = _contenders(60, 0)
+    figures = {"a": 0.163, "b": 3.273, "c": None}
+    foreign = analyse(series, monte_carlo_error=figures, monte_carlo_source=SOURCE, reps=200)
+    assert foreign.unclaimed == ("a", "b"), "the low figure is withheld too; None is not a figure"
+    measured = analyse(series, monte_carlo_error=figures, monte_carlo_source=own, reps=200)
+    assert measured.unclaimed == ("b",), "only a figure measured on this series can clear it"
+    assert not any("a 0.163%, no claim" in x for x in describe(measured))
+    shown = [x for x in describe(foreign) if "a 0.163%" in x]
+    assert shown and all("a 0.163%, no claim" in x for x in shown)
+    assert all(SOURCE in x for x in shown), "the source stays named beside the figure"
+    # The same-named series at another horizon is another series.
+    other = dataclasses.replace(series, horizon=5)
+    assert analyse(
+        other, monte_carlo_error=figures, monte_carlo_source=own, reps=200
+    ).unclaimed == (
+        "a",
+        "b",
+    )
+
+
+def test_every_measured_cohort_figure_is_withheld_while_it_comes_from_the_probe_series() -> None:
+    """The shipped table, through the shipped source, onto a SPY series. At h=22 both simulated
+    contestants were claimable before this (0.207%, 0.163%); at h=66 only ``gjr11_skewt`` was."""
+    for horizon, expected in ((22, ("gjr", "egarch")), (66, ("gjr", "egarch"))):
+        base = _named_contenders(60, 0, ("har_levels", "random_walk", "gjr", "egarch"), (0.0,) * 4)
+        series = dataclasses.replace(base, horizon=horizon)
+        figures = {
+            "gjr": monte_carlo_error(SHOOTOUT, horizon)["gjr11_skewt"],
+            "egarch": monte_carlo_error(SHOOTOUT, horizon)["egarch11_skewt"],
+        }
+        assert all(v is not None for v in figures.values())
+        comparison = analyse(
+            series, monte_carlo_error=figures, monte_carlo_source=MONTE_CARLO_ERROR_SOURCE, reps=200
+        )
+        assert comparison.unclaimed == expected, horizon
+        assert not any(
+            comparison.pair_claimed(pair)
+            for pair in comparison.pairs
+            if {pair.left, pair.right} & set(expected)
+        )
 
 
 def _named_contenders(n: int, q: int, names: tuple[str, ...], gaps: tuple[float, ...]):
@@ -976,7 +1118,7 @@ def test_every_line_naming_a_simulated_contestant_carries_its_error_in_or_out_of
         series,
         benchmarks=("har",),
         monte_carlo_error={"gjr": 0.207, "egarch": 3.273},
-        monte_carlo_source=SOURCE,
+        monte_carlo_source=series_source(series),
     )
     assert comparison.claims_withheld is False
     assert all("egarch" not in members for members in comparison.mcs.members.values()), (
@@ -1007,7 +1149,9 @@ def test_every_line_naming_a_simulated_contestant_carries_its_error_in_or_out_of
 def test_a_verdict_is_stated_only_where_it_is_claimed() -> None:
     series = _named_contenders(247, 4, ("har", "garch", "gjr", "egarch"), (0.0, 0.0, 0.01, 3.0))
     comparison = analyse(
-        series, monte_carlo_error={"gjr": 0.207, "egarch": 3.273}, monte_carlo_source=SOURCE
+        series,
+        monte_carlo_error={"gjr": 0.207, "egarch": 3.273},
+        monte_carlo_source=series_source(series),
     )
     by_pair = {(p.left, p.right): p for p in comparison.pairs}
     clear = by_pair[("har", "gjr")]
@@ -1685,7 +1829,7 @@ def test_spa_is_withheld_when_a_contestant_it_tests_has_no_claim() -> None:
     flagged = analyse(
         series,
         monte_carlo_error={"gjr11_skewt": 3.273},
-        monte_carlo_source=SOURCE,
+        monte_carlo_source=series_source(series),
     )
     assert not flagged.claims_withheld and flagged.unclaimed == ("gjr11_skewt",)
     assert not any(flagged.spa_claimed(spa) for spa in flagged.spa)
