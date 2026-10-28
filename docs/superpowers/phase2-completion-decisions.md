@@ -504,3 +504,105 @@ it happened. And it implemented clause 8 before writing the plant test, then dem
 could fail by neutering the clause — which is not test-first, is reported as not test-first, and is
 weaker evidence than a genuine red run. The same departure as US-3.2 and US-3.3, and the third
 time it is worth noting that the method keeps losing to the convenience of writing the code first.
+
+---
+
+## The partial shootout run, recorded as partial
+
+`python -m volab.compare run`, all defaults, on `2e9e31b` with a clean tree. **It did not
+finish.** It appended **42 of an intended 168 trials** and exited 1 after SPY h=22, on a crash
+inside `arch`'s model confidence set. Recorded here in full rather than re-run and quietly
+replaced, because this document's own standard is that a run which happened is part of the
+record.
+
+```
+storage root …/vol-lab/data
+reads stop at dev_end 2025-12-31
+git 2e9e31b61ce3, clean
+  251 origin(s) from 2021-01-04 to 2025-12-24
+  truncation equivalence: 251 of 251 origins identical
+  250 origin(s) from 2021-01-04 to 2025-12-17
+  truncation equivalence: 250 of 250 origins identical
+  247 origin(s) from 2021-01-04 to 2025-11-25
+  truncation equivalence: 247 of 247 origins identical
+```
+
+- **R112 — the 42 trials are committed and counted.** R74 exists for this case: a number that was
+  computed must not vanish because the run that produced it later failed, and a ledger that drops
+  a crashed run's trials is the forking-paths hole it was built to close. Verified rather than
+  assumed: every appended line carries sha `2e9e31b`, `git_dirty: false`, one shared `at` and
+  cohort `phase2-shootout`; the 72 pre-existing baseline lines are untouched.
+
+  **So the ledger reads 114 lines, of which 42 come from a partial run, and no write-up may
+  describe it as 240.** The intended figure is on the board; the actual figure is on the ledger;
+  they differ and the difference is the point. *Cost if wrong:* a reader takes 114 for a complete
+  shootout.
+
+### What the three completed configurations say, with every caveat attached
+
+**Truncation equivalence held at every origin of every configuration that ran** — 251 of 251, 250
+of 250, 247 of 247, no disagreement. The leakage check rode along for free, as designed, and the
+seven-contestant cohort did not move it.
+
+On **QLIKE**, and this was not expected: the GARCH family leads `har_levels` at all three
+horizons that completed.
+
+| | best | second | third |
+|---|---|---|---|
+| h=1 | `egarch11_skewt` −8.25987 | `gjr11_skewt` −8.24700 | `har_levels` −8.23195 |
+| h=5 | `gjr11_skewt` −6.66089 | `har_levels` −6.63694 | `garch11_skewt` −6.63434 |
+| h=22 | `garch11_skewt` −5.07616 | `gjr11_skewt` −5.03890 | `har_levels` −5.00938 |
+
+**Nothing may be concluded from that table yet, and the reasons are not formalities.** It is
+**SPY only** — QQQ and IWM never ran. The margins are in the third decimal of a loss whose level
+is meaningless (R73's caution: QLIKE is reported without its additive constant, so only
+differences within a configuration mean anything). The model confidence sets at h=1 and h=5
+contain **six or seven of the seven contestants**, so the sets separate almost nothing. And the
+same EGARCH that leads h=1 on QLIKE has an MSE of **1.70e+12** at h=22 — so at minimum one
+contestant is producing a number on one loss while being catastrophically wrong on the other,
+which is itself a reason to distrust its QLIKE ranking rather than to report it.
+
+Said plainly because a partial run showing the new contestants ahead is exactly the result it
+would be most tempting to quote early.
+
+### The first real disagreement the two-column DM design had to refuse
+
+R92's second column existed on the argument that at short horizons the headline estimator reduces
+to the sample variance while volatility clustering leaves the losses autocorrelated anyway. On its
+first outing against real data it earned that:
+
+```
+random_walk vs garch11_skewt: d_bar=+4.75e-07
+  | headline t=+1.853 p=0.0650 | bartlett z=+2.3 p=0.0214
+  [columns disagree at 5%: both shown, neither claimed]
+```
+
+One column says not significant, the other says significant, and the harness **printed both and
+claimed neither** rather than taking the convenient one. That is the first time the comparison
+layer had to decline something real.
+
+Also confirmed on real data: **`q = 0` at h=5 with stride 5**, the counter-intuitive value R92
+derived and flagged as the case where intuition says otherwise.
+
+### Two defects, under root-cause diagnosis before any fix
+
+Recorded now; the rulings follow the diagnosis, because patching a statistical layer on a
+hypothesis is how a number nobody can trust gets produced.
+
+1. **`arch` 8.0.0's model confidence set crashes against `pandas` 3.0.6**, in the elimination path
+   of `_format_pvalues`, where an index array reaches an Arrow-backed `Index` that rejects it. It
+   did **not** fire at h=1 or h=5 although eliminations demonstrably happened there, so "any
+   elimination" is not the trigger. **The more serious fact is that all 152 tests in
+   `tests/test_compare.py` pass**: they run on synthetic loss series, and the headline function
+   dies on real data. A suite that is green while the thing it covers fails in production is this
+   project's founding complaint, now landed on its newest code.
+2. **EGARCH diverges progressively on real data**: MSE `3.76e-07` at h=1 (second best),
+   `8.38e-05` at h=5 (a hundredfold worse than every rival), `1.70e+12` at h=22. A variance
+   forecast of order 1e6 against a target of order 1e-5 is not a forecast. R102 predicted trouble
+   at h=66 from Monte-Carlo spread on a synthetic probe series; the real failure is far larger and
+   arrives at h=22.
+
+   **This is also what the Monte-Carlo provenance label was for.** The h=22 line printed
+   `MC error 0.163% (synthetic probe series, not SPY)` beside a contestant that was exploding — a
+   calm figure, measured on other data, useless here. The label stopped it being read as SPY's
+   own; a bare `0.163%` would have made the output look settled.
