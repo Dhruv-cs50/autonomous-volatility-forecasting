@@ -66,7 +66,10 @@ contestant's noise is wider than the differences being compared.
 
 ## 3. The decision rule
 
-Fixed now:
+Fixed now. **Both bullets below were put to the user as my proposals and confirmed by them**, so
+they are recorded as the user's decisions and not as a builder's defaults — which matters, because
+the first one permits an unsatisfying outcome and the second defines failure in a way that does
+not include a bad score:
 
 - **The champion** is the contestant in the 10% model confidence set with the lowest QLIKE, at
   **h=1 on SPY**, chosen in advance as the primary configuration. If the 10% set has one member,
