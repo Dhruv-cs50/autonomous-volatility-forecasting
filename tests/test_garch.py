@@ -23,6 +23,7 @@ import math
 import warnings
 import zlib
 from collections.abc import Callable
+from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -671,3 +672,108 @@ def _kappa_by_quadrature(eta: float, lam: float, *, u_max: float = 30.0, n: int 
 @pytest.mark.parametrize("lam", [-0.9, -0.5, -0.2, 0.0, 0.35, 0.8])
 def test_the_closed_form_matches_an_independent_quadrature(eta: float, lam: float) -> None:
     assert garch._kappa(eta, lam) == pytest.approx(_kappa_by_quadrature(eta, lam), abs=1e-10)
+
+
+# ---------------------------------------------------------------------------
+# The path sum and the parameter wiring (R117, R118): two witnesses that need no kappa.
+# ---------------------------------------------------------------------------
+
+LABELS = ["omega", "alpha[1]", "gamma[1]", "beta[1]", "eta", "lambda"]
+HORIZONS = (1, 5, 22, 66)
+
+
+def test_the_path_sum_is_the_recursion_summed() -> None:
+    """``m_1 = first``, ``m_{k+1} = omega + phi * m_k``, summed over ``k = 1..h``."""
+    assert garch._path_sum(0.5, 0.5, 2.0, 1) == 2.0
+    # 2, 1.5, 1.25, 1.125
+    assert garch._path_sum(0.5, 0.5, 2.0, 4) == pytest.approx(2.0 + 1.5 + 1.25 + 1.125, rel=1e-15)
+
+
+@pytest.mark.parametrize("horizon", HORIZONS)
+def test_the_path_sum_survives_a_persistence_one_ulp_from_one(horizon: int) -> None:
+    """Why the recursion is iterated and the geometric sum is not (M11).
+
+    ``alpha + beta`` arrives as ``1 - O(eps)``, so ``1 - phi`` is an ulp or two and the
+    closed-form ``G = (1 - phi**h) / (1 - phi)`` is a ratio of two numbers that have lost all but a
+    digit. Exact rational arithmetic on the same float ``phi`` is the reference.
+    """
+    omega, first = 1e-3, 0.8
+    phi = 1.0 - 2.0**-52
+    exact, m = Fraction(0), Fraction(first)
+    for _ in range(horizon):
+        exact += m
+        m = Fraction(omega) + Fraction(phi) * m
+    assert garch._path_sum(omega, phi, first, horizon) == pytest.approx(float(exact), rel=1e-14)
+
+
+def test_a_label_that_is_not_in_the_fit_is_a_value_error_naming_what_arch_returned() -> None:
+    params = pd.Series([0.05, 0.05, 0.90, 8.0, -0.3], index=[*LABELS[:2], *LABELS[3:]])
+    with pytest.raises(ValueError, match=r"gamma\[1\].*omega.*alpha\[1\].*beta\[1\]"):
+        garch._read(params, "gamma[1]", name="gjr11_skewt")
+    assert garch._read(params, "beta[1]", name="gjr11_skewt") == 0.90
+
+
+def test_a_symmetric_fit_has_no_leverage_term_and_the_persistence_refuses_it() -> None:
+    """Reading by position would have answered ``beta`` for ``gamma``: the label read cannot."""
+    params = pd.Series([0.05, 0.05, 0.90, 8.0, -0.3], index=[*LABELS[:2], *LABELS[3:]])
+    with pytest.raises(ValueError, match="gamma"):
+        garch._persistence(params, name="gjr11_skewt")
+
+
+def test_the_persistence_is_alpha_plus_gamma_kappa_plus_beta() -> None:
+    params = pd.Series([0.05, 0.08, 0.16, 0.80, 6.0, -0.5], index=LABELS)
+    expected = 0.08 + 0.16 * garch._kappa(6.0, -0.5) + 0.80
+    assert garch._persistence(params, name="gjr11_skewt") == pytest.approx(expected, rel=1e-15)
+
+
+def _arch_analytic_sum(fitted: Forecaster, horizon: int) -> float:
+    """arch's own analytic path sum, in percent-squared, for a result we did not compute."""
+    result = fitted.result  # type: ignore[attr-defined]
+    steps = result.forecast(horizon=horizon, method="analytic", reindex=False).variance
+    return float(steps.iloc[-1].sum(skipna=False))
+
+
+def _first_step(fitted: Forecaster) -> float:
+    return float(fitted.result.forecast(horizon=1, reindex=False).variance.iloc[-1, 0])  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize("horizon", HORIZONS)
+def test_w1_the_path_sum_reproduces_arch_analytic_garch_with_no_kappa_in_sight(
+    horizon: int,
+) -> None:
+    """For ``o = 0`` ``phi = alpha + beta`` and arch's analytic recursion is the true mean.
+
+    Validates the recursion, the ``omega / alpha[1] / beta[1]`` label reads, the ``m_1`` handoff
+    (not an expectation) and the summation. Cannot validate ``gamma`` or ``kappa``. Measured at
+    3.0e-15 relative on four SPY origins; the bound here is 1e-11.
+    """
+    fitted = GARCH11_SKEWT.fit(_view(_returns()))
+    p = fitted.result.params  # type: ignore[attr-defined]
+    omega, alpha, beta = (
+        garch._read(p, label, name="w1") for label in (garch._OMEGA, garch._ALPHA, garch._BETA)
+    )
+    ours = garch._path_sum(omega, alpha + beta, _first_step(fitted), horizon)
+    assert ours == pytest.approx(_arch_analytic_sum(fitted, horizon), rel=1e-11)
+
+
+@pytest.mark.parametrize("horizon", HORIZONS)
+def test_w2_arch_analytic_gjr_is_the_recursion_at_kappa_one_half(
+    horizon: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R118's root cause as a test and not a reading of library source.
+
+    arch hard-codes ``kappa = 1/2`` in ``GARCH.constraints`` *and* in its analytic recursion, so its
+    analytic GJR path sum is ``_path_sum`` at ``phi = alpha + gamma/2 + beta`` (3.3e-15 relative on
+    SPY). This one, unlike W1, covers the ``gamma[1]`` read and the leverage term.
+    """
+    fitted = _few(GJR11_SKEWT).fit(_view(_returns()))
+    p = fitted.result.params  # type: ignore[attr-defined]
+    # The production persistence with kappa pinned to arch's 1/2: so the label reads and the
+    # ``alpha + gamma*kappa + beta`` arithmetic under test are ours, not re-typed here.
+    monkeypatch.setattr(garch, "_kappa", lambda eta, lam: 0.5)
+    phi_half = garch._persistence(p, name="w2")
+    assert phi_half == pytest.approx(p["alpha[1]"] + p["gamma[1]"] / 2 + p["beta[1]"], rel=1e-15)
+    ours = garch._path_sum(
+        garch._read(p, "omega", name="w2"), phi_half, _first_step(fitted), horizon
+    )
+    assert ours == pytest.approx(_arch_analytic_sum(fitted, horizon), rel=1e-11)

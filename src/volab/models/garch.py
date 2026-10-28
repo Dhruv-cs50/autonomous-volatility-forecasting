@@ -190,6 +190,55 @@ def _kappa(eta: float, lam: float) -> float:
     return _skewt_moments(eta, lam, negative=True)[2]
 
 
+# The parameter labels arch gives a Zero-mean GARCH/GJR fit with skew-t errors. Verified against
+# a live fit: ``omega, alpha[1], gamma[1], beta[1], eta, lambda`` for o=1, the same without
+# ``gamma[1]`` for o=0.
+_OMEGA, _ALPHA, _GAMMA, _BETA = "omega", "alpha[1]", "gamma[1]", "beta[1]"
+_ETA, _LAMBDA = "eta", "lambda"
+
+
+def _read(params: pd.Series, label: str, *, name: str) -> float:
+    """``params[label]`` as a float, or a ``ValueError`` naming what arch actually returned.
+
+    Not a ``ModelSkip``: a missing label is wiring, not a property of the data, and every origin
+    would be equally broken. ``evaluate`` catches neither, so it aborts the run.
+    """
+    if label not in params.index:
+        raise ValueError(
+            f"{name}: the fit has no {label!r} parameter; arch returned "
+            f"{list(params.index)}. Reading by position would have answered a number."
+        )
+    return float(params[label])
+
+
+def _persistence(params: pd.Series, *, name: str) -> float:
+    """GJR's mean multiplier ``phi = alpha + gamma*kappa + beta``, read from a fitted result.
+
+    ``E[z**2] = 1`` by arch's standardisation, so ``alpha`` is not multiplied by anything.
+    """
+    kappa = _kappa(_read(params, _ETA, name=name), _read(params, _LAMBDA, name=name))
+    return (
+        _read(params, _ALPHA, name=name)
+        + _read(params, _GAMMA, name=name) * kappa
+        + _read(params, _BETA, name=name)
+    )
+
+
+def _path_sum(omega: float, phi: float, first: float, horizon: int) -> float:
+    """``sum_{k=1..h} m_k`` for ``m_1 = first``, ``m_{k+1} = omega + phi*m_k``, by iteration.
+
+    Iterated and not summed in closed form: ``alpha + beta`` arrives as ``1 - O(eps)``, the
+    ``phi == 1`` branch of the geometric sum never fires, and the ratio ``(1 - phi**h)/(1 - phi)``
+    is then wrong by up to 51% at h=66. Iteration reproduces an 80-bit evaluation exactly.
+    ``first`` is known at the origin and is not an expectation.
+    """
+    total, step = 0.0, first
+    for _ in range(horizon):
+        total += step
+        step = omega + phi * step
+    return total
+
+
 @dataclass(frozen=True)
 class _Fitted:
     """A fitted GARCH. The forecast is made on demand, so one fit answers every horizon."""
