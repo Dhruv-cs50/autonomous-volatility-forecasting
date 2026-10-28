@@ -28,14 +28,16 @@ from __future__ import annotations
 import ast
 import dataclasses
 import datetime as dt
+import importlib.util
 import inspect
 import math
+import re
 import warnings
 import zlib
 from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import Any, get_args
 
 import numpy as np
@@ -1014,3 +1016,94 @@ def test_an_exact_forecast_from_a_fit_without_the_leverage_label_is_a_value_erro
     result.params = _FakeResult.params.drop("gamma[1]")  # type: ignore[misc]
     with pytest.raises(ValueError, match=r"gamma\[1\]"):
         _forecaster(GJR11_SKEWT, result).forecast(5)
+
+
+# ---------------------------------------------------------------------------
+# The probe (R32, R79): the figures R90 and the exact-forecast design cite must stay regenerable.
+# ---------------------------------------------------------------------------
+
+PROBE = Path(__file__).resolve().parents[1] / "tools" / "measure_garch_forecast_error.py"
+
+
+def _probe(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """The probe, loaded from ``tools/`` (not a package), cheap enough to run in the suite."""
+    monkeypatch.syspath_prepend(str(PROBE.parent))  # for ``_harness``
+    spec = importlib.util.spec_from_file_location("measure_garch_forecast_error", PROBE)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "REFERENCE_PATHS", 2_000)
+    return module
+
+
+def test_the_probe_prints_an_analytic_figure_for_every_specification_that_has_one(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R90's headline figure must survive ``__post_init__`` refusing ``("GARCH", 1, "analytic")``.
+
+    The probe used to build ``replace(spec, method="analytic")`` inside ``except ValueError``, so
+    the refusal would have printed "analytic unavailable" and exited 0 with the figure gone.
+    """
+    probe = _probe(monkeypatch)
+    returns = probe.simulate_returns(600, 20241012)
+    probe.block_analytic_against_simulation(returns, (1, 5))
+    out = capsys.readouterr().out
+    assert "unavailable" not in out
+    for name in ("garch11_skewt", "gjr11_skewt"):
+        for horizon in (1, 5):
+            (line,) = [ln for ln in out.splitlines() if re.match(rf"{name}\s+h={horizon}\s", ln)]
+            assert re.search(r"analytic\s+\d+\.\d+\s+exact\s+\d+\.\d+\s+sim", line), line
+    (egarch,) = [ln for ln in out.splitlines() if re.match(r"egarch11_skewt\s+h=1\s", ln)]
+    assert "no analytic recursion" in egarch and "R114" in egarch
+
+
+def test_a_refusal_inside_the_probe_escapes_it_rather_than_printing_unavailable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The red case for the above: a planted ``ValueError`` must propagate, not become a line."""
+    probe = _probe(monkeypatch)
+    returns = probe.simulate_returns(600, 20241012)
+
+    def refuse(*_: object) -> float:
+        raise ValueError("planted refusal")
+
+    monkeypatch.setattr(probe, "_path_sum", refuse)
+    with pytest.raises(ValueError, match="planted refusal"):
+        probe.block_analytic_against_simulation(returns, (5,))
+    assert "unavailable" not in capsys.readouterr().out
+
+
+def test_the_probe_stops_when_the_recursion_no_longer_matches_archs_analytic_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """W2 at probe level: a figure is never printed beside a recursion that disagrees with arch."""
+    probe = _probe(monkeypatch)
+    returns = probe.simulate_returns(600, 20241012)
+    monkeypatch.setattr(probe, "_arch_analytic", lambda fitted, horizon: 1.0)
+    with pytest.raises(RuntimeError, match="no longer matches arch"):
+        probe.block_analytic_against_simulation(returns, (5,))
+
+
+def test_the_probe_catches_no_value_error() -> None:
+    """AST: no handler for ``ValueError`` anywhere in it, so nothing it calls can be swallowed."""
+    handlers = [
+        node
+        for node in ast.walk(ast.parse(PROBE.read_text()))
+        if isinstance(node, ast.ExceptHandler)
+        and any(isinstance(n, ast.Name) and n.id == "ValueError" for n in ast.walk(node))
+    ]
+    assert handlers == []
+
+
+def test_the_probe_shows_the_geometric_sum_failing_where_the_iteration_does_not(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """M11/M12 regenerable: a persistence one ulp below 1 breaks the geometric sum, not the loop."""
+    probe = _probe(monkeypatch)
+    returns = probe.simulate_returns(600, 20241012)
+    probe.block_path_sum_numerics(returns, (66,))
+    rows = [ln for ln in capsys.readouterr().out.splitlines() if "planted" in ln]
+    assert len(rows) == 2
+    for row in rows:
+        iteration, geometric = (float(x) for x in re.findall(r"err (\S+)", row))
+        assert iteration < 1e-12 and geometric > 1e-2, row
