@@ -28,13 +28,20 @@ and a contestant declaring them is the durable fix and a design change, not this
 Witness for membership, on its own line:
 ``test_the_multistep_cohort_is_the_shootout_without_egarch_and_is_runnable_by_name``.
 
-**The Monte Carlo error table (R102).** ``gjr11_skewt`` and ``egarch11_skewt`` forecast by
-simulation, so their figures carry a sampling error that is *measured*, not assumed, and printed
-beside them. The figures are those R102 records, from ``tools/measure_garch_forecast_error.py`` at
+**The Monte Carlo error table (R102).** ``egarch11_skewt`` is the one contestant that forecasts by
+simulation, so its figures carry a sampling error that is *measured*, not assumed, and printed
+beside them. ``gjr11_skewt`` used to be the other and no longer is: its forecast is exact
+(R117-R123), so it has no Monte-Carlo error to measure, drops out of :func:`monte_carlo_error` at
+every horizon, and its two figures were deleted rather than left as live-looking data nothing
+could read. The figures are those R102 records, from ``tools/measure_garch_forecast_error.py`` at
 ``S = 100_000`` paths, **on the probe's series and not on SPY's** (R102 says they are
 series-dependent). h=1 and h=5 were never measured and are reported as ``None``, not interpolated.
 EGARCH at h=66 is 3.273% -- *more* paths made it worse than 0.951% at S=10,000 -- which is why
-``volab.compare`` withholds significance for it.
+``volab.compare`` withholds significance for it. Its two entries are unreachable in the registered
+pairing (:data:`MULTISTEP` has no EGARCH) but reachable by construction, and their job is to stop a
+figure being invented for a path count or horizon nobody measured. R119's instruction that the
+table carry SPY figures is superseded: for GJR the table has no reader, and for EGARCH no finite
+mean exists (R114) whose error could be measured.
 
 **These figures can only withhold a claim, never authorise one.** They were measured on a series
 that is not the one a shootout compares, and ``analyse`` lets a figure clear the ceiling only if
@@ -75,10 +82,9 @@ COHORTS: dict[str, Cohort] = {SHOOTOUT.name: SHOOTOUT, MULTISTEP.name: MULTISTEP
 MONTE_CARLO_ERROR_SOURCE = "synthetic probe series, not SPY"
 
 # Percent, ``(contestant, horizon) -> sd over six seeds as a percentage of the mean``, at
-# S = 100_000. R102's table, re-measured by the coordinator from the committed probe.
+# S = 100_000. R102's table, re-measured by the coordinator from the committed probe. Only the
+# contestants that simulate: ``test_every_monte_carlo_figure_is_reachable`` fails on a stale key.
 MONTE_CARLO_ERROR_PERCENT: dict[tuple[str, int], float] = {
-    ("gjr11_skewt", 22): 0.207,
-    ("gjr11_skewt", 66): 0.514,
     ("egarch11_skewt", 22): 0.163,
     ("egarch11_skewt", 66): 3.273,
 }
@@ -88,8 +94,9 @@ def monte_carlo_error(cohort: Cohort, horizon: int) -> dict[str, float | None]:
     """The measured error in percent for each simulated contestant in ``cohort`` at ``horizon``.
 
     A contestant is simulated if it *says* so (``method == "simulation"``), not if it is called a
-    particular name. ``None`` means no measurement exists -- every horizon but 22 and 66, and any
-    path count but the one measured -- and is printed as "not measured".
+    particular name. An exact or analytic contestant has no sampling error and is absent. ``None``
+    means no measurement exists -- every horizon but 22 and 66, and any path count but the one
+    measured -- and is printed as "not measured".
     """
     out: dict[str, float | None] = {}
     for model in cohort.models:

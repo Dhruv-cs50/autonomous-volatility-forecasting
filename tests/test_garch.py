@@ -1,17 +1,26 @@
 """The GARCH family as contestants: three specifications, one aggregation, one refusal (US-3.2).
 
-**What needs the full simulation count: nothing in this file.** The shipped default is
-``simulations=100_000`` (R90) and ``test_the_shipped_simulation_count_is_one_hundred_thousand``
-pins it as a number, but every test that actually fits and forecasts builds its model with a few
-hundred paths, because none of the properties under test depend on the count: they are about
-what is passed to ``arch`` (a fake result records it), about determinism (any count is
-deterministic under a fixed seed), and about the aggregation (linear whatever the paths). The
-expensive claim -- how far the analytic and simulated forecasts sit apart at S=100,000 -- is a
-measurement and not a test: ``tools/measure_garch_forecast_error.py`` (R32 applied to numbers).
+**What needs the full simulation count: one test.** The shipped default is ``simulations=100_000``
+(R90) and ``test_the_shipped_simulation_count_is_one_hundred_thousand`` pins it as a number, and
+``test_w4_exact_agrees_with_simulation_where_simulation_is_trustworthy`` is the one test that
+runs it, because its claim is a 1% agreement that 300 paths could not carry. Every other test
+that fits and forecasts builds its model with a few hundred paths, because none of the properties
+under test depend on the count: they are about what is passed to ``arch`` (a fake result records
+it), about determinism (any count is deterministic under a fixed seed), and about the aggregation
+(linear whatever the paths). The expensive claims -- how far the analytic, exact and simulated
+forecasts sit apart on a persistent leveraged series -- are measurements and not tests:
+``tools/measure_garch_forecast_error.py`` (R32 applied to numbers).
 
-The shared conformance suite is run once per specification. The two simulated specifications are
-run at horizon 22 and not 1: at h=1 the step-one variance is deterministic, so a simulation that
-ignored its seed would still pass clauses 5 and 6 vacuously.
+The exact forecast (R117-R123, ``docs/superpowers/specs/2026-10-28-gjr-exact-forecast-design.md``)
+is validated by five witnesses that each see something the others cannot: W1 and W2 check the
+recursion and the parameter wiring against ``arch`` with no ``kappa`` in play; W3 checks ``kappa``
+by identities with no recursion in play; W4 checks them together against simulation on a series
+with real skew; W5 checks that an exact forecast reads no seed.
+
+The shared conformance suite is run once per specification. EGARCH, the one remaining simulation,
+is run at horizon 22 and not 1: at h=1 the step-one variance is deterministic, so a simulation
+that ignored its seed would still pass clauses 5 and 6 vacuously. GJR is exact and reads no seed
+at any horizon; it runs at 22 so the recursion, not only step one, is what is conformed.
 """
 
 from __future__ import annotations
@@ -19,6 +28,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import datetime as dt
+import inspect
 import math
 import warnings
 import zlib
@@ -26,11 +36,12 @@ from collections.abc import Callable
 from fractions import Fraction
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, get_args
 
 import numpy as np
 import pandas as pd
 import pytest
+from arch.univariate.base import ARCHModelResult
 from arch.univariate.distribution import SkewStudent
 from arch.utility.exceptions import ConvergenceWarning, DataScaleWarning, StartingValueWarning
 from model_conformance import alone, conformance_suite, make_toy, run_cohort
@@ -38,7 +49,14 @@ from model_conformance import alone, conformance_suite, make_toy, run_cohort
 import volab.models.garch as garch
 from volab.errors import ModelSkip
 from volab.models.base import Forecaster, Model, TrainingView
-from volab.models.garch import EGARCH11_SKEWT, GARCH11_SKEWT, GARCH_MODELS, GJR11_SKEWT, GarchModel
+from volab.models.garch import (
+    EGARCH11_SKEWT,
+    GARCH11_SKEWT,
+    GARCH_MODELS,
+    GJR11_SKEWT,
+    GarchModel,
+    Method,
+)
 
 SOURCE = Path(garch.__file__)
 FEW = 300  # simulated paths: enough to be a simulation, few enough to be fast
@@ -79,14 +97,21 @@ def _view(
 
 
 def _few(spec: GarchModel) -> GarchModel:
+    """Fewer paths for a spec that simulates. A no-op for GJR, which is exact and simulates none;
+    left applied to it anyway so every call site reads the same."""
     return dataclasses.replace(spec, simulations=FEW)
 
 
 class _FakeResult:
     """Stands in for ``ARCHModelResult``: records how it was asked, answers a given variance."""
 
-    # The last two entries are the skew-t shape ``(eta, lambda)``, as in a real result.
-    params = pd.Series([0.05, 0.05, 0.90, 8.0, -0.3])
+    # Labelled as arch labels a GJR fit, because the exact path reads by label. The last two
+    # entries are the skew-t shape ``(eta, lambda)``, as in a real result, so the simulated path's
+    # positional ``[-shape.num_params:]`` read still lands on them.
+    params = pd.Series(
+        [0.05, 0.05, 0.05, 0.90, 8.0, -0.3],
+        index=["omega", "alpha[1]", "gamma[1]", "beta[1]", "eta", "lambda"],
+    )
 
     def __init__(self, variance: list[float], emit: Callable[[], None] = lambda: None) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -110,7 +135,11 @@ def _forecaster(spec: GarchModel, result: object, *, observations: int = 10) -> 
 
 
 def test_the_three_specs_are_exactly_what_r91_names() -> None:
-    """Witness for R91's table: names, volatility process, forecast method, and the count."""
+    """Witness for R91's table: names, volatility process, forecast method, and the count.
+
+    Amended from ``("GARCH", 1, "simulation")`` for GJR: R91's "GJR and EGARCH are simulated"
+    became "GJR is exact and EGARCH is simulated" (R117-R123).
+    """
     assert [spec.name for spec in GARCH_MODELS] == [
         "garch11_skewt",
         "gjr11_skewt",
@@ -119,7 +148,7 @@ def test_the_three_specs_are_exactly_what_r91_names() -> None:
     assert GARCH_MODELS == (GARCH11_SKEWT, GJR11_SKEWT, EGARCH11_SKEWT)
     assert [(s.volatility, s.o, s.method) for s in GARCH_MODELS] == [
         ("GARCH", 0, "analytic"),
-        ("GARCH", 1, "simulation"),
+        ("GARCH", 1, "exact"),
         ("EGARCH", 1, "simulation"),
     ]
 
@@ -136,8 +165,11 @@ def test_each_spec_fits_zero_mean_skew_t_of_the_stated_process(spec: GarchModel)
 
 
 def test_the_shipped_simulation_count_is_one_hundred_thousand() -> None:
-    """R90: ``S=10,000`` was measured at up to 1.4% uncertain, worse than the leak R72 caught."""
-    assert GJR11_SKEWT.simulations == EGARCH11_SKEWT.simulations == 100_000
+    """R90: ``S=10,000`` was measured at up to 1.4% uncertain, worse than the leak R72 caught.
+
+    EGARCH is the only shipped spec that simulates; GJR's field is the default and unread.
+    """
+    assert garch.SIMULATIONS == EGARCH11_SKEWT.simulations == 100_000
 
 
 def test_the_models_satisfy_the_protocol_and_claim_a_horizon_free_fit() -> None:
@@ -251,47 +283,96 @@ def _module() -> ast.Module:
     return ast.parse(SOURCE.read_text())
 
 
-def test_the_analytic_method_is_used_only_for_the_symmetric_specification() -> None:
-    """R90: ``arch``'s analytic GJR is 17.7% low at h=66 under skew-t. This would have caught it.
+LEGAL = {
+    ("GARCH", 0, "analytic"),
+    ("GARCH", 1, "exact"),
+    ("GARCH", 1, "simulation"),
+    ("EGARCH", 1, "simulation"),
+}
 
-    The string must occur exactly once in the module's code, and inside the call that builds
-    ``garch11_skewt``. A docstring is a different ``Constant`` -- its value is a sentence.
+
+def test_the_method_literal_names_exactly_the_three_supported_methods() -> None:
+    """The membership witness for ``assert_never``'s exhaustiveness in ``_Fitted.forecast``."""
+    assert get_args(Method) == ("analytic", "simulation", "exact")
+
+
+@pytest.mark.parametrize("method", get_args(Method))
+@pytest.mark.parametrize("o", [0, 1])
+@pytest.mark.parametrize("volatility", ["GARCH", "EGARCH"])
+def test_the_method_and_the_variance_process_must_agree_at_construction(
+    volatility: Any, o: int, method: Any
+) -> None:
+    """The full product, so "everything else raises" is what is asserted and not three examples.
+
+    ``("GARCH", 1, "analytic")`` is R90's failure mode (arch's recursion is ``kappa = 1/2``);
+    ``("EGARCH", 1, "exact")`` would read EGARCH's parameters by the *same labels* and answer a
+    confident wrong number; ``("GARCH", 0, "exact")`` has no ``gamma[1]`` to read.
     """
-    tree = _module()
-    occurrences = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Constant) and node.value == "analytic"
-    ]
-    assert len(occurrences) == 1, f"'analytic' appears {len(occurrences)} times in the code"
-    owners = [
-        call
-        for call in ast.walk(tree)
-        if isinstance(call, ast.Call)
-        and any(node is occurrences[0] for node in ast.walk(call))
-        and any(isinstance(n, ast.Constant) and n.value == "garch11_skewt" for n in ast.walk(call))
-    ]
-    assert owners, "the one 'analytic' is not inside the garch11_skewt specification"
+    if (volatility, o, method) in LEGAL:
+        assert GarchModel("x", volatility, o, method).method == method
+    else:
+        with pytest.raises(ValueError, match="not legal"):
+            GarchModel("x", volatility, o, method)
 
 
-def test_the_simulated_specs_ask_for_simulation_with_the_stated_count() -> None:
+def test_the_three_shipped_specs_construct_and_a_replaced_method_is_checked_again() -> None:
+    """``dataclasses.replace`` re-runs ``__post_init__``: the probe cannot mislabel a spec."""
+    assert {(s.volatility, s.o, s.method) for s in GARCH_MODELS} <= LEGAL
+    assert dataclasses.replace(GJR11_SKEWT, method="simulation").method == "simulation"
+    with pytest.raises(ValueError, match="not legal"):
+        dataclasses.replace(GJR11_SKEWT, method="analytic")
+
+
+def test_arch_still_defaults_to_the_analytic_method() -> None:
+    """``_exact`` asks arch for step one with no ``method``, relying on this default.
+
+    Step one takes no expectation so every method agrees on it. If an arch upgrade changed the
+    default, this fails by name instead of as a last-digit drift in the ledger.
+    """
+    assert inspect.signature(ARCHModelResult.forecast).parameters["method"].default == "analytic"
+
+
+@pytest.mark.parametrize("horizon", [1, 5, 22, 66])
+def test_no_asymmetric_specification_asks_arch_for_a_multistep_analytic_forecast(
+    horizon: int,
+) -> None:
+    """R90's property, behaviourally: arch's analytic recursion assumes ``kappa = 1/2``.
+
+    Every spec with ``o != 0`` -- including GJR simulated, which the comparison layer builds --
+    may ask arch for step one (any method agrees there) or for a simulation, and for nothing else.
+    This replaces an AST count of the string literal, which checked syntax, would have passed a
+    method string assembled at runtime, and never covered EGARCH.
+    """
+    asymmetric = [spec for spec in GARCH_MODELS if spec.o != 0]
+    asymmetric.append(dataclasses.replace(GJR11_SKEWT, method="simulation"))
+    assert {spec.volatility for spec in asymmetric} == {"GARCH", "EGARCH"}
+    for spec in asymmetric:
+        result = _FakeResult([1.0] * 66)
+        _forecaster(spec, result).forecast(horizon)
+        assert result.calls, spec.name
+        for call in result.calls:
+            assert call["horizon"] == 1 or call.get("method") == "simulation", (spec.name, call)
+
+
+def test_each_spec_asks_arch_for_exactly_what_its_method_needs() -> None:
     """What actually reaches ``arch`` -- recorded by a fake, so no path is simulated here."""
-    for spec, method in (
-        (GARCH11_SKEWT, "analytic"),
-        (GJR11_SKEWT, "simulation"),
-        (EGARCH11_SKEWT, "simulation"),
-    ):
+    for spec in GARCH_MODELS:
         result = _FakeResult([1.0] * 22)
         _forecaster(spec, result).forecast(22)
         (call,) = result.calls
-        assert call["method"] == method, spec.name
         assert call["reindex"] is False
-        if method == "simulation":
-            assert call["simulations"] == 100_000
-            assert callable(call["rng"])
-        else:
-            assert "simulations" not in call and "rng" not in call
         assert "random_state" not in call, "arch reads random_state only for the bootstrap"
+        if spec is GARCH11_SKEWT:
+            assert call["method"] == "analytic" and call["horizon"] == 22
+            assert "simulations" not in call and "rng" not in call
+        elif spec is GJR11_SKEWT:
+            # Exact: arch is asked for step one only, and not told a method.
+            assert call["horizon"] == 1 and "method" not in call
+            assert "simulations" not in call and "rng" not in call
+        else:
+            assert spec is EGARCH11_SKEWT
+            assert call["method"] == "simulation" and call["horizon"] == 22
+            assert call["simulations"] == 100_000 and callable(call["rng"])
 
 
 def test_the_seed_is_derived_without_the_salted_builtin_hash() -> None:
@@ -328,15 +409,16 @@ def test_the_generator_handed_to_arch_is_seeded_from_the_forecast_horizon() -> N
     call. The draws handed over must be exactly the seeded skew-t's.
     """
     result = _FakeResult([1.0] * 22)
-    _forecaster(GJR11_SKEWT, result).forecast(5)
-    seed = garch._seed("gjr11_skewt", "SPY", dt.date(2024, 4, 12), 5)
+    _forecaster(EGARCH11_SKEWT, result).forecast(5)
+    seed = garch._seed("egarch11_skewt", "SPY", dt.date(2024, 4, 12), 5)
     shape = SkewStudent(seed=seed)
     expected = shape.simulate(_FakeResult.params.to_numpy()[-2:])(7)
     assert result.calls[0]["rng"](7).tolist() == expected.tolist()
 
 
 def test_the_same_view_forecasts_the_same_number_twice() -> None:
-    """Determinism of a real simulation (any count: the seed fixes the paths, not their number)."""
+    """Determinism. EGARCH: any count (the seed fixes the paths, not their number). GJR: exact,
+    so deterministic by construction rather than by a fixed seed."""
     view = _view(_returns())
     for spec in (_few(GJR11_SKEWT), _few(EGARCH11_SKEWT)):
         first = spec.fit(view).forecast(22).value
@@ -349,13 +431,28 @@ def test_the_same_view_forecasts_the_same_number_twice() -> None:
 def test_a_different_origin_draws_different_paths() -> None:
     """The seed reaches the draws: same fit window, other origin, other key, other forecast.
 
-    Without this the test above would pass for a model that ignored its seed *and* its
-    randomness, and the seed is exactly what the design's ``random_state`` failed to deliver.
+    EGARCH only: GJR is exact and draws nothing (see the converse below). Without this the test
+    above would pass for a model that ignored its seed *and* its randomness, and the seed is
+    exactly what the design's ``random_state`` failed to deliver.
     """
     view = _view(_returns())
     later = dataclasses.replace(view, origin=view.origin + dt.timedelta(days=1))
-    spec = _few(GJR11_SKEWT)
+    spec = _few(EGARCH11_SKEWT)
     assert spec.fit(view).forecast(22).value != spec.fit(later).forecast(22).value
+
+
+def test_the_exact_forecast_reads_no_seed() -> None:
+    """The positive statement of "an exact forecast needs no seed at all".
+
+    The same returns under two origin labels and two symbols -- every field the seed is keyed on
+    -- forecast to the bit. A seeded simulation could not do this.
+    """
+    view = _view(_returns())
+    other = dataclasses.replace(
+        view, origin=view.origin + dt.timedelta(days=1), symbol="QQQ", horizon=5
+    )
+    for horizon in (1, 5, 22, 66):
+        assert GJR11_SKEWT.fit(view).forecast(horizon) == GJR11_SKEWT.fit(other).forecast(horizon)
 
 
 # ---------------------------------------------------------------------------
@@ -567,7 +664,7 @@ def test_garch11_conforms() -> None:
     conformance_suite(GARCH11_SKEWT, toy=make_toy(1), rebuild=lambda _: GARCH11_SKEWT)
 
 
-def test_gjr11_conforms_at_a_horizon_where_the_seed_matters() -> None:
+def test_gjr11_conforms_at_a_multistep_horizon() -> None:
     conformance_suite(_few(GJR11_SKEWT), toy=make_toy(22), rebuild=lambda _: _few(GJR11_SKEWT))
 
 
@@ -777,3 +874,143 @@ def test_w2_arch_analytic_gjr_is_the_recursion_at_kappa_one_half(
         garch._read(p, "omega", name="w2"), phi_half, _first_step(fitted), horizon
     )
     assert ours == pytest.approx(_arch_analytic_sum(fitted, horizon), rel=1e-11)
+
+
+# ---------------------------------------------------------------------------
+# The exact forecast, end to end (R117-R120): the aggregation, W4, and the refusal guard.
+# ---------------------------------------------------------------------------
+
+
+def _skewed_returns(n: int = 500, *, seed: int = 11) -> pd.Series:
+    """A leveraged GJR series with genuinely skewed innovations, so ``kappa`` is load-bearing.
+
+    The ``_returns`` fixture fits to ``lambda = -0.04``, ``kappa = 0.513``: the whole ``kappa`` term
+    moves ``phi`` by 6e-4, so replacing the closed form with 1/2 would change a forecast by far less
+    than any usable tolerance, and a test with no power against the bug it exists to catch is worse
+    than none. DGP: ``z ~ SkewStudent(eta=6, lambda=-0.5)``;
+    ``sigma2_t = (1-a-g/2-b)*sigma**2 + (a + g*1{r<0})*r**2 + b*sigma2_{t-1}``, a=0.08, g=0.16,
+    b=0.80, sigma=0.01.
+    """
+    shocks = SkewStudent(seed=seed).simulate([6.0, -0.5])(n)
+    a, g, b, sigma = 0.08, 0.16, 0.80, 0.01
+    variance = np.empty(n)
+    out = np.empty(n)
+    variance[0] = sigma**2
+    for t in range(n):
+        if t:
+            shock = out[t - 1]
+            variance[t] = (1 - a - g / 2 - b) * sigma**2 + (a + g * (shock < 0)) * shock**2
+            variance[t] += b * variance[t - 1]
+        out[t] = math.sqrt(variance[t]) * shocks[t]
+    days = [stamp.date() for stamp in pd.bdate_range("2020-01-02", periods=n)]
+    return pd.Series(out, index=days)
+
+
+def _first_step_and_params(fitted: Forecaster) -> tuple[float, pd.Series]:
+    return _first_step(fitted), fitted.result.params  # type: ignore[attr-defined]
+
+
+def test_the_skewed_fixture_has_the_skew_that_gives_the_kappa_term_its_power() -> None:
+    """Measured, not assumed: ``lambda_hat = -0.536``, ``kappa = 0.637``, ``phi`` gap 0.033.
+
+    The design's own toy gave a gap of 0.0214 (M18); this DGP's draws differ, and what matters is
+    the gap is large next to the ``_returns`` fixture's 6e-4. If a library change shrinks it, this
+    fails before W4 starts passing for the wrong reason.
+    """
+    fitted = GJR11_SKEWT.fit(_view(_skewed_returns()))
+    _, p = _first_step_and_params(fitted)
+    kappa = garch._kappa(p["eta"], p["lambda"])
+    phi_true = garch._persistence(p, name="gjr11_skewt")
+    phi_half = p["alpha[1]"] + p["gamma[1]"] / 2 + p["beta[1]"]
+    assert p["lambda"] < -0.4 and kappa - 0.5 > 0.1
+    assert phi_true - phi_half > 0.02
+
+
+def test_w4_exact_agrees_with_simulation_where_simulation_is_trustworthy() -> None:
+    """Exact, simulated at the full 100,000 paths, and the ``kappa = 1/2`` recursion, at h=5.
+
+    Measured on this fixture: simulated/exact within 0.27% over six seeds; ``kappa = 1/2`` is 6.2%
+    low. A 1% band separates the two by a factor of four in both directions. The tolerance comes
+    from this fixture's spread and not SPY's 0.21-0.40% (R119's figures are a different process).
+    The h=5 red case: if ``kappa`` were the constant 1/2 the first assertion would still hold
+    (the simulation is exact) and the second would not.
+    """
+    view = _view(_skewed_returns(), horizon=5)
+    fitted = GJR11_SKEWT.fit(view)
+    exact = fitted.forecast(5).value
+    simulated = dataclasses.replace(GJR11_SKEWT, method="simulation").fit(view).forecast(5).value
+    first, p = _first_step_and_params(fitted)
+    phi_half = p["alpha[1]"] + p["gamma[1]"] / 2 + p["beta[1]"]
+    half = garch._path_sum(p["omega"], phi_half, first, 5) / garch.SCALE**2
+    assert simulated == pytest.approx(exact, rel=0.01)
+    assert half != pytest.approx(exact, rel=0.01)
+
+
+def test_w4_the_three_recursions_are_distinguishable_at_h66_without_asserting_on_a_draw() -> None:
+    """At h=66 the ``kappa = 1/2`` recursion is far from the exact one (0.60 of it here).
+
+    Only the recursions are compared: that simulation *disagrees* with exact at h=66 is a property
+    of SPY's ``psi/phi**2`` (R119's sweep), not of the code, and on a gentle fixture the two agree.
+    A ``!=`` against a simulation here would pass for the wrong reason and break on an innocent
+    change, so it is deliberately not written.
+    """
+    fitted = GJR11_SKEWT.fit(_view(_skewed_returns(), horizon=66))
+    first, p = _first_step_and_params(fitted)
+    phi_half = p["alpha[1]"] + p["gamma[1]"] / 2 + p["beta[1]"]
+    half = garch._path_sum(p["omega"], phi_half, first, 66) / garch.SCALE**2
+    assert half < 0.8 * fitted.forecast(66).value
+
+
+@pytest.mark.parametrize("horizon", [1, 5, 22, 66])
+def test_the_exact_forecast_is_the_path_sum_over_scale_squared(horizon: int) -> None:
+    """The composition on a real fit: arch's step one, ``phi`` from ``kappa``, one ``/1e4``."""
+    fitted = GJR11_SKEWT.fit(_view(_returns()))
+    first, p = _first_step_and_params(fitted)
+    phi = p["alpha[1]"] + p["gamma[1]"] * garch._kappa(p["eta"], p["lambda"]) + p["beta[1]"]
+    expected = garch._path_sum(p["omega"], phi, first, horizon) / 1e4
+    assert fitted.forecast(horizon).value == pytest.approx(expected, rel=1e-13)
+
+
+def test_the_one_step_forecast_does_not_depend_on_the_method() -> None:
+    """Step one takes no expectation: exact, simulated and analytic agree (1 ulp apart in M15)."""
+    view = _view(_returns(), horizon=1)
+    exact = GJR11_SKEWT.fit(view).forecast(1).value
+    simulated = _few(dataclasses.replace(GJR11_SKEWT, method="simulation")).fit(view).forecast(1)
+    assert simulated.value == pytest.approx(exact, rel=1e-12)
+    first = _first_step(GJR11_SKEWT.fit(view))
+    assert exact == first / 1e4
+
+
+def test_an_explosive_exact_forecast_is_reported_not_refused() -> None:
+    """``phi > 1`` is the result at 238/238 SPY origins (R118): a number, not a guard to trip."""
+    params = pd.Series(
+        [0.05, 0.30, 0.30, 0.90, 8.0, -0.3],
+        index=["omega", "alpha[1]", "gamma[1]", "beta[1]", "eta", "lambda"],
+    )
+    result = _FakeResult([1.0] * 66)
+    result.params = params  # type: ignore[misc]
+    assert garch._persistence(params, name="x") > 1.0
+    value = _forecaster(GJR11_SKEWT, result).forecast(66).value
+    assert math.isfinite(value) and value > 66 / 1e4
+
+
+def test_a_nan_step_one_is_a_recorded_skip_for_the_exact_branch_too() -> None:
+    """The finiteness half of the guard still matters: it asserts that a NaN cannot get through."""
+    with pytest.raises(ModelSkip, match="finite"):
+        _forecaster(GJR11_SKEWT, _FakeResult([float("nan")] * 5)).forecast(5)
+
+
+def test_an_unexpected_warning_from_the_exact_step_one_propagates() -> None:
+    def odd() -> None:
+        warnings.warn("odd", UserWarning, stacklevel=2)
+
+    with pytest.raises(UserWarning, match="odd"):
+        _forecaster(GJR11_SKEWT, _FakeResult([1.0] * 5, emit=odd)).forecast(5)
+
+
+def test_an_exact_forecast_from_a_fit_without_the_leverage_label_is_a_value_error() -> None:
+    """Wiring, not data: not a ``ModelSkip``, so ``evaluate`` aborts instead of filing an origin."""
+    result = _FakeResult([1.0] * 5)
+    result.params = _FakeResult.params.drop("gamma[1]")  # type: ignore[misc]
+    with pytest.raises(ValueError, match=r"gamma\[1\]"):
+        _forecaster(GJR11_SKEWT, result).forecast(5)

@@ -42,6 +42,7 @@ import volab.walkforward.__main__ as walkforward_cli
 from volab.compare import MC_ERROR_CEILING_PERCENT, analyse, describe, multiple, series_source
 from volab.compare.cohorts import (
     COHORTS,
+    MONTE_CARLO_ERROR_PERCENT,
     MONTE_CARLO_ERROR_SOURCE,
     MULTISTEP,
     SHOOTOUT,
@@ -70,7 +71,7 @@ from volab.compare.series import LossSeries, loss_series
 from volab.compare.sink import COMPARISON_LEDGER, Comparison, JsonlSink, Sink
 from volab.config import load_settings
 from volab.models.base import Cohort, Forecast, Forecaster, Model, TrainingView
-from volab.models.garch import EGARCH11_SKEWT, GARCH11_SKEWT, GARCH_MODELS, GJR11_SKEWT
+from volab.models.garch import EGARCH11_SKEWT, GARCH11_SKEWT, GARCH_MODELS, GJR11_SKEWT, GarchModel
 from volab.walkforward import (
     BASELINE_COHORT,
     BASELINE_COHORT_NAME,
@@ -1079,9 +1080,10 @@ def test_a_figure_measured_on_another_series_can_withhold_a_claim_but_never_auth
 
 def test_a_simulated_contestant_with_no_measurement_is_withheld() -> None:
     """No figure is the purest form of the error the foreign-source rule closes: absence of
-    measured spread read as presence of precision. ``gjr11_skewt`` and ``egarch11_skewt`` have no
-    figure at h=1 and h=5 and are withheld there even on a source naming this very series; a
-    deterministic contestant has no entry in the map and keeps its claims."""
+    measured spread read as presence of precision. Two simulated contestants (synthetic ``gjr`` and
+    ``egarch``; in the shipped roster only ``egarch11_skewt`` simulates, GJR being exact) with no
+    figure are withheld even on a source naming this very series; a deterministic contestant has
+    no entry in the map and keeps its claims."""
     names = ("har_levels", "random_walk", "gjr", "egarch")
     base = _named_contenders(247, 0, names, (0.0, 0.0, 0.01, 3.0))
     series = dataclasses.replace(base, horizon=5)
@@ -1103,22 +1105,20 @@ def test_a_simulated_contestant_with_no_measurement_is_withheld() -> None:
 
 
 def test_every_measured_cohort_figure_is_withheld_while_it_comes_from_the_probe_series() -> None:
-    """The shipped table, through the shipped source, onto a SPY series, at every horizon. At h=22
-    both simulated contestants were claimable before this (0.207%, 0.163%); at h=66 only
-    ``gjr11_skewt`` was; at h=1 and h=5 neither has a figure, and no figure is no claim."""
+    """The shipped table, through the shipped source, onto a SPY series, at every horizon. The only
+    simulated contestant is ``egarch11_skewt`` (GJR is exact and has no entry): at h=22 it was
+    claimable before this (0.163%), at h=1 and h=5 it has no figure, and no figure is no claim."""
     for horizon in (1, 5, 22, 66):
-        expected = ("gjr", "egarch")
-        base = _named_contenders(60, 0, ("har_levels", "random_walk", "gjr", "egarch"), (0.0,) * 4)
+        base = _named_contenders(60, 0, ("har_levels", "random_walk", "egarch"), (0.0,) * 3)
         series = dataclasses.replace(base, horizon=horizon)
-        figures = {
-            "gjr": monte_carlo_error(SHOOTOUT, horizon)["gjr11_skewt"],
-            "egarch": monte_carlo_error(SHOOTOUT, horizon)["egarch11_skewt"],
-        }
+        errors = monte_carlo_error(SHOOTOUT, horizon)
+        assert set(errors) == {"egarch11_skewt"}, "GJR is exact: nothing of it to withhold"
+        figures = {"egarch": errors["egarch11_skewt"]}
         assert all((v is None) == (horizon in (1, 5)) for v in figures.values())
         comparison = analyse(
             series, monte_carlo_error=figures, monte_carlo_source=MONTE_CARLO_ERROR_SOURCE, reps=200
         )
-        assert comparison.unclaimed == expected, horizon
+        assert comparison.unclaimed == ("egarch",), horizon
 
 
 def _named_contenders(n: int, q: int, names: tuple[str, ...], gaps: tuple[float, ...]):
@@ -1376,7 +1376,10 @@ def test_the_multistep_cohort_is_the_shootout_without_egarch_and_is_runnable_by_
     assert MULTISTEP.models == tuple(m for m in SHOOTOUT.models if m.name != "egarch11_skewt")
     assert len({SHOOTOUT.name, MULTISTEP.name, BASELINE_COHORT_NAME}) == 3
     assert COHORTS[MULTISTEP.name] is MULTISTEP
-    assert monte_carlo_error(MULTISTEP, 22) == {"gjr11_skewt": 0.207}, "no EGARCH entry to read"
+    for horizon in (5, 22, 66):
+        assert monte_carlo_error(MULTISTEP, horizon) == {}, (
+            "no simulated contestant is left: EGARCH is not in the cohort and GJR is exact"
+        )
     assert all(
         phrase in (cohorts_module.__doc__ or "")
         for phrase in ("R114", "polynomial tails", "no finite multi-step conditional variance")
@@ -1423,30 +1426,54 @@ def test_only_cohorts_imports_the_model_modules() -> None:
 
 
 def test_the_monte_carlo_error_is_the_recorded_figure_for_each_simulated_contestant() -> None:
-    """R102's table at S=100,000. h=1 and h=5 were never measured and are not invented."""
-    assert monte_carlo_error(SHOOTOUT, 66) == {"gjr11_skewt": 0.514, "egarch11_skewt": 3.273}
-    assert monte_carlo_error(SHOOTOUT, 22) == {"gjr11_skewt": 0.207, "egarch11_skewt": 0.163}
+    """R102's table at S=100,000. h=1 and h=5 were never measured and are not invented.
+
+    Only EGARCH simulates now. GJR is exact (R117-R123): it is absent from the map at every
+    horizon, not ``None`` -- ``None`` would say "simulated, unmeasured" and trigger R115's rule.
+    """
+    assert monte_carlo_error(SHOOTOUT, 66) == {"egarch11_skewt": 3.273}
+    assert monte_carlo_error(SHOOTOUT, 22) == {"egarch11_skewt": 0.163}
     for horizon in (1, 5):
-        assert monte_carlo_error(SHOOTOUT, horizon) == {
-            "gjr11_skewt": None,
-            "egarch11_skewt": None,
-        }
-    assert "garch11_skewt" not in monte_carlo_error(SHOOTOUT, 66), "the analytic one has none"
-    assert 3.273 > MC_ERROR_CEILING_PERCENT > 0.514, "the floor separates EGARCH h=66 from the rest"
+        assert monte_carlo_error(SHOOTOUT, horizon) == {"egarch11_skewt": None}
+    for horizon in (1, 5, 22, 66):
+        errors = monte_carlo_error(SHOOTOUT, horizon)
+        assert "garch11_skewt" not in errors, "the analytic one has none"
+        assert "gjr11_skewt" not in errors, "the exact one has none"
+    assert 3.273 > MC_ERROR_CEILING_PERCENT > 0.163, "the floor separates EGARCH h=66 from h=22"
 
 
 def test_a_simulated_contestant_is_found_by_its_method_and_its_figure_is_not_invented() -> None:
-    renamed = dataclasses.replace(GJR11_SKEWT, name="my_gjr")
+    # GJR *simulated*: a legal pairing kept so this proves the contestant is found by its method
+    # and not by its name or its being GJR.
+    renamed = dataclasses.replace(GJR11_SKEWT, method="simulation", name="my_gjr")
     cohort = Cohort("probe", (BASELINE_COHORT.models[0], renamed, GARCH11_SKEWT))
     assert monte_carlo_error(cohort, 66) == {"my_gjr": None}, (
         "found as simulated by its method, but the table is keyed to the measured spec by name, "
         "so a figure is not invented for one that was never measured"
     )
+    assert monte_carlo_error(Cohort("probe", (GJR11_SKEWT,)), 66) == {}, "exact: not simulated"
     fewer_paths = dataclasses.replace(EGARCH11_SKEWT, simulations=10_000)
     assert monte_carlo_error(Cohort("probe", (fewer_paths,)), 66) == {"egarch11_skewt": None}, (
         "the table is for S=100,000 only; another path count is a different, unmeasured figure"
     )
     assert monte_carlo_error(BASELINE_COHORT, 66) == {}
+
+
+def test_every_monte_carlo_figure_is_reachable() -> None:
+    """A figure keyed to a contestant that no cohort simulates can never be printed or withheld.
+
+    Without this, retiring a simulated contestant leaves its figures behind as live-looking data.
+    A partial check: horizon-level reachability cannot be tested until a contestant declares the
+    horizons it can answer.
+    """
+    simulated = {
+        model.name
+        for cohort in COHORTS.values()
+        for model in cohort.models
+        if isinstance(model, GarchModel) and model.method == "simulation"
+    }
+    assert simulated, "the set being compared against must not be empty"
+    assert {name for name, _ in MONTE_CARLO_ERROR_PERCENT} <= simulated
 
 
 # ---------------------------------------------------------------------------

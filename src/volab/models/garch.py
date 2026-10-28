@@ -32,12 +32,27 @@ reports a bad scale (and so R83's own red case), ``True`` would silently apply a
 Witnesses: ``test_the_model_never_passes_rescale`` (AST),
 ``test_a_raw_scale_series_raises_rather_than_fitting_quietly``.
 
-**The method (R90).** GARCH(1,1) forecasts analytically. GJR and EGARCH are *simulated*:
-``arch``'s analytic GJR multistep recursion is wrong under a skewed distribution (17.7% low at
-h=66 against 200,000 paths) and EGARCH has none. The paths are seeded from a ``zlib.crc32`` of
-``name|symbol|origin|horizon`` -- never the builtin ``hash``, which is salted per process.
-Reproduce the figures with ``tools/measure_garch_forecast_error.py``. Witnesses:
-``test_the_analytic_method_is_used_only_for_the_symmetric_specification`` (AST),
+**The method (R90, amended by R117-R123).** There are three, and each variance process may use
+only the ones that give its true conditional mean (``GarchModel.__post_init__`` refuses the rest):
+
+* ``"analytic"`` is ``arch``'s recursion, which hard-codes ``E[z**2 1{z<0}] = 1/2``. That is the
+  true mean only for ``o == 0`` (GARCH(1,1)). Under a skewed law ``arch``'s analytic GJR is
+  wrong -- 17.7% low at h=66 against 200,000 paths on the probe series (R90).
+* ``"exact"`` is GJR's recursion with the real ``kappa = E[z**2 1{z<0}]`` of the fitted skew-t:
+  ``m_1`` is ``arch``'s one-step variance (known at the origin) and ``m_{k+1} = omega + phi*m_k``
+  with ``phi = alpha + gamma*kappa + beta``. Deterministic, so it reads no seed, and it removes
+  ``gjr11_skewt`` from R115's rule: it is an exact value, not a Monte-Carlo estimate of one. It
+  does **not** make the forecast good -- the fitted process is explosive at 238/238 SPY origins
+  because ``arch``'s feasible region assumes ``kappa = 1/2`` (R118) -- it makes it measurable.
+* ``"simulation"`` is for EGARCH, which has no finite multi-step mean under skew-t errors (R114).
+  The paths are seeded from a ``zlib.crc32`` of ``name|symbol|origin|horizon`` -- never the builtin
+  ``hash``, which is salted per process.
+
+The design is ``docs/superpowers/specs/2026-10-28-gjr-exact-forecast-design.md``. Reproduce the
+figures with ``tools/measure_garch_forecast_error.py``. Witnesses:
+``test_the_method_and_the_variance_process_must_agree_at_construction`` (the pairing),
+``test_no_asymmetric_specification_asks_arch_for_a_multistep_analytic_forecast`` (behaviour),
+``test_w1_...`` and ``test_w2_...`` (the recursion against ``arch``),
 ``test_the_seed_is_derived_without_the_salted_builtin_hash`` (AST).
 
 **Refusal (R91).** A fit that did not converge is a ``ModelSkip``, detected by
@@ -63,7 +78,7 @@ import warnings
 import zlib
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, assert_never
 
 import numpy as np
 import pandas as pd
@@ -80,6 +95,11 @@ from volab.models.base import Forecast, Forecaster, TrainingView
 # returns before the fit and squared into the divisor after the sum. A module constant, so the
 # red case for a dropped scaling can be planted by patching it.
 SCALE = 100.0
+
+# How the multistep forecast is computed. A ``Literal`` and not an ``Enum``: ``compare/cohorts.py``
+# tests ``model.method == "simulation"``, which a plain ``Enum`` would make silently ``False``.
+# ``assert_never`` in ``_Fitted.forecast`` makes a fourth member without a branch a mypy failure.
+Method = Literal["analytic", "simulation", "exact"]
 
 # The default path count for the simulated specifications (R90): 0.19%-0.29% Monte Carlo error.
 SIMULATIONS = 100_000
@@ -249,34 +269,83 @@ class _Fitted:
     symbol: str
     origin: dt.date
 
-    def forecast(self, horizon: int) -> Forecast:
-        if horizon < 1:
-            raise ValueError(f"horizon must be at least 1, got {horizon}")
-        options: dict[str, Any] = {"method": self.spec.method}
-        if self.spec.method == "simulation":
-            seed = _seed(self.spec.name, self.symbol, self.origin, horizon)
-            # ``rng`` and not ``random_state``: for ``method="simulation"`` arch draws from the
-            # *distribution's* generator, and ``random_state`` is read only by the bootstrap.
-            # Passing it here compiled, ran, warned of nothing and seeded nothing. A fresh
-            # generator per call, so a second call on one fit repeats the first.
-            shape = SkewStudent(seed=seed)
-            options.update(
-                simulations=self.spec.simulations,
-                rng=shape.simulate(self.result.params.to_numpy()[-shape.num_params :]),
-            )
+    def _from_arch(
+        self, horizon: int, options: dict[str, Any]
+    ) -> tuple[float, list[warnings.WarningMessage]]:
+        """``sum`` of arch's ``.variance`` over steps 1..horizon, with warnings recorded not raised.
+
+        ``skipna=False``: pandas would otherwise sum a NaN step as zero and answer too low.
+        """
         steps, caught = _recorded(
             lambda: self.result.forecast(horizon=horizon, reindex=False, **options).variance
         )
+        return float(steps.iloc[-1].sum(skipna=False)), caught
+
+    def _exact(self, horizon: int) -> tuple[float, list[warnings.WarningMessage]]:
+        """GJR's exact path sum: arch for step one, this module's recursion for steps 2..horizon.
+
+        Step one takes no expectation, so every method agrees on it and arch's own backcast and
+        initialisation are reused rather than re-derived. It is asked with **no** ``method``, which
+        is arch's default ``"analytic"`` (``test_arch_still_defaults_to_the_analytic_method``). No
+        seed is read: the result is a function of the fit alone.
+        """
+        first, caught = self._from_arch(1, {})
+        params, name = self.result.params, self.spec.name
+        total = _path_sum(
+            _read(params, _OMEGA, name=name), _persistence(params, name=name), first, horizon
+        )
+        return total, caught
+
+    def _simulated(self, horizon: int) -> tuple[float, list[warnings.WarningMessage]]:
+        seed = _seed(self.spec.name, self.symbol, self.origin, horizon)
+        # ``rng`` and not ``random_state``: for ``method="simulation"`` arch draws from the
+        # *distribution's* generator, and ``random_state`` is read only by the bootstrap.
+        # Passing it here compiled, ran, warned of nothing and seeded nothing. A fresh
+        # generator per call, so a second call on one fit repeats the first.
+        shape = SkewStudent(seed=seed)
+        return self._from_arch(
+            horizon,
+            {
+                "method": "simulation",
+                "simulations": self.spec.simulations,
+                "rng": shape.simulate(self.result.params.to_numpy()[-shape.num_params :]),
+            },
+        )
+
+    def forecast(self, horizon: int) -> Forecast:
+        if horizon < 1:
+            raise ValueError(f"horizon must be at least 1, got {horizon}")
+        method = self.spec.method
+        if method == "exact":
+            total, caught = self._exact(horizon)
+        elif method == "simulation":
+            total, caught = self._simulated(horizon)
+        elif method == "analytic":
+            total, caught = self._from_arch(horizon, {"method": "analytic"})
+        else:
+            assert_never(method)
         for item in caught:
             if not issubclass(item.category, RuntimeWarning):
                 _raise(item)
-        # ``skipna=False``: pandas would otherwise sum a NaN step as zero and answer too low.
-        value = float(steps.iloc[-1].sum(skipna=False)) / SCALE**2
-        # An explosive fit overflows ``exp`` while simulating: a refusal, not a number.
+        value = total / SCALE**2
+        # An explosive fit overflows ``exp`` while simulating: a refusal, not a number. The exact
+        # branch has no ``exp`` and so no such route (``phi`` is ~1.03 at most over h <= 66), but a
+        # NaN step one or shape parameter would reach it, and this is the assertion that it cannot.
         if caught or not math.isfinite(value):
             detail = "; ".join(sorted({str(item.message) for item in caught})) or str(value)
             raise ModelSkip(f"{self.spec.name}: the h={horizon} forecast is not finite ({detail})")
         return Forecast(value, self.observations)
+
+
+# Exactly four, and everything else is refused at construction.
+_LEGAL: frozenset[tuple[str, int, str]] = frozenset(
+    {
+        ("GARCH", 0, "analytic"),
+        ("GARCH", 1, "exact"),
+        ("GARCH", 1, "simulation"),
+        ("EGARCH", 1, "simulation"),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -291,10 +360,27 @@ class GarchModel:
     volatility: Literal["GARCH", "EGARCH"]
     # The asymmetry order: 1 adds GJR's leverage term (or EGARCH's sign term), 0 is symmetric.
     o: int
-    # ``"analytic"`` or ``"simulation"``.
-    method: str
+    method: Method
     simulations: int = SIMULATIONS
     maxiter: int | None = None
+
+    def __post_init__(self) -> None:
+        """The method and the variance process must agree, refused here rather than at forecast.
+
+        R90 was a comment plus an AST test counting a string literal. It is a property of the
+        pairing and belongs where the pairing is made. ``"analytic"`` is arch's recursion, which
+        hard-codes ``kappa = 1/2`` and is therefore the true mean only for ``o == 0``. ``"exact"``
+        is GJR's recursion and needs its leverage term; EGARCH's parameters carry the *same labels*
+        with different meanings, so a label read would succeed and answer a confident wrong number.
+        EGARCH has no finite multi-step mean (R114), so it can only simulate. The fourth legal
+        pairing, GJR simulated, exists because ``tests/test_compare.py`` builds it to prove that
+        ``monte_carlo_error`` finds a contestant by its method and not by its name.
+        """
+        if (self.volatility, self.o, self.method) not in _LEGAL:
+            raise ValueError(
+                f"{self.name}: method {self.method!r} is not legal for "
+                f"({self.volatility}, o={self.o}); the legal pairings are {sorted(_LEGAL)}"
+            )
 
     @property
     def fit_depends_on_horizon(self) -> bool:
@@ -332,7 +418,7 @@ class GarchModel:
 
 
 GARCH11_SKEWT = GarchModel("garch11_skewt", "GARCH", 0, "analytic")
-GJR11_SKEWT = GarchModel("gjr11_skewt", "GARCH", 1, "simulation")
+GJR11_SKEWT = GarchModel("gjr11_skewt", "GARCH", 1, "exact")
 EGARCH11_SKEWT = GarchModel("egarch11_skewt", "EGARCH", 1, "simulation")
 
 GARCH_MODELS: tuple[GarchModel, ...] = (GARCH11_SKEWT, GJR11_SKEWT, EGARCH11_SKEWT)
