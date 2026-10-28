@@ -9,9 +9,14 @@ tests run it over a ``tmp_path``.
 Exit status is 0 for a consistent pair of ledgers and 1 if a comparison record has no trial line
 to join to (see :func:`volab.leaderboard.render`;
 ``test_a_comparison_with_no_trials_is_reported_and_exits_non_zero``). A ledger line that cannot be
-read raises :class:`~volab.leaderboard.LeaderboardError` rather than being skipped, because a
-skipped line is a trial missing from the headline
-(``test_a_malformed_trial_line_raises_rather_than_being_skipped``).
+read makes :func:`volab.leaderboard.render` raise
+:class:`~volab.leaderboard.LeaderboardError` rather than skip it, because a skipped line is a
+trial missing from the headline
+(``test_a_malformed_trial_line_raises_rather_than_being_skipped``); **this entry point reports
+that refusal and returns 1 rather than letting a traceback out**, which is what ``compare``'s own
+CLI does. A stack trace is the wrong output for a data problem: it cannot be told apart from a bug
+in the reader. Refuse-never-skip is unchanged; only the presentation is
+(``test_the_cli_reports_a_malformed_line_and_exits_1_without_a_traceback``).
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from volab.config import load_settings
-from volab.leaderboard import render
+from volab.leaderboard import LeaderboardError, render
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -35,7 +40,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     arguments = parser.parse_args(argv)
     root: Path = arguments.root or load_settings().storage_root.parent
-    lines, consistent = render(root)
+    try:
+        lines, consistent = render(root)
+    except LeaderboardError as unreadable:
+        print(unreadable)
+        return 1
     for line in lines:
         print(line)
     return 0 if consistent else 1

@@ -844,6 +844,22 @@ def test_a_malformed_trial_line_raises_rather_than_being_skipped(tmp_path) -> No
     assert issubclass(leaderboard.LeaderboardError, VolabError)
 
 
+def test_the_cli_reports_a_malformed_line_and_exits_1_without_a_traceback(tmp_path, capsys) -> None:
+    """``render`` still *raises* -- refuse, never skip -- and the CLI turns that into a report.
+
+    A traceback is the wrong output for a data problem: ``compare``'s own CLI prints the message
+    and returns 1, and an operator reading a stack trace cannot tell a corrupt ledger from a bug
+    in the reader. The refusal semantics are unchanged; only the presentation is.
+    """
+    _run(tmp_path, comparisons=False)
+    with (tmp_path / TRIAL_LEDGER).open("a", encoding="utf-8") as handle:
+        handle.write("{not json\n")
+    assert cli.main(["--root", str(tmp_path)]) == 1
+    printed = capsys.readouterr().out
+    assert "trials.jsonl line 9" in printed
+    assert "Traceback" not in printed
+
+
 def test_a_trial_line_missing_a_field_names_the_field(tmp_path) -> None:
     _run(tmp_path, comparisons=False)
     path = tmp_path / TRIAL_LEDGER
