@@ -414,8 +414,8 @@ def clause_7_unknowable_targets_are_out_of_reach(model: Model, toy: Toy) -> None
 def perturb_the_unknowable(targets: pd.DataFrame, origin: dt.date) -> pd.DataFrame:
     """A copy of ``targets`` with every target not completed by ``origin`` scaled by ten.
 
-    The origin's own target is included. Every ``target_*`` column is scaled, not only one
-    horizon's, so a model reading a neighbouring horizon is not spared.
+    The origin's own target is included. Every ``target_*`` column is scaled; ``make_toy`` builds
+    one horizon's column only, so this matters just for a multi-horizon frame.
     """
     moved = targets.copy()
     future = pd.Series([done > origin for done in as_of_dates(moved)], index=moved.index)
@@ -437,14 +437,17 @@ def clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets(
     already carries the perturbed values. ``rebuild(frame)`` is that build. For each sampled
     origin it is called on ``toy.targets`` and on ``perturb_the_unknowable(toy.targets, origin)``,
     each model is run alone with the frame it was built from handed to ``evaluate`` too, and the
-    two forecasts must agree. ``toy.targets`` is never written to, so there is nothing to restore.
+    two forecasts must agree. ``toy.targets`` is never written to, so there is nothing to restore
+    (witness: the ``equals(before)`` assertion in
+    ``test_clause_7_passes_a_contestant_that_copied_the_frame_and_clause_8_fails_it``).
 
     **It is mandatory because an optional factory would be skipped by exactly the contestant that
     needed it** (R104 again: a guarantee that applies only where someone remembered to ask).
 
     **What it tests today, honestly: nothing.** None of the seven shipped contestants takes a
     target frame at construction, so for each of them ``rebuild`` is a closure that ignores its
-    argument and this clause passes trivially. Its value is prospective -- it binds the next
+    argument and this clause passes trivially (witness: every call site in ``test_garch.py``,
+    ``test_model_interface.py`` and ``test_recalibrated.py`` passes ``lambda _: ...``). Its value is prospective -- it binds the next
     contestant, and a clause that is vacuous today and bites tomorrow is still worth having.
     Witness that it does bite, and that clause 7 passes the same plant:
     ``test_clause_7_passes_a_contestant_that_copied_the_frame_and_clause_8_fails_it``.
