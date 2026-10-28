@@ -713,13 +713,14 @@ def test_the_mirror_image_law_takes_the_other_half(eta: float, lam: float) -> No
 
 @pytest.mark.parametrize(("eta", "lam"), [*GRID, *CORNERS])
 def test_kappa_is_a_strict_fraction_of_the_unit_variance(eta: float, lam: float) -> None:
-    """A truncated second moment of a unit-variance law lies in ``[0, 1]``; interior is strict."""
+    """A truncated second moment of a unit-variance law lies strictly inside ``(0, 1)``.
+
+    Also at the corners: about 0.36 at ``lambda = 1``, where the shifted origin leaves mass of the
+    surviving piece on both sides of ``z = 0``.
+    """
     kappa = garch._kappa(eta, lam)
     assert math.isfinite(kappa)
-    if abs(lam) < 1.0:
-        assert 0.0 < kappa < 1.0
-    else:
-        assert 0.0 <= kappa <= 1.0
+    assert 0.0 < kappa < 1.0
 
 
 @pytest.mark.parametrize("lam", [-1.0, 1.0])
@@ -934,8 +935,9 @@ def test_w4_exact_agrees_with_simulation_where_simulation_is_trustworthy() -> No
     Measured on this fixture: simulated/exact within 0.27% over six seeds; ``kappa = 1/2`` is 6.2%
     low. A 1% band separates the two by a factor of four in both directions. The tolerance comes
     from this fixture's spread and not SPY's 0.21-0.40% (R119's figures are a different process).
-    The h=5 red case: if ``kappa`` were the constant 1/2 the first assertion would still hold
-    (the simulation is exact) and the second would not.
+    The red case, measured by planting ``kappa = 1/2`` in ``_persistence``: the exact forecast
+    then *is* the half recursion, so the simulation sits about 6% above it and the first assertion
+    fails, and the second (``half`` against the shipped value) fails too because they are equal.
     """
     view = _view(_skewed_returns(), horizon=5)
     fitted = GJR11_SKEWT.fit(view)

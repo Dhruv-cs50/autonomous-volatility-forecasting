@@ -52,7 +52,8 @@ The design is ``docs/superpowers/specs/2026-10-28-gjr-exact-forecast-design.md``
 figures with ``tools/measure_garch_forecast_error.py``. Witnesses:
 ``test_the_method_and_the_variance_process_must_agree_at_construction`` (the pairing),
 ``test_no_asymmetric_specification_asks_arch_for_a_multistep_analytic_forecast`` (behaviour),
-``test_w1_...`` and ``test_w2_...`` (the recursion against ``arch``),
+``test_w1_the_path_sum_reproduces_arch_analytic_garch_with_no_kappa_in_sight`` and
+``test_w2_arch_analytic_gjr_is_the_recursion_at_kappa_one_half`` (the recursion against ``arch``),
 ``test_the_seed_is_derived_without_the_salted_builtin_hash`` (AST).
 
 **Refusal (R91).** A fit that did not converge is a ``ModelSkip``, detected by
