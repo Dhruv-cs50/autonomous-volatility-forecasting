@@ -43,9 +43,23 @@ its reason rather than being a quiet drop:
 
 **No significance will be claimed for any simulated contestant** (`gjr11_skewt`,
 `egarch11_skewt`) unless its Monte-Carlo error has been measured **on the series being
-evaluated** (R115). The existing figures come from a synthetic probe whose process is gentler
-than the fitted one, and a six-seed spread is not a measurement of an estimator with no finite
-mean. Absence of measured spread is not evidence of precision.
+evaluated** (R115). A six-seed spread is not such a measurement: on SPY at h=66 the sample-implied
+spread understates the true Monte-Carlo sd by a median factor of **58.8**, because the paths
+carrying the variance are never drawn. Absence of measured spread is not evidence of precision.
+
+**What is measured, as of this draft (R119).** `gjr11_skewt` on **SPY** is measured per-origin
+against an exact closed form: 0.21-0.40% at h=5 with **0 of 250** origins over the 1.5% ceiling,
+1.32% median at h=22 with **106 of 247** over it, and **no feasible path count** bounding it at
+h=66. **QQQ and IWM are not measured** and will print as such. The figures still carried in
+`compare/cohorts.py` are the synthetic probe's and are optimistic by one to six orders of
+magnitude; they authorise nothing, because their source is never the evaluated series, but they
+must be replaced before registration.
+
+**This is the open item that blocks registration** (R120). At the reveal, measuring a simulated
+contestant's error on the holdout series requires an exact value to compare against, which only a
+closed form supplies. Under the simulated estimator R115 therefore refuses `gjr11_skewt`'s
+significance at **every** horizon including h=5, where it currently leads QLIKE on dev. Either the
+closed form lands first, or those refusals are declared here before the window opens.
 
 **Losses.** QLIKE and MSE, both, on the variance scale.
 
@@ -75,9 +89,14 @@ confidence set at all at 3 months. Those rows will print their refusal and its r
 declared here so that a disappointing long-horizon result cannot later be presented as
 significant, and a flattering one cannot either.
 
-**Also refused:** EGARCH at h=66, on any loss. Its own Monte-Carlo forecast error is about 3.3%,
-above the 1.5% ceiling R72 set as this project's floor for a believable difference (R102), so the
-contestant's noise is wider than the differences being compared.
+**Also refused: orderings inside a simulated contestant's own measurement error.** Where two
+contestants' losses sit closer together than the simulated one's measured error, the pair is
+reported as **unordered** rather than ranked. The 1.5% ceiling R72 set as this project's floor for a
+believable difference (R102) is what decides this. On dev the live instance is `gjr11_skewt` against
+`har_levels_mz` for 4th/5th on h=66 QLIKE: a 0.0148 margin against a 0.0073 systematic deficit,
+which is a median shift and so does not average away across origins (R120).
+
+`egarch11_skewt` needs no separate refusal here — R114 excludes it at every horizon above 1.
 
 ## 3. The decision rule
 

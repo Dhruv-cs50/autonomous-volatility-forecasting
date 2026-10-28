@@ -702,3 +702,156 @@ Its η ∈ [5.31, 6.39] does give the innovation a fourth moment, unlike EGARCH'
 mean has finite variance — but the process-level condition was not verified and its path
 concentration was not measured. The same `top1_share` diagnostic on GJR at h=22 is the cheap
 follow-up. **Not claimed clean.**
+
+## R117-R121 — GJR is not EGARCH, and the reason it looks wrong is a library bug
+
+Dispatched because R116 left GJR "not claimed clean" while it sits in both cohorts at every
+horizon and leads QLIKE at h=5. The check was independent of the diagnosis that produced R113-R116.
+Verified here before recording: arch's constraint source, the recursion algebra, and every figure
+against the live ledger.
+
+### R117 — the multi-step mean exists, and R116 named the wrong boundary
+
+`σ²_{t+k+1} = ω + σ²_{t+k}·A_{t+k}` with `A = β + (α + γ·1{z<0})z²` and `A` independent of
+`σ²_{t+k}`, so the conditional mean obeys a **linear** recursion:
+
+```
+m_{k+1} = ω + φ·m_k ,   φ = α·E[z²] + γ·κ + β ,   κ = E[z² 1{z<0}]
+```
+
+**The exact condition for `E_t[σ²_{t+k}]` to exist is `E[z²] < ∞`, i.e. `η > 2`.** Nothing else.
+arch bounds `η ∈ [2.05, 300]`, so the h-step mean exists at every origin at every finite h,
+**whatever the persistence**. `φ < 1` governs boundedness as `h → ∞`, not existence at finite h.
+
+This is not EGARCH by analogy and the distinction is the whole point: there is no exponential of a
+fat-tailed variable anywhere in GJR's recursion. EGARCH had no finite value to converge to; GJR
+does, and `η ∈ [5.01, 7.03]` over 250 SPY origins makes `ψ = E[A²]` finite, so the simulated mean's
+variance is finite too.
+
+**Correcting R116, which is mine.** It called `α + γ/2 + β ≈ 1.000` "the fourth-moment boundary".
+That is the **second**-moment (covariance-stationarity) boundary under `κ = ½`; the fourth-moment
+condition is `ψ < 1`. The error mattered: it is why R116 reasoned from `η` giving the *innovation* a
+fourth moment and concluded the estimator was probably fine, when the quantity that governs the
+estimator is `ψ`, which is 1.29 to 1.89 on SPY — above 1 at 250 of 250 origins.
+
+### R118 — root cause: arch's stationarity constraint assumes a symmetric error law
+
+`arch/univariate/volatility.py`, `GARCH.constraints`, read in this session:
+
+```python
+# sum(alpha) + 0.5 sum(gamma) + sum(beta) < 1
+a[k_arch + 1, p + 1 : p + o + 1] = -0.5
+```
+
+That `0.5` **is** `E[z² 1{z<0}]` for a symmetric law. Under Hansen's skew-t with `λ < 0`, `κ > ½`:
+
+```
+φ_true = (α + γ/2 + β)  +  γ·(κ − ½)
+```
+
+so **arch's feasible region contains explosive processes**, and the likelihood pushes persistence to
+the edge of the region it is given. The root is the feasible region, not the constraint binding:
+the smallest `γ(κ − ½)` across SPY's 250 origins is 0.01526 and the largest available slack
+`1 − φ_sym` is 0.00657, so the origins where the constraint did *not* bind are explosive too.
+
+| symbol | `φ_sym` pinned at 1 | **`φ_true ≥ 1`** | median `φ_true` | max `φ_true` | max `ψ` |
+|---|---|---|---|---|---|
+| SPY | 150 / 250 | **238 / 238** | 1.0165 | 1.0267 | 1.885 |
+| QQQ | 71 | **238 / 238** | 1.0170 | 1.0320 | 2.238 |
+| IWM | 0 | **109 / 238** | 0.9995 | 1.0061 | 1.135 |
+
+`λ < 0` at every origin of every symbol. **So the fitted SPY and QQQ processes are explosive at
+every origin**, and GJR's exact h=66 mean is 3.70x the realized target at the median SPY origin.
+This is a property of the contestant *as arch constrains it*, which is what the leaderboard
+evaluates and must therefore say.
+
+`garch11_skewt` is immune **by construction**: `φ = α·E[z²] + β = α + β` has no `κ` in it, so
+arch's constraint is the true condition and its analytic recursion is the true mean under any
+unit-variance law. On SPY `α + β` is pinned to 1 within 1e-9 at 192/250 origins — effectively an
+IGARCH fit, exact and finite, growing about linearly in h. R90's choice of `"analytic"` for the
+symmetric specification is the entire reason it is trustworthy at h=66.
+
+### R119 — the probe's Monte-Carlo figures are not a safe proxy, and the table must be re-measured
+
+`compare/cohorts.py` carries `("gjr11_skewt", 22): 0.207` and `("gjr11_skewt", 66): 0.514` from
+R102's synthetic probe. Measured on SPY, per-origin, as the distribution of `f_sim / f_exact`:
+
+| horizon | min | median | max | theory rel sd at S=1e5 (median / max) | origins over the 1.5% ceiling |
+|---|---|---|---|---|---|
+| h=5 | 0.9938 | 0.9998 | 1.0084 | 0.21% / 0.40% | **0 / 250** |
+| h=22 | 0.9638 | 0.9978 | 1.3258 | 1.32% / 20.5% | **106 / 247** |
+| h=66 | 0.8178 | 0.9783 | 1.5434 | 193% / 3,409,228% | **238 / 238** |
+
+Relative MC error grows like `(ψ/φ²)^h`; SPY's 1.26-1.79 gives `5e6` to `5e16` at h=66 against the
+probe's `1.088 → 3e2`. **That gap is why the probe's 0.514% never transferred.**
+
+**No claim was ever made on these figures** — `MONTE_CARLO_ERROR_SOURCE` is
+`"synthetic probe series, not SPY"`, never equal to `series_source(series)`, so the guard prints
+`0.207%, no claim` and withholds. The defect is display truth, not a false claim: a reader sees a
+figure labelled "probe, not SPY" and reasonably infers SPY is similar, and it is not — the probe is
+optimistic by one to six orders of magnitude. `cohorts.py` already anticipated this: *"The day the
+figures are re-measured on the real panel, this string and the table change together."* That day is
+now, and the table must carry the SPY figures, "not measured" for QQQ and IWM, and a marker at h=66
+saying no feasible path count bounds the error.
+
+**`top1_share` would have been the wrong follow-up**, which R116 proposed as the cheap deciding
+test. GJR has **no** SPY origin with a path over 50% at h=22 or h=66, so by that metric it reads
+clean. The ratio of theoretical to sample-implied MC sd has median 58.8 and max 5.2e5 at h=66: the
+paths carrying the variance are never drawn, so concentration among the drawn paths looks benign by
+construction. This is the same trap that made R102's six-seed spread read as precision for EGARCH,
+and it is the third time in this project a diagnostic has been proposed that measures the sample
+rather than the estimator.
+
+### R120 — GJR at h=66 is **not** excluded, and the open question is the estimator, not the contestant
+
+R114 excluded EGARCH at h≥2 because the quantity **does not exist**. GJR's does (R117), so there is
+nothing non-existent being estimated and exclusion would delete the most informative result in the
+shootout — that the fitted process is explosive. Pre-registration §2 already refuses *all*
+significance at h=22 and h=66 on `n_eff` grounds, so what h=66 can carry is a loss value and a
+ranking, both of which survive: GJR is last on MSE by a factor of 5.3, and correcting the estimator
+makes its loss **worse** (exact 6.74e-4 against the simulated 6.19e-4), not better.
+
+**One ordering is refused:** GJR against `har_levels_mz` for 4th/5th on h=66 QLIKE, a 0.0148 margin
+against a 0.0073 systematic deficit. That is a median shift, not independent noise, so it does not
+average away across origins. Reported as unordered.
+
+**No rank in the in-flight run flips** at any horizon on either loss — checked against the live
+ledger, SPY only. The run was not stopped. The h=5 QLIKE lead is real: a 0.0002 sim-vs-exact
+difference against a 0.0240 margin, 118x.
+
+**What is open, and it blocks registration rather than Phase 2's close.** R115 requires a simulated
+contestant's MC error to be measured on the series being evaluated. At the reveal those are holdout
+fits, and the measurement needs `f_exact`, which only a closed form supplies — seed spread
+understates the true sd by a median 58.8x. So under the simulated estimator R115 would refuse GJR's
+significance at h≥22 *and* at h=5, where it currently leads. The two honest routes are the exact
+closed form `m_{k+1} = ω + φ_true·m_k` with `κ` by quadrature of the fitted skew-t — which also
+retires R90's reason to simulate — or registering with the simulated estimator and declaring its
+refusals in advance. **The user's decision, not a builder's default.**
+
+The deeper fix — a `κ(η, λ)`-aware stationarity constraint replacing arch's `0.5` — changes the fit
+itself and its effect on the losses is unknown. **Refused before registration** for exactly that
+reason, and recorded as a Phase 3 candidate.
+
+### R121 — the re-run's ledger provenance, and what the overlap proves
+
+The re-run appended under sha `0dd0e60` with `git_dirty: true`, not the `37c74e7` its own gate
+pushed. Neither is a code change and a ledger reader cannot know that unless it is written down:
+part 1's 42 appends dirtied the tracked `trials.jsonl` before part 2 captured its R70 state, and
+the board commit `0dd0e60` landed between the two parts. **A ledger line's sha is the tree when
+that configuration started, not the tree the run's gate passed on.**
+
+| run | sha | dirty | lines |
+|---|---|---|---|
+| dev shootout | `02eb0e5` | clean | 72 |
+| crashed run (R112) | `2e9e31b` | clean | 42 |
+| re-run part 1, h=1 | `37c74e7` | clean | 42 |
+| re-run part 2, h=5/22/66 | `0dd0e60` | **dirty** | 108 |
+
+**38 of 38 overlapping configurations are bit-identical in value *and* origin count** across those
+different shas. Two things follow, neither of which needed a new test:
+
+1. A determinism witness across processes and trees, not merely across two calls in one process.
+2. **R114's exclusion cost zero origins.** The crashed run computed h=5 and h=22 with seven
+   contestants, the re-run with six, and every surviving contestant's origin count is unchanged —
+   so EGARCH was defined wherever the other six were, and dropping it did not widen the
+   intersection. `Evaluation.comparable()`'s intersection was not silently paying for R114.
