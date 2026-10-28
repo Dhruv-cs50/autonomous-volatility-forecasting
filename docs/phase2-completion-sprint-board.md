@@ -51,7 +51,7 @@ Each has already cost this project time, so each is stated rather than assumed:
 | US-3.3c | Make the rebuild factory mandatory, so the captured-copy case is closed for every contestant | `tests/model_conformance.py`, `tests/test_model_interface.py`, `tests/test_garch.py`, `tests/test_recalibrated.py` | `conformance_suite` requires a `rebuild` factory, so no contestant can decline it; a plant that `.copy()`s the target frame at construction is caught; the seven existing contestants pass (trivially, since none takes a frame) | todo (R105), lower priority — its value is prospective |
 | US-3.7 | **The recorded shootout run**: every contestant, every symbol, every horizon, against the real store, appended to the ledger | `data/trials.jsonl`, `data/comparisons.jsonl`, `docs/superpowers/phase2-completion-decisions.md` | one run on a clean tree whose sha resolves to the code that produced it; **7 contestants x 3 symbols x 4 horizons x 2 losses = 168 trials, 168 ledger lines**, each carrying its cohort; the per-origin truncation-equivalence by-product reported; the measured Monte-Carlo error beside every simulated figure and `n_eff` beside every MCS one; the run's console output quoted in the decisions log the way Phase 2's own recorded run was | todo, depends on US-3.4 and US-3.5 — **about 2.5 hours of compute** (R90, R102) |
 | US-3.8 | Leaderboard polish, from US-3.5's own escalations | `src/volab/compare/sink.py`, `src/volab/leaderboard/`, `tests/` | SPA's 5% verdict is **stored** rather than re-derived at the point of display, so the leaderboard keeps computing nothing of its own; the DM verdict wording is imported rather than duplicated; a malformed ledger line prints and exits 1 as `compare`'s CLI does instead of raising a traceback; and `--symbol`/`--horizon` filters exist, because the re-run will produce roughly 500 pairwise lines and nobody will read them | todo, after the re-run — its tests read the real ledger, so it cannot run while a shootout is appending |
-| US-3.9 | A contestant declares which horizons it can answer | `src/volab/models/base.py`, `src/volab/walkforward/`, `src/volab/compare/` | the harness drops a contestant at a horizon it cannot answer, rather than the operator having to pair the right cohort with the right `--horizon` by hand | todo, **architect story** — it changes `Cohort`, `evaluate`, `Evaluation.contestants`, `trials()` and the comparison record's shape, so it is design-first and not a patch |
+| US-3.9 | A contestant declares which horizons it can answer, by which method, with what measured error | `src/volab/models/base.py`, `src/volab/walkforward/`, `src/volab/compare/` | the harness drops a contestant at a horizon it cannot answer, rather than the operator having to pair the right cohort with the right `--horizon` by hand; and a figure's Monte-Carlo error travels with the contestant that produced it instead of living in a hand-maintained table keyed by `(name, horizon)` | todo, **architect story** — it changes `Cohort`, `evaluate`, `Evaluation.contestants`, `trials()` and the comparison record's shape, so it is design-first and not a patch. **R119 widened it:** the `MONTE_CARLO_ERROR_PERCENT` table is a second place that knows which contestants simulate, and it went stale the moment the real measurement existed |
 | US-3.6 | `delivery-auditor` over this board against git at the sprint close | — | the board and the repository agree, and the board is corrected where they do not | todo |
 
 **US-3.1b reported DONE_WITH_CONCERNS, and the concerns were right.** It kept the design as
@@ -162,12 +162,46 @@ its null changed.
   `--cohort` will accept either at either. Run the wrong one and the output is meaningless but
   looks ordinary. US-3.9 is the durable fix; until it lands this is an operator trap, recorded
   rather than relied upon to be remembered.
-- **`gjr11_skewt` is unchecked, not clean.** Its fitted persistence on SPY is
-  `α + γ/2 + β ≈ 1.000`, on the fourth-moment boundary, and its path concentration was never
-  measured. It is in **both** cohorts at every horizon and currently leads QLIKE at h=5 in the
-  partial run, so this is being settled before that is recorded as a result rather than after.
-- **`garch11_skewt` has never been looked at either**, though it forecasts analytically and should
-  be immune by construction.
+- **`gjr11_skewt` is settled, and the answer was a library bug** (R117-R120). It does **not**
+  share EGARCH's pathology: its multi-step mean always exists, so it is not excluded anywhere. But
+  `arch`'s stationarity constraint hard-codes `κ = ½`, which is `E[z²1{z<0}]` only for a
+  *symmetric* law, so under skew-t with `λ < 0` the feasible region contains explosive processes —
+  and the fit is explosive at **238/238 SPY and 238/238 QQQ origins** (109/238 on IWM). The h=5
+  QLIKE lead is real (0.0002 estimator error against a 0.0240 margin). No rank flips; the run was
+  not stopped. **What is open is which estimator GJR takes into the holdout, and it blocks
+  registration** — see the first risk below.
+- **`garch11_skewt` is clean, and immune by construction** (R118). `φ = α + β` has no `κ` in it, so
+  arch's constraint is the true condition and its analytic recursion is the true mean under any
+  unit-variance law. Worth one line on the record: `α + β` is pinned to 1 within 1e-9 at 192/250
+  SPY origins, so it is effectively an IGARCH fit — exact and finite, growing about linearly in h.
+  **R90's choice of `"analytic"` for the symmetric specification is the entire reason it is
+  trustworthy at h=66.**
+
+- **Which estimator `gjr11_skewt` takes into the holdout is undecided, and it blocks registration**
+  (R120). R115 requires a simulated contestant's Monte-Carlo error to be measured on the series
+  being evaluated; at the reveal those are holdout fits, and the measurement needs an exact value
+  to compare against. A seed spread is not one — on SPY at h=66 it understates the true sd by a
+  median **58.8x**. So under the simulated estimator R115 refuses GJR's significance at **every**
+  horizon, h=5 included, where it leads. The exact closed form `m_{k+1} = ω + φ_true·m_k` with `κ`
+  by quadrature would remove the estimator from the question entirely and retire R90's reason to
+  simulate; registering as-is means declaring those refusals in advance. **The user's decision.**
+- **The Monte-Carlo error table in `compare/cohorts.py` is the synthetic probe's and must be
+  replaced before registration** (R119). It authorises nothing — its source is never the evaluated
+  series, so the guard withholds and prints `no claim` — but `0.207%` beside a GJR row reads as
+  though SPY were similar, and SPY is 1.32% median at h=22 and unbounded at h=66. The module's own
+  comment anticipated this: *"The day the figures are re-measured on the real panel, this string
+  and the table change together."* **What the replacement contains depends on the decision above**,
+  so it is not started. EGARCH's h=22/h=66 entries are dead either way — R114 excludes it at h≥2.
+- **The deeper fix is refused before registration, deliberately.** A `κ(η, λ)`-aware stationarity
+  constraint replacing arch's `0.5` would fix the *model* rather than the estimator, but it changes
+  the fit itself and its effect on the losses is unknown. Recorded as a **Phase 3 candidate**, not
+  a Phase 2 story.
+- **`top1_share` was the wrong diagnostic, and it was mine.** R116 proposed it as the cheap
+  deciding test for GJR. GJR has no SPY origin with a path over 50% at h=22 or h=66, so it reads
+  clean — while the ratio of theoretical to sample-implied Monte-Carlo sd has median 58.8 and max
+  5.2e5 at h=66. The paths carrying the variance are never drawn, so concentration among the drawn
+  paths is benign by construction. **Third time in this project a proposed diagnostic measured the
+  sample rather than the estimator** (R72, R78 were the others).
 
 ## Not this phase's to fix, and carried forward
 
