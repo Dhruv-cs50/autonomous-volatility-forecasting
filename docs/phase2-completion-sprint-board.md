@@ -50,6 +50,8 @@ Each has already cost this project time, so each is stated rather than assumed:
 | US-3.3b | Strengthen conformance clause 2 so it catches a model that captured its own target frame | `tests/model_conformance.py`, `tests/test_model_interface.py` | a plant that keeps its own reference to the target frame — the R78 shape — is caught by the **shared** suite rather than by one contestant's own test; the existing contestants still pass unchanged | done `d36d689` — clause 7 wired in with the signature unchanged, all seven contestants pass, plant caught by it and passed by clause 2 (R105) |
 | US-3.3c | Make the rebuild factory mandatory, so the captured-copy case is closed for every contestant | `tests/model_conformance.py`, `tests/test_model_interface.py`, `tests/test_garch.py`, `tests/test_recalibrated.py` | `conformance_suite` requires a `rebuild` factory, so no contestant can decline it; a plant that `.copy()`s the target frame at construction is caught; the seven existing contestants pass (trivially, since none takes a frame) | todo (R105), lower priority — its value is prospective |
 | US-3.7 | **The recorded shootout run**: every contestant, every symbol, every horizon, against the real store, appended to the ledger | `data/trials.jsonl`, `data/comparisons.jsonl`, `docs/superpowers/phase2-completion-decisions.md` | one run on a clean tree whose sha resolves to the code that produced it; **7 contestants x 3 symbols x 4 horizons x 2 losses = 168 trials, 168 ledger lines**, each carrying its cohort; the per-origin truncation-equivalence by-product reported; the measured Monte-Carlo error beside every simulated figure and `n_eff` beside every MCS one; the run's console output quoted in the decisions log the way Phase 2's own recorded run was | todo, depends on US-3.4 and US-3.5 — **about 2.5 hours of compute** (R90, R102) |
+| US-3.8 | Leaderboard polish, from US-3.5's own escalations | `src/volab/compare/sink.py`, `src/volab/leaderboard/`, `tests/` | SPA's 5% verdict is **stored** rather than re-derived at the point of display, so the leaderboard keeps computing nothing of its own; the DM verdict wording is imported rather than duplicated; a malformed ledger line prints and exits 1 as `compare`'s CLI does instead of raising a traceback; and `--symbol`/`--horizon` filters exist, because the re-run will produce roughly 500 pairwise lines and nobody will read them | todo, after the re-run — its tests read the real ledger, so it cannot run while a shootout is appending |
+| US-3.9 | A contestant declares which horizons it can answer | `src/volab/models/base.py`, `src/volab/walkforward/`, `src/volab/compare/` | the harness drops a contestant at a horizon it cannot answer, rather than the operator having to pair the right cohort with the right `--horizon` by hand | todo, **architect story** — it changes `Cohort`, `evaluate`, `Evaluation.contestants`, `trials()` and the comparison record's shape, so it is design-first and not a patch |
 | US-3.6 | `delivery-auditor` over this board against git at the sprint close | — | the board and the repository agree, and the board is corrected where they do not | todo |
 
 **US-3.1b reported DONE_WITH_CONCERNS, and the concerns were right.** It kept the design as
@@ -154,6 +156,18 @@ its null changed.
   checks rather than claiming otherwise — six planted defects each, every one caught by a named
   test. Recorded because the method says test-first and the honest report of a departure is worth
   more than a silent one.
+
+- **Nothing enforces the cohort/horizon pairing** that R114 requires. `phase2-shootout` (seven
+  contestants) is correct only at h=1 and `phase2-shootout-multistep` (six) only at h≥2, and
+  `--cohort` will accept either at either. Run the wrong one and the output is meaningless but
+  looks ordinary. US-3.9 is the durable fix; until it lands this is an operator trap, recorded
+  rather than relied upon to be remembered.
+- **`gjr11_skewt` is unchecked, not clean.** Its fitted persistence on SPY is
+  `α + γ/2 + β ≈ 1.000`, on the fourth-moment boundary, and its path concentration was never
+  measured. It is in **both** cohorts at every horizon and currently leads QLIKE at h=5 in the
+  partial run, so this is being settled before that is recorded as a result rather than after.
+- **`garch11_skewt` has never been looked at either**, though it forecasts analytically and should
+  be immune by construction.
 
 ## Not this phase's to fix, and carried forward
 
