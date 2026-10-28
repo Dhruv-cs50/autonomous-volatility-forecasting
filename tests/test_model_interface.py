@@ -28,6 +28,7 @@ from model_conformance import (
     clause_5_determinism,
     clause_6_horizon_contract,
     clause_7_unknowable_targets_are_out_of_reach,
+    clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets,
     conformance_suite,
     make_toy,
     run_cohort,
@@ -626,7 +627,7 @@ def test_the_driver_reports_a_disagreement_with_the_persisted_table() -> None:
 
 @pytest.mark.parametrize("model", BASELINE_COHORT.models, ids=lambda model: model.name)
 def test_every_baseline_model_passes_the_conformance_suite(model: Model) -> None:
-    conformance_suite(model, toy=make_toy(1))
+    conformance_suite(model, toy=make_toy(1), rebuild=lambda _: model)
 
 
 def test_the_conformance_suite_can_fail(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -718,3 +719,57 @@ def test_a_contestant_holding_its_own_target_frame_is_caught_by_clause_7_and_not
     before = toy.targets.copy()
     clause_7_unknowable_targets_are_out_of_reach(Reads(), toy)
     assert toy.targets.equals(before)
+
+
+def test_clause_7_passes_a_contestant_that_copied_the_frame_and_clause_8_fails_it() -> None:
+    """R105: the hole clause 7 leaves, demonstrated, and the clause that closes it.
+
+    ``Copied`` takes the target frame at construction and ``.copy()``s it. Clause 7 scales the
+    cells of ``toy.targets`` in place; the copy is a separate object and does not see them, so
+    clause 7 passes a model that is reading the future. Clause 8 builds the model again from a
+    frame that already carries the scaled values, and the copy it takes then does.
+    """
+    toy = make_toy(1)
+
+    class Copied:
+        name = "copied"
+        fit_depends_on_horizon = False
+
+        def __init__(self, targets: pd.DataFrame) -> None:
+            self.frame = targets.copy()
+
+        def fit(self, view: TrainingView) -> Forecaster:
+            stamps = [stamp.date() for stamp in pd.to_datetime(self.frame["ts"], utc=True)]
+            at = stamps.index(view.origin)
+            return Answer(float(self.frame[view.response].iloc[at]))
+
+    plant = Copied(toy.targets)
+    # The remaining hole: the in-place clause cannot see a copy, and neither can clause 2.
+    clause_2_target_side_equivalence(plant, toy)
+    clause_7_unknowable_targets_are_out_of_reach(plant, toy)
+    # Closed: rebuilt from the perturbed frame, the same contestant is caught.
+    with pytest.raises(AssertionError, match="keeping a target frame of its own"):
+        clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets(plant, toy, Copied)
+
+    # The control: a contestant that reads only its view is not accused, and the frame is left
+    # as found (clause 8 builds copies and never writes to ``toy.targets``).
+    class Reads:
+        name = "reads-its-view"
+        fit_depends_on_horizon = False
+
+        def fit(self, view: TrainingView) -> Forecaster:
+            return Answer(float(view.training[view.response].iloc[-1]))
+
+    before = toy.targets.copy()
+    clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets(Reads(), toy, lambda _: Reads())
+    assert toy.targets.equals(before)
+
+    # A factory that builds some other contestant is a caller error, said so rather than compared.
+    with pytest.raises(AssertionError, match="other than the one under test"):
+        clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets(Reads(), toy, Copied)
+
+
+def test_the_conformance_suite_requires_a_rebuild_factory() -> None:
+    """R105: the factory is mandatory; an optional one is skipped by the contestant needing it."""
+    with pytest.raises(TypeError, match="rebuild"):
+        conformance_suite(BASELINE_COHORT.models[0], toy=make_toy(1))  # type: ignore[call-arg]

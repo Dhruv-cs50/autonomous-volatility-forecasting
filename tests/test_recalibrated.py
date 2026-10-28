@@ -21,6 +21,7 @@ import pytest
 from model_conformance import (
     Toy,
     alone,
+    clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets,
     conformance_suite,
     make_toy,
     run_cohort,
@@ -89,7 +90,7 @@ def test_the_shipped_contestant_is_har_levels_recalibrated_with_the_designed_def
 
 @pytest.mark.parametrize("horizon", [1, 5])
 def test_the_contestant_conforms_on_the_stride_six_toy(horizon: int) -> None:
-    conformance_suite(short_model(), toy=make_toy(horizon))
+    conformance_suite(short_model(), toy=make_toy(horizon), rebuild=lambda _: short_model())
 
 
 def test_the_shipped_defaults_conform_where_forty_pairs_are_reachable() -> None:
@@ -97,7 +98,7 @@ def test_the_shipped_defaults_conform_where_forty_pairs_are_reachable() -> None:
     toy = late_toy(1)
     forecasts = [fit_recalibrated(har_levels_mz(), view).calibration for view in views_of(toy)]
     assert all(len(sample) >= MINIMUM_PAIRS for sample in forecasts)
-    conformance_suite(har_levels_mz(), toy=toy)
+    conformance_suite(har_levels_mz(), toy=toy, rebuild=lambda _: har_levels_mz())
 
 
 # ---------------------------------------------------------------------------
@@ -540,42 +541,6 @@ class InSampleMz:
         )
 
 
-def perturb_the_unknowable(targets: pd.DataFrame, origin: dt.date) -> pd.DataFrame:
-    """Every target that had not completed by ``origin`` -- the origin's own included -- scaled."""
-    moved = targets.copy()
-    future = [done > origin for done in as_of_dates(moved)]
-    for column in moved.columns:
-        if column.startswith("target_"):
-            moved.loc[future, column] = moved.loc[future, column] * 10.0
-    assert any(future), "no target postdated the origin, so nothing was perturbed"
-    return moved
-
-
-def forecast_moves_with_the_unknowable(
-    make: Callable[[pd.DataFrame], Model], toy: Toy
-) -> list[str]:
-    """Origins at which a forecast changed when only targets unknown at the origin were changed.
-
-    A strengthening of conformance clause 2, which *removes* future targets: removing is not
-    distinguishable from a model that never looked, while scaling them is. The model is rebuilt
-    from each frame, because a leak has to come from somewhere and the only place the origin's own
-    target exists is the frame ``evaluate`` is given.
-    """
-    moved_at: list[str] = []
-    for origin in toy.origins:
-        single = dataclasses.replace(toy, origins=(origin,))
-        model = make(toy.targets)
-        honest = run_cohort(single, alone(model))
-        other = perturb_the_unknowable(toy.targets, origin)
-        moved = run_cohort(single, alone(make(other)), targets=other)
-        if not honest.results or not moved.results:
-            continue
-        a, b = honest.results[0].forecasts[model.name], moved.results[0].forecasts[model.name]
-        if not (a == b or (math.isnan(a) and math.isnan(b))):
-            moved_at.append(f"{origin}: {a!r} became {b!r}")
-    return moved_at
-
-
 def test_an_in_sample_mincer_zarnowitz_scores_better_and_is_refused() -> None:
     """The acceptance criterion, as a red case.
 
@@ -608,10 +573,11 @@ def test_an_in_sample_mincer_zarnowitz_scores_better_and_is_refused() -> None:
 
     # Refused. Both guards, each on the shipped model (silent) and the leaked one (fires).
     latest = dataclasses.replace(toy, origins=toy.origins[-4:])
-    assert forecast_moves_with_the_unknowable(lambda _: short_model(), latest) == []
-    assert forecast_moves_with_the_unknowable(lambda targets: InSampleMz(targets), latest), (
-        "the in-sample fit passed the perturbation guard"
+    clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets(
+        honest, latest, lambda _: short_model()
     )
+    with pytest.raises(AssertionError, match="keeping a target frame of its own"):
+        clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets(leaky, latest, InSampleMz)
     assert sample_leaks(short_model(), toy) == []
     assert any(
         "completed on" in line or "origin itself" in line for line in sample_leaks(leaky, toy)

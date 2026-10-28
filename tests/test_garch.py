@@ -563,12 +563,14 @@ def test_a_missing_final_return_is_an_empty_window_and_a_skip() -> None:
 
 
 def test_garch11_conforms() -> None:
-    conformance_suite(GARCH11_SKEWT, toy=make_toy(1))
+    conformance_suite(GARCH11_SKEWT, toy=make_toy(1), rebuild=lambda _: GARCH11_SKEWT)
 
 
 def test_gjr11_conforms_at_a_horizon_where_the_seed_matters() -> None:
-    conformance_suite(_few(GJR11_SKEWT), toy=make_toy(22))
+    conformance_suite(_few(GJR11_SKEWT), toy=make_toy(22), rebuild=lambda _: _few(GJR11_SKEWT))
 
 
 def test_egarch11_conforms_at_a_horizon_where_the_seed_matters() -> None:
-    conformance_suite(_few(EGARCH11_SKEWT), toy=make_toy(22))
+    conformance_suite(
+        _few(EGARCH11_SKEWT), toy=make_toy(22), rebuild=lambda _: _few(EGARCH11_SKEWT)
+    )

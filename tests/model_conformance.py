@@ -5,7 +5,10 @@ contestant imports ``conformance_suite`` and calls it on its own model, so that 
 held to exactly the standard the baseline is and no story can quietly hold its own to less::
 
     def test_my_model_conforms() -> None:
-        conformance_suite(MyModel(), toy=make_toy(1))
+        conformance_suite(MyModel(), toy=make_toy(1), rebuild=lambda targets: MyModel())
+
+``rebuild`` is required (R105): it builds the contestant from a target frame, and a contestant
+that takes no frame ignores the argument. See ``clause_8``.
 
 Each clause is also a function of its own, so a failure names the clause that broke and a story
 can run one against a planted defect to prove the clause can fail.
@@ -20,6 +23,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import pandas as pd
@@ -368,9 +372,11 @@ def clause_7_unknowable_targets_are_out_of_reach(model: Model, toy: Toy) -> None
     The boundary, stated rather than hidden: this reaches a reference to ``toy.targets`` itself.
     A model that copied the frame at construction, derived a Series from it (copy-on-write, on
     for pandas >= 3, separates that from later writes to the parent) or loaded its own from a
-    store is out of reach of any suite that is handed only a built model. Witness for what it
-    does reach, and for clause 2 passing the same plant:
-    ``test_a_contestant_holding_its_own_target_frame_is_caught_by_clause_7_and_not_by_clause_2``.
+    store is out of reach of a clause that is handed only a built model; ``clause_8`` is the one
+    that rebuilds. Witnesses: for what this reaches, and for clause 2 passing the same plant,
+    ``test_a_contestant_holding_its_own_target_frame_is_caught_by_clause_7_and_not_by_clause_2``;
+    for what it misses,
+    ``test_clause_7_passes_a_contestant_that_copied_the_frame_and_clause_8_fails_it``.
     """
     column = target_column(toy.horizon)
     snapshot = toy.targets.copy()
@@ -405,8 +411,82 @@ def clause_7_unknowable_targets_are_out_of_reach(model: Model, toy: Toy) -> None
     assert checked >= 2, f"only {checked} origin(s) were actually compared"
 
 
-def conformance_suite(model: Model, *, toy: Toy) -> None:
-    """Run every clause against ``model`` on ``toy``. See the module docstring for how to call."""
+def perturb_the_unknowable(targets: pd.DataFrame, origin: dt.date) -> pd.DataFrame:
+    """A copy of ``targets`` with every target not completed by ``origin`` scaled by ten.
+
+    The origin's own target is included. Every ``target_*`` column is scaled, not only one
+    horizon's, so a model reading a neighbouring horizon is not spared.
+    """
+    moved = targets.copy()
+    future = pd.Series([done > origin for done in as_of_dates(moved)], index=moved.index)
+    assert future.any(), f"{origin}: no target postdated the origin, so nothing was perturbed"
+    for column in moved.columns:
+        if column.startswith("target_"):
+            moved.loc[future, column] = moved.loc[future, column] * 10.0
+    return moved
+
+
+def clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets(
+    model: Model, toy: Toy, rebuild: Callable[[pd.DataFrame], Model]
+) -> None:
+    """R105: a contestant rebuilt from a frame with unknowable targets scaled forecasts as before.
+
+    Clause 7 writes into ``toy.targets`` and so reaches only a model holding that object. A model
+    that ``.copy()``d the frame at construction, derived a Series from it, or loaded its own is
+    unmoved by that write; the only way to reach it is to build it again from a frame that
+    already carries the perturbed values. ``rebuild(frame)`` is that build. For each sampled
+    origin it is called on ``toy.targets`` and on ``perturb_the_unknowable(toy.targets, origin)``,
+    each model is run alone with the frame it was built from handed to ``evaluate`` too, and the
+    two forecasts must agree. ``toy.targets`` is never written to, so there is nothing to restore.
+
+    **It is mandatory because an optional factory would be skipped by exactly the contestant that
+    needed it** (R104 again: a guarantee that applies only where someone remembered to ask).
+
+    **What it tests today, honestly: nothing.** None of the seven shipped contestants takes a
+    target frame at construction, so for each of them ``rebuild`` is a closure that ignores its
+    argument and this clause passes trivially. Its value is prospective -- it binds the next
+    contestant, and a clause that is vacuous today and bites tomorrow is still worth having.
+    Witness that it does bite, and that clause 7 passes the same plant:
+    ``test_clause_7_passes_a_contestant_that_copied_the_frame_and_clause_8_fails_it``.
+    """
+    checked = 0
+    for origin in toy.origins[::3]:
+        single = dataclasses.replace(toy, origins=(origin,))
+        honest_model = rebuild(toy.targets)
+        other = perturb_the_unknowable(toy.targets, origin)
+        moved_model = rebuild(other)
+        assert honest_model.name == moved_model.name == model.name, (
+            "the rebuild factory returned a contestant other than the one under test"
+        )
+        honest = run_cohort(single, alone(honest_model))
+        moved = run_cohort(single, alone(moved_model), targets=other)
+        assert len(honest.results) == len(moved.results), (
+            f"{origin}: rebuilding from perturbed unknowable targets changed whether the origin "
+            "was forecast"
+        )
+        if not honest.results:
+            continue
+        checked += 1
+        mine, theirs = (
+            honest.results[0].forecasts[model.name],
+            moved.results[0].forecasts[model.name],
+        )
+        assert _same(mine, theirs), (
+            f"{origin}: forecast {mine!r} became {theirs!r} when the contestant was rebuilt from "
+            "a frame whose unknowable targets were scaled, so it is keeping a target frame of its "
+            "own"
+        )
+    assert checked >= 2, f"only {checked} origin(s) were actually compared"
+
+
+def conformance_suite(model: Model, *, toy: Toy, rebuild: Callable[[pd.DataFrame], Model]) -> None:
+    """Run every clause against ``model`` on ``toy``. See the module docstring for how to call.
+
+    ``rebuild`` is required, not optional (R105, clause 8): it builds ``model`` from a target
+    frame. A contestant that takes no frame passes a closure that ignores its argument, e.g.
+    ``rebuild=lambda _: model``. Witness that omitting it is an error, not a skipped clause:
+    ``test_the_conformance_suite_requires_a_rebuild_factory``.
+    """
     assert isinstance(model, Model), "the contestant does not satisfy the Model protocol"
     clause_1_per_origin_truncation_equivalence(model, toy)
     clause_2_target_side_equivalence(model, toy)
@@ -415,3 +495,4 @@ def conformance_suite(model: Model, *, toy: Toy) -> None:
     clause_5_determinism(model, toy)
     clause_6_horizon_contract(model, toy)
     clause_7_unknowable_targets_are_out_of_reach(model, toy)
+    clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets(model, toy, rebuild)
