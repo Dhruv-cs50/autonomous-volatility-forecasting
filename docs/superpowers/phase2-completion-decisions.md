@@ -606,3 +606,99 @@ hypothesis is how a number nobody can trust gets produced.
    `MC error 0.163% (synthetic probe series, not SPY)` beside a contestant that was exploding — a
    calm figure, measured on other data, useless here. The label stopped it being read as SPY's
    own; a bare `0.163%` would have made the output look settled.
+
+---
+
+## R113-R116 — what the diagnosis found, including two things I had said wrongly
+
+- **R113 — the MCS crash is `arch`'s, not pandas', and the crash is the only reason it was
+  found.** `MCS._compute_r` does `i = loc.squeeze()[0]`, a scalar **only when the argmax of the
+  standardized loss differential is unique**. With several rows, `squeeze()` leaves shape `(m, 2)`
+  and `[0]` returns the `(i, j)` **pair**, which (a) puts an `ndarray` into `eliminated`, making
+  the index column object dtype that `Index.__getitem__` rejects, and (b) **eliminates two models
+  in one step**. `_compute_max` handles the same case correctly; `METHOD = "R"` does not.
+
+  The tie comes from float64 annihilation: with one mean loss at 1.7e12 and the rest near 1e-5,
+  `L̄_i − L̄_j` falls below half an ulp of the large value, so the entire standardized row is one
+  repeated float. That is why h=1 and h=5 eliminated cleanly — at h=5 EGARCH's ratio is ~1e2,
+  nowhere near 1/eps.
+
+  **I told the user this was a pandas 3 / Arrow incompatibility. It is not, and the diagnosis
+  refuted it:** an object-dtype indexer raises on a pandas-2-shaped `Index` too, and on raw numpy;
+  only the message differs. A pandas pin would have bought nothing.
+
+  **And the fix I floated was the worst option available.** Pre-formatting the losses so arch
+  never indexes an Arrow `Index` converts the crash into a **silently wrong** MCS that eliminates
+  `har_levels` — the SPA benchmark — alongside the exploding contestant and reports k−1 rows. The
+  guard instead **refuses**, on the mean losses, where `|L̄_j − L̄_k| ≤ 4·eps·max|L̄_m|` for some
+  pair against a common contestant: the exact analogue of `same_losses`'s scaled tolerance one
+  level up. Deliberately a conservative superset of arch's tie, because a refusal with a reason
+  beats an elimination order decided by rounding. There is **no clean ratio threshold** — the
+  sweep showed 1e14 crashing and 1e15 surviving, since the bootstrap variances must collide too.
+  Worth filing upstream: the fix there is `i = int(loc[0, 0])`.
+
+- **R114 — EGARCH(1,1) with skew-t errors has no finite multi-step conditional variance, so every
+  h ≥ 2 forecast it produced is an estimate of infinity.** Not an implementation defect. From the
+  recursion, `σ²_{t+1} = C·(σ²_t)^β·exp(α|z_t| + γz_t)`, and Hansen's standardized skew-t has
+  **polynomial** tails, so `E[exp(α|z| + γz)] = +∞` for any `α > 0`. The integral over `|z| < 800`
+  measures 1.91e+128 and grows without bound. `h = 1` is exact because `σ²_{t+1}` is known at `t`
+  and needs no expectation. This is Nelson's own reason for using GED rather than a t.
+
+  The sample mean over S paths is finite for any S but has no limit, so it **diverges in S**:
+  0.00252 at S=1e4, 0.0630 at 1e5, 0.159 at 1e6, with relative spread going 4.5% → 231% → 239%,
+  while the **median** path stays at 0.0025-0.0033. The ledger's 1.70e+12 was reproduced
+  bit-identically, and **one origin carries 99.99999999999999% of it**, within which **one path
+  of 100,000 carries 99.99999997%**. All 247 fits converged, β ∈ [0.957, 0.968]; there was nothing
+  for `convergence_flag` to catch.
+
+  **So it is unusable at every h ≥ 2 — including h=5**, whose 8.38e-05 is the same non-existent
+  expectation that merely drew a less absurd number. Only h=1 is credible (3.76e-07, second best
+  on MSE).
+
+  **The refusal the user approved, and that I proposed, is wrong, and this is the correction.** A
+  threshold on "a forecast many orders above the realised scale" (a) compares against the
+  **target**, which is look-ahead; (b) selects on the random draw, biasing the scored mean
+  downward; and (c) could not work mechanically, because `Evaluation.comparable` **intersects the
+  defined-origin set across all contestants**, so a per-origin skip would empty every one of the
+  seven contestants' sample at that horizon. The refusal must be **contestant-level and a
+  priori** — available from the specification alone, using no draw and no target: EGARCH + an
+  error law with polynomial tails + α > 0 ⇒ no finite h-step variance for h ≥ 2.
+
+  *Cost if wrong:* the shootout loses one contestant at three of four horizons. Against that,
+  "EGARCH(1,1) with skew-t has no finite multi-step variance forecast" is a **genuine, citable
+  result this project produced by measuring** — R102 saw its shadow at h=66 on a synthetic probe;
+  this run proved it on real data.
+
+- **R115 — a Monte-Carlo error measured on another series may withhold a claim but never
+  authorise one.** The present rule did the opposite. `("egarch11_skewt", 22)` is 0.163%, under
+  the 1.5% ceiling, so EGARCH at h=22 was **not** in `unclaimed` and **significance was claimed
+  for it** — while its measured spread on SPY at the same path count is **230.79%**. Verified
+  directly.
+
+  Two causes, the second deeper: the probe's series is generated at α=0.05, β=0.87 against SPY's
+  fitted α≈0.25, β≈0.96, so it is not merely another series but a **gentler process**; and **a
+  six-seed standard deviation is not a measurement of an estimator with no finite mean**, so a
+  small figure there is no evidence of precision at all. The rule treated absence of measured
+  spread as presence of precision. *Cost if wrong:* the guard built to withhold claims was
+  granting them.
+
+- **R116 — the h=5 comparison records are not interpretable for any contestant, not just for
+  EGARCH.** `arch`'s MCS p-values are a cumulative maximum along the elimination sequence, and
+  EGARCH's loss column enters every step's test statistic. At h=5 MSE it was eliminated second at
+  0.571, which **floors every later p-value**: `har_semilog` and `har_levels_mz` read 0.625,
+  `har_levels` and `garch11_skewt` 0.704. Both SPA runs at h=5 also carry EGARCH among the
+  alternatives. So those records are marked uninterpretable rather than footnoted.
+
+  **What is clean:** every h=1 record; every pairwise DM not involving EGARCH at any horizon,
+  since `pairwise()` runs before `model_confidence_set()`; and the other six contestants' 36
+  trials. Also recorded: `comparisons.jsonl` has no h=22 record not because it failed but because
+  both losses' comparisons are built in one comprehension, so the successful **qlike** comparison
+  was lost when **mse** raised beside it.
+
+### Still unchecked, and flagged rather than assumed clean
+
+GJR's fitted persistence on SPY is `α + γ/2 + β ≈ 1.000`, right at the fourth-moment boundary.
+Its η ∈ [5.31, 6.39] does give the innovation a fourth moment, unlike EGARCH's, so its simulated
+mean has finite variance — but the process-level condition was not verified and its path
+concentration was not measured. The same `top1_share` diagnostic on GJR at h=22 is the cheap
+follow-up. **Not claimed clean.**
