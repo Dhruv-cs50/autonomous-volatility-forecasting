@@ -38,7 +38,7 @@ writes nothing — see R79 for why its *uncorrected* figures must not be reporte
 | `measure_e1_power.py` | **M2** — E1's real detection power, 52 of 2,312, and the exact cutoffs it predicts | seconds |
 | `measure_calendar_memo.py` | **M3** — cross-call state survives on the `lru_cache`d calendar, so a package-scoped AST ban cannot close E2's class | instant |
 | `measure_calibration.py` | **R73** — mean forecast over mean realized per model, and the smearing correction's isolated effect | a minute or so |
-| `measure_garch_forecast_error.py` | **R90, R102** — `arch`'s analytic multistep against simulation per specification, and the Monte-Carlo error at S=10,000 against S=100,000 | a minute or two |
+| `measure_garch_forecast_error.py` | **R90, R102, R124-R127** — `arch`'s analytic multistep against both simulation and the exact closed form per specification; the geometric-sum-versus-iteration numerics at a persistence of `1 - 2^-52`; and the Monte-Carlo error at S=10,000 against S=100,000 for every asymmetric specification. It keeps GJR's simulated path reachable through `_Fitted._simulated` **although shipped GJR no longer simulates**, so R102's and R119's GJR figures stay reproducible. It cross-checks its own `_path_sum` against `arch`'s analytic call and raises rather than printing a figure the two disagree on, and it contains no `except ValueError` at all — an AST test enforces that, because the version before R127 would have reported a construction refusal as "analytic unavailable". **All figures are on the synthetic probe series; no probe reads market data**, so the design's SPY numbers are not reproducible from here | a minute or two |
 
 ```bash
 uv run --locked python tools/measure_vintages.py

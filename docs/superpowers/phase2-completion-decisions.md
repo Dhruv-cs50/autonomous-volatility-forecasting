@@ -999,8 +999,16 @@ Iteration wins, and not on elegance: on SPY's GARCH(1,1) fits the geometric form
 6.0%/25.2%/51.0% at h=5/22/66, because `alpha + beta` arrives as `1 - O(eps)` and
 `1 - phi` cancels catastrophically — **and the `phi == 1.0` branch that was supposed to protect it
 never fires at `1 - 1e-16`.** R118 records persistence pinned to 1 within 1e-9 at 192 of 250
-origins, so the unprotected case is the *modal* one. Iteration matches an 80-bit evaluation to
-exactly 0.0, at 66 scalar steps.
+origins, so the unprotected case is the *modal* one.
+
+**Struck, and the reason is worth more than the claim was.** This paragraph first ended "iteration
+matches an 80-bit evaluation to exactly 0.0", repeating the design's own wording. **On this machine
+`numpy.longdouble` *is* `float64`** — itemsize 8, eps 2.22e-16, measured — because arm64 macOS has
+no 80-bit type, so that comparison was float64 against float64 and established nothing. The
+implementer caught it and redid the check with `fractions.Fraction`, i.e. exact rationals, which is
+the right instrument and needs no hardware to cooperate. **The conclusion is unchanged and now
+actually supported**; only my evidence for it was void. Third entry in this ruling where I restated
+a number without checking the instrument that produced it.
 
 **The pattern across all four.** Every one is an assumption of mine that a measurement reversed,
 and three of the four were about numerical behaviour I had reasoned about rather than run. R119's
@@ -1073,3 +1081,85 @@ its three-way rule — `test_the_stored_reasons_are_exactly_the_unclaimed_contes
 precisely because the rule now lives in two places, and a drift witness is a guard over a
 duplication, not a cure for one. Deferred rather than done because an implementer is in flight in
 the same package.
+
+## R127 — GJR forecasts exactly, R91's table is amended, and the ban finally got its transitive witness
+
+US-3.11: `2e8b023`, `39e644c`, `75ae610`, `fb58468`, `a21bb8c`. Verified here rather than relayed —
+`gjr11_skewt` reports `method='exact'`, `monte_carlo_error(MULTISTEP, h)` is `{}` at h=5, 22 and 66,
+and `monte_carlo_error(SHOOTOUT, 1)` carries EGARCH alone. **GJR is out of the Monte-Carlo
+apparatus entirely**, which is what took it out of R115.
+
+**R91's recorded table is amended**, as R124 authorised: `("GARCH", 1, "simulation")` becomes
+`("GARCH", 1, "exact")`. R91 named three specifications and their methods; the specifications are
+unchanged and one method is not. **GJR is exact, GARCH(1,1) stays analytic, EGARCH stays
+simulated.** The AST literal-count test is gone, replaced by the full
+`{GARCH, EGARCH} x o x get_args(Method)` product asserting that **exactly four pairings
+construct** — stronger than the design's three examples, and it covers EGARCH, which the literal
+count never did. Exhaustiveness was verified by planting a fourth `Method` member and confirming
+`mypy` rejects it at `assert_never`.
+
+**`75ae610` is the boundary sha** — the commit at which GJR becomes exact. R124's provenance
+decision rests on exactly that, so it is recorded here rather than left to be rediscovered from the
+log.
+
+### Three things I said that the code corrected
+
+**The probe would have crashed, not silently lied.** I told the implementer — and the user — that
+the old probe would swallow a construction refusal into `except ValueError` and print "analytic
+unavailable" while exiting 0. Read against the real source at `cd95c6d`: the loop runs over all
+three specs and calls `_forecast(..., method="simulation")` **outside** the try, so the illegal
+`("GARCH", 0, "simulation")` raises on the first spec and the probe dies before reaching the
+`except` at all. The silent-deletion mechanism was real for the analytic call in isolation; the
+crash precedes it. **And the crash exists only because the design made `o=0` simulation illegal**,
+which the old probe relied on — so a looser legal set would have produced exactly the silent
+failure I described. I was right about the mechanism and wrong about which failure fires first, and
+the implementer's new tests are red against the old probe 4 ways out of 5.
+
+**M18's fixture did not reproduce**, and the replacement is stronger: `lambda_hat` -0.536 against
+the design's -0.532, `kappa` 0.637 against 0.629, and a `phi` gap of 0.033 against 0.0214 — so the
+`kappa = 1/2` forecast is 6.2% low at h=5 where the design measured 3.9%. The design omitted its
+seed and draw details. The tolerance rests on the *measured* six-seed spread (0.27%), not on a
+theoretical sd, and a test asserts the fixture's own skew and persistence gap so a library change
+that weakens it fails by name rather than by passing more easily.
+
+**`lambda = +-1` has no degenerate value.** The design implied `kappa` collapses to 0 or 1 there.
+It does not: the shift `a` leaves mass on both sides of `z = 0`, and `kappa` is about 0.36 at the
+corners. The test asserts finiteness, the whole-line identities and the mirror identity instead of
+a number.
+
+### R82's convention finally has the witness it claimed twice
+
+The per-file numeric scan reads one module's AST, so it catches a sealed module importing numpy and
+**misses a sealed module importing a first-party module that imports numpy**. The 2026-10-28 design
+leaned on that gap knowingly — it put the scipy code in `models/garch.py` rather than a new
+`models/skewt.py` partly *because* a new scipy-importing module would open a surface the scan could
+not see — and specified the hardening in the same breath. **The design shipped and the hardening did
+not**, which is R82's own failure repeating: a ruling that keeps a convention rather than a witness,
+for the third time in this project.
+
+Built here, since `tests/test_import_discipline.py` was in no implementer's file set:
+`test_the_point_in_time_path_reaches_no_numpy_or_scipy_even_indirectly`, a breadth-first walk of
+the first-party import graph from every sealed module, reporting the shortest chain. **It passes
+today for a real reason**: only `models/garch.py`, `compare/dm.py` and `compare/multiple.py` import
+numeric libraries anywhere in `src`, and the sealed path imports `models.base`, never
+`models.garch`. So it is a ratchet over a property the tree already has — the only kind worth
+adding before someone breaks it.
+
+Two guards against it passing emptily, because a transitive scan that follows no edge *is* the
+per-file scan: `test_the_transitive_scan_walks_more_than_one_hop` asserts the walk leaves the
+sealed set (it reaches `config`, `errors`, `paths`, `sessions`, `identity` and `ingest.curate`,
+none of them sealed), and `test_a_planted_first_party_edge_to_numpy_is_caught` plants a **two-hop**
+chain — `models.base` -> `models.skewt` -> `models.quadrature` — which is the exact shape the design
+feared, and checks that the same graph with `import math` in place of numpy is *not* reported.
+`ALLOWED` is untouched and still `{"store.py"}`; it is the Parquet exemption and was never the
+numeric one, so `store.py` is in this graph like everything else.
+
+### Carried
+
+`tests/model_conformance.py` and the sealed-set hardening aside, the probe's figures are
+**discharged for the mechanism, not the numbers**: every block regenerates on the synthetic probe
+series, and no committed probe reads market data, so the design's SPY figures (exact/analytic
+1.61-1.81 at h=66, sim/exact 0.996-1.041) remain unregenerable. `garch.py` therefore still says
+"17.7% low at h=66" and **not** the 38-45% SPY figure from R125, deliberately: R32 wants a cited
+figure to have a probe that prints it, and that one has none. Until a market-data probe exists the
+SPY numbers live in the decisions log as measurements, not as quotable project figures.

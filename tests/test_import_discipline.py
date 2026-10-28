@@ -477,3 +477,146 @@ def test_the_store_reach_scan_detects_each_spelling(source: str, expected: str) 
 )
 def test_the_store_reach_scan_accepts_what_a_contestant_legitimately_needs(source: str) -> None:
     assert _store_reaches(source) == []
+
+
+# ---------------------------------------------------------------------------
+# The numeric ban, made transitive. The scan above reads one file's AST, so it catches a sealed
+# module that imports numpy and misses a sealed module that imports a first-party module that
+# imports numpy. The 2026-10-28 GJR design leaned on that gap deliberately -- it put the new
+# scipy code in ``models/garch.py`` rather than a new ``models/skewt.py`` partly *because* a new
+# scipy-importing module would open a surface this scan could not see -- and specified this
+# hardening in the same breath. The design shipped and the hardening did not, which is R82's
+# failure exactly: a ruling that keeps a convention rather than a witness. This is the witness.
+#
+# It passes today for a real reason, not an empty one: only ``models/garch.py``, ``compare/dm.py``
+# and ``compare/multiple.py`` import numeric libraries anywhere in ``src``, and nothing sealed
+# reaches any of them -- the sealed path imports ``models.base``, never ``models.garch``. So this
+# is a ratchet over a property the tree already has, which is the only kind worth adding before
+# someone breaks it. ``test_a_planted_first_party_edge_to_numpy_is_caught`` is why it cannot pass
+# vacuously.
+# ---------------------------------------------------------------------------
+
+
+def _module_name(path: Path) -> str:
+    """``SRC/models/base.py`` -> ``volab.models.base``; a package ``__init__`` -> the package."""
+    parts = path.relative_to(SRC).with_suffix("").parts
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(("volab", *parts))
+
+
+def _first_party_imports(source: str) -> set[str]:
+    """Every ``volab`` module ``source`` imports, by dotted name.
+
+    ``from volab.models import base`` yields both ``volab.models`` and ``volab.models.base``: the
+    package's own ``__init__`` runs on that import, so it is an edge too. Absolute imports only,
+    which is this project's whole style -- ``grep`` finds no relative import under ``src``.
+    """
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found.update(a.name for a in node.names if a.name.split(".")[0] == "volab")
+        elif isinstance(node, ast.ImportFrom) and not node.level:
+            module = node.module or ""
+            if module.split(".")[0] == "volab":
+                found.add(module)
+                found.update(f"{module}.{a.name}" for a in node.names)
+    return found
+
+
+def _graph() -> dict[str, str]:
+    """Every first-party module's dotted name to its source. ``store.py`` included: the numeric
+    ban never exempted it -- ``ALLOWED`` is the *Parquet* exemption, and conflating the two would
+    silently drop the one module most likely to reach for an array library."""
+    return {_module_name(path): path.read_text(encoding="utf-8") for path in SRC.rglob("*.py")}
+
+
+def _numeric_reach(start: str, graph: dict[str, str]) -> list[str]:
+    """The import chain from ``start`` to a direct numeric import, or ``[]`` if there is none.
+
+    Breadth-first, so the chain reported is a shortest one and reads as an explanation rather
+    than a wander. A name that is not a module in ``graph`` is a symbol imported *from* one
+    (``from volab.paths import Tier``), so it is skipped rather than treated as a missing edge.
+    """
+    queue: list[list[str]] = [[start]]
+    seen = {start}
+    while queue:
+        chain = queue.pop(0)
+        source = graph.get(chain[-1])
+        if source is None:
+            continue
+        if _numeric_imports(source) and len(chain) > 1:
+            return chain
+        for target in sorted(_first_party_imports(source)):
+            if target not in seen:
+                seen.add(target)
+                queue.append([*chain, target])
+    return []
+
+
+@pytest.mark.parametrize("module", _sealed_modules(), ids=lambda p: p.relative_to(SRC).as_posix())
+def test_the_point_in_time_path_reaches_no_numpy_or_scipy_even_indirectly(module: Path) -> None:
+    """R82's ban with the hop the per-file scan cannot see (the 2026-10-28 design, Decision 3)."""
+    graph = _graph()
+    chain = _numeric_reach(_module_name(module), graph)
+    assert not chain, (
+        f"{module.relative_to(SRC)} reaches a numeric library through "
+        f"{' -> '.join(chain)}: {_numeric_imports(graph[chain[-1]])}. R82 admits numpy and scipy "
+        "for the model zoo and the comparison layer only, and an indirect import is still an "
+        "import -- this path's output is compared byte-exactly."
+    )
+
+
+def test_the_transitive_scan_walks_more_than_one_hop() -> None:
+    """Guards against the walk degenerating into the per-file scan it exists to extend.
+
+    If it never followed an edge, the test above would pass by doing nothing. The sealed set must
+    actually reach modules outside itself -- it does: ``config``, ``errors``, ``paths``,
+    ``sessions``, ``identity`` and ``ingest.curate`` are all on the path and none is sealed.
+    """
+    graph = _graph()
+    reached = set()
+    for module in _sealed_modules():
+        start = _module_name(module)
+        queue, seen = [start], {start}
+        while queue:
+            source = graph.get(queue.pop(0))
+            if source is None:
+                continue
+            for target in sorted(_first_party_imports(source)):
+                if target not in seen:
+                    seen.add(target)
+                    queue.append(target)
+        reached |= seen
+    sealed_names = {_module_name(path) for path in _sealed_modules()}
+    assert reached - sealed_names, "the walk followed no edge out of the sealed set"
+    assert "volab.config" in reached and "volab.sessions" in reached, sorted(reached)
+
+
+def test_a_planted_first_party_edge_to_numpy_is_caught() -> None:
+    """The mutation, run against a synthetic graph rather than by editing the tree.
+
+    Two hops, so it fails only if the walk is genuinely transitive: ``models/base.py`` is clean,
+    the module it imports is clean, and only the third imports numpy. This is the exact shape the
+    design was worried about -- a ``models/skewt.py`` that the per-file scan would never see.
+    """
+    graph = {
+        "volab.models.base": "from volab.models.skewt import kappa\n",
+        "volab.models.skewt": "from volab.models.quadrature import simpson\n",
+        "volab.models.quadrature": "import numpy as np\n",
+    }
+    assert _numeric_reach("volab.models.base", graph) == [
+        "volab.models.base",
+        "volab.models.skewt",
+        "volab.models.quadrature",
+    ]
+    assert _numeric_reach("volab.models.skewt", graph) == [
+        "volab.models.skewt",
+        "volab.models.quadrature",
+    ]
+    # And a clean graph of the same shape is not reported, so the finding is the numpy import and
+    # not merely the presence of edges.
+    assert not _numeric_reach(
+        "volab.models.base",
+        {**graph, "volab.models.quadrature": "import math\n"},
+    )
