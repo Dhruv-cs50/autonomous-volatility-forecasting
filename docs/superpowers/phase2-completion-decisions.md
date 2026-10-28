@@ -1163,3 +1163,73 @@ series, and no committed probe reads market data, so the design's SPY figures (e
 "17.7% low at h=66" and **not** the 38-45% SPY figure from R125, deliberately: R32 wants a cited
 figure to have a probe that prints it, and that one has none. Until a market-data probe exists the
 SPY numbers live in the decisions log as measurements, not as quotable project figures.
+
+## R128 — the clean recorded run, and what the exact GJR actually changed
+
+`4865619` (part 1, h=1) and `6e0da08` (part 2, h=5/22/66). Gates green at 1357 tests before either
+part started. **Both parts ran on a clean tree** — part 1 at `234b85d`, part 2 at `4865619` — so
+the run carries **zero dirty flags**, and the driver committed part 1's ledger before part 2 began
+precisely so that part 1's own appends could not dirty part 2's R70 state. That was the mechanism
+behind R122's blemish and it is now closed. Ledger 264 -> 306 -> **414**; comparisons 28 -> 52.
+
+**The truncation-equivalence report was captured this time**, which R122 recorded as lost: twelve
+reports, `251 of 251`, `250 of 250`, `247 of 247` and `238 of 238` origins identical, three symbols
+by four horizons, zero disagreements. The driver tees every stage with `pipefail` and `|| exit <n>`
+per stage rather than summarising, because four separate wrappers of mine in this session threw
+evidence away.
+
+### The acceptance check, which is the real result
+
+The design asked that **every non-GJR value come out bit-identical**. Of 150 overlapping
+configurations, **132 are bit-identical and 18 changed**, and the decomposition is exact: 126
+non-GJR configurations, plus GJR's 6 at h=1, leaving all 18 of GJR's h>=2 configurations. Nothing
+else moved. **Origin counts are unchanged at every configuration**, so the exact method refuses no
+origin the simulation answered — the `Evaluation.comparable()` reasoning that R121 supported
+empirically now has a second witness.
+
+**GJR at h=1 came out bit-identical**, although the implementer measured a 1-ulp difference at one
+of two probed origins. A 1-ulp change in one of 251 forecasts moves the mean by ~1e-16 relative,
+which lands on the same double. Worth stating because it looks like the h=1 path did not change
+when in fact it did and the aggregate could not tell.
+
+| symbol | h=5 MSE | h=22 MSE | **h=66 MSE** |
+|---|---|---|---|
+| SPY | +0.011% | -0.413% | **+8.84%** |
+| QQQ | +0.172% | +0.315% | **+4.40%** |
+| IWM | +0.019% | +0.178% | -0.693% |
+
+**SPY's +8.84% is the design's predicted 8.8% deficit, confirmed on the real panel**, and it is a
+*worse* loss — R120 said correcting the estimator would hurt GJR rather than help it, and it did.
+IWM moves least and in the other direction, consistent with R118: it is the mild symbol, explosive
+at only 109 of 238 origins with `psi <= 1.135`.
+
+### The payoff, and a sign error of mine
+
+**GJR's h=5 QLIKE lead now carries a claim.** It leads SPY at -6.6611 and sits in the **10% model
+confidence set with no withholding and no Monte-Carlo text at all**. That was impossible while it
+simulated: R115 withheld it at every horizon, h=5 included, which is what R120 identified as the
+registration blocker. The blocker is closed.
+
+**R120's refusal of the h=66 QLIKE ordering is superseded, and I got the direction wrong when I
+first read the result.** I said the exact value moved GJR *away* from `har_levels_mz`. It moved
+**closer**: -3.52307 -> -3.51604, less negative and so worse, narrowing the margin from 0.01478 to
+**0.00775**. The rank holds — GJR is still 4th — but the gap halved rather than widened.
+
+What retires the refusal is not the gap's size but its premise. R120 refused the ordering because a
+0.0148 margin sat only twice an estimator's *systematic deficit*, which is a median shift and does
+not average away. **With GJR exact there is no deficit**, so 0.00775 is a genuine difference between
+two exactly computed numbers — narrower than the gap that was refused, and reportable where that
+one was not. No significance attaches either way: h=66 refuses all of it on `n_eff = 16.8`.
+
+### What the output no longer says
+
+At every horizon above 1 the leaderboard now prints **no Monte-Carlo line at all**, because nothing
+in `phase2-shootout-multistep` simulates — `monte_carlo_error(MULTISTEP, h)` is `{}`. And the
+withheld reasons on the new records are only ever true ones: `n_eff` thinness and columns
+disagreeing at 5%. R126's fallback text (`this record stores no reason`) now appears **only on the
+superseded records**, which is exactly the expiry R126 predicted rather than a debt anyone has to
+pay.
+
+Pre-registration sections 1, 2 and 4 are updated: R115's clause now binds `egarch11_skewt` at h=1
+alone, section 4 carries the ledger's history to 414 with the dirty-flag blemish disclosed, and the
+unordered-pair rule is kept while binding nothing at h>=2.

@@ -47,21 +47,19 @@ evaluated** (R115). A six-seed spread is not such a measurement: on SPY at h=66 
 spread understates the true Monte-Carlo sd by a median factor of **58.8**, because the paths
 carrying the variance are never drawn. Absence of measured spread is not evidence of precision.
 
-**What is measured, as of this draft (R119).** `gjr11_skewt` on **SPY** is measured per-origin
-against an exact closed form: 0.21-0.40% at h=5 with **0 of 250** origins over the 1.5% ceiling,
-1.32% median at h=22 with **106 of 247** over it, and **no feasible path count** bounding it at
-h=66. **QQQ and IWM are not measured** and will print as such. The figures still carried in
-`compare/cohorts.py` are the synthetic probe's and are optimistic by one to six orders of
-magnitude; they authorise nothing, because their source is never the evaluated series, but they
-must be replaced before registration.
+**What is measured, and why the clause now binds only EGARCH (R127).** `gjr11_skewt` **no longer
+simulates.** It forecasts from an exact closed form — `m_{k+1} = omega + phi_true * m_k` with
+`kappa = E[z^2 1{z<0}]` from the fitted skew-t — so it has no Monte-Carlo error to measure and
+leaves R115 entirely. The recorded run prints no Monte-Carlo text at any horizon above 1, because
+nothing in that cohort simulates.
 
-**This is the open item that blocks registration** (R120). At the reveal, measuring a simulated
-contestant's error on the holdout series requires an exact value to compare against, which only a
-closed form supplies. Under the simulated estimator R115 therefore refuses `gjr11_skewt`'s
-significance at **every** horizon including h=5, where it currently leads QLIKE on dev. Either the
-closed form lands first, or those refusals are declared here before the window opens.
-
-**Losses.** QLIKE and MSE, both, on the variance scale.
+So the clause above now reaches exactly one contestant: **`egarch11_skewt` at h=1**, the only
+horizon R114 admits it. Its h=1 forecast takes no expectation, so every simulated path is
+identical and its Monte-Carlo error is identically zero — but it is **not measured on the evaluated
+series**, so R115 withholds its significance, and that withholding stands. Making it exact would
+cost nothing technically and would upgrade the claim of the contestant currently leading h=1 QLIKE,
+after seeing it lead; R124 refused that as post-hoc selection and the refusal is part of this
+registration.
 
 ## 2. What will be claimed, and what will not
 
@@ -89,12 +87,18 @@ confidence set at all at 3 months. Those rows will print their refusal and its r
 declared here so that a disappointing long-horizon result cannot later be presented as
 significant, and a flattering one cannot either.
 
-**Also refused: orderings inside a simulated contestant's own measurement error.** Where two
-contestants' losses sit closer together than the simulated one's measured error, the pair is
-reported as **unordered** rather than ranked. The 1.5% ceiling R72 set as this project's floor for a
-believable difference (R102) is what decides this. On dev the live instance is `gjr11_skewt` against
-`har_levels_mz` for 4th/5th on h=66 QLIKE: a 0.0148 margin against a 0.0073 systematic deficit,
-which is a median shift and so does not average away across origins (R120).
+**The rule stands and its one live instance is gone.** Where two contestants' losses sit closer
+together than a *simulated* contestant's measured Monte-Carlo error, the pair is reported as
+**unordered** rather than ranked; the 1.5% ceiling R72 set as this project's floor for a believable
+difference (R102) decides it. The instance R120 named — `gjr11_skewt` against `har_levels_mz` for
+4th/5th on h=66 QLIKE — **no longer qualifies**, because GJR has no Monte-Carlo error any more. On
+the recorded run that gap is 0.00775 between two exactly computed numbers, which is a *narrower*
+margin than the 0.0148 R120 refused, and reportable where that one was not: the refusal was never
+about the size of the gap but about comparing a gap to an estimator's own systematic deficit. No
+significance attaches to it in any case, because h=66 refuses all significance on `n_eff`.
+
+The rule is kept rather than deleted because `egarch11_skewt` still simulates at h=1 and a future
+contestant may too. It currently binds nothing at h>=2, since no contestant there simulates.
 
 `egarch11_skewt` needs no separate refusal here — R114 excludes it at every horizon above 1.
 
@@ -120,15 +124,33 @@ not include a bad score:
 
 `data/trials.jsonl` line count at registration: **TO BE FILLED AT REGISTRATION.**
 
-Deliberately left blank in this draft, and the expected figure has already moved twice, which is
-why. The first draft expected 240 (72 + 168). The first shootout **crashed** after three of
-twelve configurations and appended 42, leaving the ledger at **114** — those trials are counted,
-not discarded (R112). The re-run appends **150** rather than 168, because EGARCH is excluded at
-three of four horizons (R114): 7 contestants x 3 symbols x 1 horizon x 2 losses = 42, plus
-6 x 3 x 3 x 2 = 108. So the expected figure at registration is **264**, and it will be read from
-the ledger at that moment rather than predicted here. The reveal takes a **second** count and records both plus the delta
-(R-design answer 2), since further work may legitimately add trials between registration and the
-read.
+Still blank, and still deliberately. The expected figure has now moved three times, which is the
+whole argument for reading it at the moment of registration rather than predicting it here.
+
+| ledger state | lines | why |
+|---|---|---|
+| after the dev walk-forward | 72 | the recorded Phase 2 baseline (R86) |
+| first shootout, **crashed** after 3 of 12 configurations | +42 = 114 | counted, not discarded (R112) |
+| re-run, EGARCH excluded at h>=2 | +150 = 264 | R114 |
+| **the clean recorded run**, GJR now exact | **+150 = 414** | R122, R127 |
+
+So the figure **as of this draft is 414**, and it will be read from the ledger at registration
+rather than taken from this table. The arithmetic of the last row: 7 contestants x 3 symbols x 1
+horizon x 2 losses = 42, plus 6 x 3 x 3 x 2 = 108.
+
+**Nothing is superseded in the file, and that is the point.** All three shootouts remain, so the
+ledger says 414 things were tried and not 150. The leaderboard partitions by `(at, git_sha)` and
+renders each run separately, which is how a reader tells the exact GJR from the simulated one
+(R124); **`75ae610` is the boundary sha** at which GJR became exact.
+
+**One blemish is permanent and disclosed:** 108 of the 414 lines carry `git_dirty: true`, because a
+documentation commit of mine landed between the two halves of the *superseded* re-run (R122). The
+leaderboard marks every one of those rows. The clean recorded run that this registration rests on
+carries **zero** dirty flags, and its own truncation-equivalence report is `N of N origins
+identical` at all twelve configurations.
+
+The reveal takes a **second** count and records both plus the delta (R-design answer 2), since
+further work may legitimately add trials between registration and the read.
 
 ## 5. What this does not pre-register
 
