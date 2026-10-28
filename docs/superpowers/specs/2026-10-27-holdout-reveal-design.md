@@ -269,8 +269,59 @@ that id.
 - Whether the dress rehearsal is a test, a `tools/` probe, or both. It is evidence, so R32 and the
   `tools/` convention both apply.
 
+## The unfinished tail: score what is complete (the user's decision)
+
+A target dated `h` sessions after its origin is stamped `as_of` at that later session, and
+`load_panel` filters on `as_of`, so a read bounded at `holdout_end` cannot see a target that had
+not completed by then. Measured against XNYS over `holdout_start` 2026-01-02 … `holdout_end`
+2026-10-30, which is 209 sessions:
+
+| horizon | last holdout origin realizes | origins usable inside the window |
+|---|---|---|
+| 1 | 2026-11-02 | 208 |
+| 5 | 2026-11-06 | 204 |
+| 22 | 2026-12-02 | 187 |
+| 66 | **2027-02-05** | **143** |
+
+**Decided: read only to `holdout_end` and drop the unfinished tail at each horizon.** The reveal
+can then happen as soon as the machinery is ready, and the live record starts earning evidence at
+once — which compounds, where the 66 lost origins at the longest horizon do not. The two rejected
+options are on the record with their costs: waiting until about 2027-02-05 would leave the
+machinery finished and unpulled for three months with no live data in the meantime, and reading up
+to reveal day would pull live sessions into the one logged look, weakening protection 3 exactly
+where its credibility comes from — the model being fixed *before* that data existed.
+
+**Two consequences the pre-registration must carry.** It names the origin count per horizon, so
+the thinness is declared before the answer is known rather than explained afterwards. And h=66's
+143 origins compound the thinness the README already states at long horizons: `n_eff` there will
+be smaller than the dev window's, so **R94's refusal rule should be expected to fire on the
+holdout's own h=66 figure**, and the write-up must report that refusal rather than quietly
+omitting the row.
+
 ## Open, and genuinely the user's
 
 - **When to take the reveal.** The machinery can be complete and the trigger unpulled; the
   framework makes this a human gate and this design keeps it one.
 - **What the pre-registration says.** Its content is a research decision, not an engineering one.
+
+---
+
+## The calls I made, listed so they can be checked while reading
+
+Everything here marked **(my call)** in place, gathered:
+
+1. **Retries are permitted and counted**, not forbidden — the project's own principle is to count
+   trials, not to outlaw them. The write-up reports "k logged looks, the k-th completed".
+2. **Everything fallible happens outside the logged read**, so that k is almost always 1.
+3. **A second append-only line marks a record complete**, referring to the first by id, so neither
+   can be rewritten to conceal the other.
+4. **The pre-registered trial count is a snapshot, not a gate.** The reveal records a second count
+   and the delta. The alternative would have forced all of Phase 3 to finish before registration.
+5. **The reveal predicate asks git, not the filesystem** — closing a forgery route through
+   `VOLAB_STORAGE_ROOT` that would otherwise have let a shell variable lift the seal.
+6. **The dress rehearsal runs on a separate storage root**, not behind a mode flag, so nothing that
+   disables auditing exists in the real path. It therefore cannot lift the real seal, which is
+   correct rather than a limitation.
+7. **The champion's fingerprint includes a content hash as well as the git sha**, so a dirty tree
+   is still identifiable.
+8. `docs/holdout-preregistration.md` as the pre-registration path.
