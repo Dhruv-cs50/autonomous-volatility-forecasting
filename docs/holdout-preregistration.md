@@ -28,9 +28,24 @@ rather than explained afterwards:
 | 22 | 187 | 8.5 |
 | 66 | 143 | 2.2 |
 
-**Contestants.** The seven of the `phase2-shootout` cohort, all of them, no dropping:
-`har_levels`, `har_semilog`, `random_walk`, `garch11_skewt`, `gjr11_skewt`, `egarch11_skewt`,
-`har_levels_mz`.
+**Contestants.** Seven at h=1; **six at h=5, 22 and 66**, and the exclusion is on the record with
+its reason rather than being a quiet drop:
+
+- h=1: `har_levels`, `har_semilog`, `random_walk`, `garch11_skewt`, `gjr11_skewt`,
+  `egarch11_skewt`, `har_levels_mz`.
+- h≥2: the same **minus `egarch11_skewt`** (R114). EGARCH(1,1) with skew-t errors has **no finite
+  multi-step conditional variance** — the recursion gives `σ² ∝ exp(α|z| + γz)` and Hansen's
+  skew-t has polynomial tails, so the expectation diverges for any `α > 0`. Every h≥2 forecast it
+  produced was a Monte-Carlo estimate of infinity; the dev run measured 1.70e+12 at h=22, with one
+  path of 100,000 carrying 99.99999997% of one origin's forecast. h=1 is exact because it takes no
+  expectation. This is a property of the specification, established a priori, **not** a result of
+  looking at the holdout.
+
+**No significance will be claimed for any simulated contestant** (`gjr11_skewt`,
+`egarch11_skewt`) unless its Monte-Carlo error has been measured **on the series being
+evaluated** (R115). The existing figures come from a synthetic probe whose process is gentler
+than the fitted one, and a six-seed spread is not a measurement of an estimator with no finite
+mean. Absence of measured spread is not evidence of precision.
 
 **Losses.** QLIKE and MSE, both, on the variance scale.
 
@@ -86,9 +101,13 @@ not include a bad score:
 
 `data/trials.jsonl` line count at registration: **TO BE FILLED AT REGISTRATION.**
 
-Deliberately left blank in this draft. The recorded shootout is appending 168 lines as this is
-written, taking the ledger from 72 to an expected 240, so a number written now would be stale
-before it was committed. The reveal takes a **second** count and records both plus the delta
+Deliberately left blank in this draft, and the expected figure has already moved twice, which is
+why. The first draft expected 240 (72 + 168). The first shootout **crashed** after three of
+twelve configurations and appended 42, leaving the ledger at **114** — those trials are counted,
+not discarded (R112). The re-run appends **150** rather than 168, because EGARCH is excluded at
+three of four horizons (R114): 7 contestants x 3 symbols x 1 horizon x 2 losses = 42, plus
+6 x 3 x 3 x 2 = 108. So the expected figure at registration is **264**, and it will be read from
+the ledger at that moment rather than predicted here. The reveal takes a **second** count and records both plus the delta
 (R-design answer 2), since further work may legitimately add trials between registration and the
 read.
 
