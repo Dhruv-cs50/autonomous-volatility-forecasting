@@ -1006,3 +1006,70 @@ exactly 0.0, at 66 scalar steps.
 and three of the four were about numerical behaviour I had reasoned about rather than run. R119's
 is different and worse: it prescribed work before the fix was designed, so it asked for a
 measurement the real fix retires.
+
+## R126 — R123 is fixed, my instruction for fixing it was impossible, and what the old records can say
+
+US-3.8, `0d01a15` plus `6b93422`. **"above the floor" now appears zero times in the real output**,
+verified by rendering the committed ledgers rather than by reading the diff.
+
+### The instruction I gave was impossible, and the answer is better than it
+
+I told the implementer to **import** the correct three-way wording from `compare/__init__.py`
+rather than paraphrase it. It cannot: `test_the_leaderboard_imports_no_statistics` asserts
+`not name.startswith("volab.compare")` for every leaderboard module, which is the structural half
+of "the leaderboard computes nothing of its own" — and importing `compare.sink` also costs ~1.5s,
+because that package's `__init__` loads `arch`. The line-278 text is also an inline disjunction
+inside `describe()`, not three separable sentences.
+
+What it built instead: **the sink stores the sentence, and the leaderboard prints it verbatim.**
+That is strictly better than what I asked for. Importing would have left the leaderboard choosing
+*which* sentence to print, which is a derivation; storing leaves it choosing nothing. The same
+mechanism now carries the DM and SPA verdicts, so the leaderboard holds no verdict wording at all.
+**I prescribed a mechanism that the module's own contract forbade** — the second time in two
+rulings that I specified a fix before checking it was reachable (R125 records R119's).
+
+The three sentences, each stored, each asserted per cause by
+`test_each_withheld_reason_states_its_own_cause_and_only_that_one`:
+
+* above the ceiling — `<name>'s Monte Carlo error is above the 1.5% ceiling`
+* measured elsewhere — `... was measured on another series (<source>), not on <symbol> h<horizon>,
+  so it cannot authorise a claim whatever its value`
+* no figure — `... was not measured, so no precision is established`
+
+The ceiling sentence deliberately **omits the figure**: the implementer's first version printed
+`3.273%` inside the reason, and the existing `test_a_stored_error_with_no_source_is_not_printed_bare`
+caught it as an R102 violation — a bare figure with no source beside it. An old witness catching a
+new line is the ratchet working.
+
+### The decision it escalated: the 28 old records keep a fallback, and that is right
+
+The committed comparison records predate the stored fields, so they print
+`<name> has no claim, and this record stores no reason` — **162 lines of the recorded run.** The
+alternative was to let the leaderboard classify from the stored source and value, which is exactly
+the derivation its contract forbids and `test_the_leaderboard_imports_no_statistics` structurally
+prevents. Backfilling an append-only ledger is worse than either.
+
+**Accepted.** The sentence is *true* of those records: they really do not store a reason. So the
+output went from a false statement to an honest absence, which is the whole of R123's complaint —
+but it is worth being exact about what is not yet fixed: **the recorded run now prints no true
+cause either.** The true causes arrive when US-3.12 re-records against the exact GJR, which R122
+already committed to for an unrelated reason. Nothing further is owed here; the fallback expires
+on its own.
+
+### Item 4, and why the implementer was right to stop
+
+The CLI now reports an unreadable ledger and returns 1 instead of letting a traceback out, with
+`render` still **raising** rather than skipping — refuse-never-skip is unchanged, only the
+presentation. It sits in `leaderboard/__main__.py`, outside that implementer's file set, so it
+stopped and handed over the patch. It also **refused the shortcut** of folding the error into
+`(lines, False)`, which would have overloaded what "consistent" means and falsified the module's
+own docstring. Correct on both counts.
+
+### Carried, and not this story's
+
+`compare/__init__.py`'s `describe()` should take its sentences from the sink rather than keep the
+inline disjunction, and `analyse()` should emit the *cause* rather than leave the sink to restate
+its three-way rule — `test_the_stored_reasons_are_exactly_the_unclaimed_contestants` exists
+precisely because the rule now lives in two places, and a drift witness is a guard over a
+duplication, not a cure for one. Deferred rather than done because an implementer is in flight in
+the same package.
