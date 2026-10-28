@@ -83,7 +83,9 @@ class LeaderboardError(VolabError):
     """Raised when a ledger line cannot be read as what it should be.
 
     A line that is skipped is a trial that is not counted, and the headline is the number the
-    write-up reports: so an unreadable line stops the leaderboard instead of shrinking it.
+    write-up reports: so an unreadable line stops the leaderboard instead of shrinking it
+    (``test_a_malformed_trial_line_raises_rather_than_being_skipped``,
+    ``test_a_trial_line_missing_a_field_names_the_field``).
     """
 
 
@@ -113,7 +115,8 @@ class TrialLine:
     def run(self) -> _Run:
         """The run this line belongs to: the sink's join key without the loss, which is what a
         ranking is made within (a baseline trial and a shootout trial of one model are different
-        experiments, R86, and are never ranked against each other)."""
+        experiments, R86, and are never ranked against each other;
+        ``test_runs_of_one_configuration_are_ranked_apart``)."""
         return (self.symbol, self.horizon, self.cohort, self.at, self.sha)
 
 
@@ -190,6 +193,8 @@ def _mc_text(record: Mapping[str, Any], names: Sequence[str]) -> str:
     **Never bare.** A figure is printed with the series it was measured on or not at all; a record
     holding figures and no series gets a marker saying so, since a bare ``3.273%`` beside an SPY
     row reads as SPY's own error. Empty where none of ``names`` is simulated.
+    Witnesses: ``test_a_monte_carlo_error_is_never_printed_without_its_source`` and
+    ``test_a_stored_error_with_no_source_is_not_printed_bare``.
     """
     errors: Mapping[str, float | None] = record["monte_carlo_error"]
     measured = [name for name in names if name in errors]
@@ -317,7 +322,8 @@ def _comparison_lines(record: Mapping[str, Any]) -> list[str]:
 
 def _ranked(trials: Sequence[TrialLine]) -> list[tuple[str, TrialLine]]:
     """``(rank, trial)``, best first. The rank is one more than the number of strictly better
-    values, so equal losses share one; an undefined value is listed last and unranked."""
+    values, so equal losses share one; an undefined value is listed last and unranked.
+    Witness: ``test_equal_losses_share_a_rank_rather_than_inventing_an_order``."""
     defined = sorted(((t.value, t) for t in trials if t.value is not None), key=lambda p: p[0])
     values = [value for value, _ in defined]
     out = [(str(1 + sum(1 for other in values if other < value)), t) for value, t in defined]
@@ -350,7 +356,7 @@ def render(root: Path) -> tuple[list[str], bool]:
 
     Not consistent means a comparison record whose join key has no trial (the sink's docstring
     calls that a bug): it is printed under its own heading rather than dropped, and the entry
-    point exits non-zero.
+    point exits non-zero (``test_a_comparison_with_no_trials_is_reported_and_exits_non_zero``).
     """
     trials, legacy = read_trials(root)
     comparisons = read_comparisons(root)
