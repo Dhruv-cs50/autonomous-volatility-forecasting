@@ -42,9 +42,16 @@ whole claim.
 
 ## What was measured for this design
 
-All of it on this branch, against the live tree. Scripts in the session scratchpad
-(`arch2/k1.py` … `arch2/k6.py`); `probe/gmom.py` is the previously verified Simpson quadrature,
-used here only as a test oracle.
+All of it on this branch, against the live tree.
+
+**Provenance, and a debt this design incurs.** The scripts live in the session scratchpad
+(`arch2/k1.py` … `arch2/k6.py`, with `probe/gmom.py` the previously verified Simpson quadrature)
+and are **uncommitted by the task's own instruction**, so they will vanish. R32 and R79 require a
+cited figure to have a re-runnable probe in `tools/`. The implementing story therefore owes
+`tools/measure_garch_forecast_error.py` a new block that reproduces M8-M12 and M14 — arch's
+analytic path, the exact path and the simulated path side by side, per horizon — and until that
+block exists M8-M14 are measurements recorded in this document rather than figures the repository
+can regenerate. That is a real gap and is named here rather than left to be discovered.
 
 | # | Measurement | Result |
 |---|---|---|
@@ -63,7 +70,7 @@ used here only as a test oracle.
 | M13 | S=1e5 simulation cost per origin on SPY | **32-36 ms** (h=1), **176-199 ms** (h=5), **892-978 ms** (h=22), **3.2-4.0 s** (h=66) |
 | M14 | `f_sim / f_exact` at the four probed SPY origins | h=5 **0.99930-1.00068**; h=22 **0.99521-1.00012**; h=66 **0.99629-1.04125** |
 | M15 | h=1 simulated vs exact, bit for bit | **equal at one origin, 1 ulp apart (2.2e-16) at another** |
-| M16 | Per-contestant origin counts in `data/trials.jsonl`, SPY | **251 / 250 / 247 / 238** at h = 1 / 5 / 22 / 66, **identical for every contestant**, `skipped = 0`, `dropped = 0` everywhere |
+| M16 | Per-contestant origin counts in `data/trials.jsonl`, **all three symbols** (SPY, QQQ, IWM) x all four horizons x both losses | **251 / 250 / 247 / 238** at h = 1 / 5 / 22 / 66, **identical for every contestant of every symbol**, `skipped = 0` and `dropped = 0` in all 24 configurations, zero disagreements |
 | M17 | The suite's existing `_returns()` fixture, fitted | `lambda = -0.0419`, `kappa = 0.51302`, `phi_true = 0.93561` vs `phi_half = 0.93501` — a **6e-4** gap |
 | M18 | A skew-t toy fixture (below), fitted | `lambda = -0.5322`, `kappa = 0.62948`, `phi_true = 0.96502` vs `phi_half = 0.94363` — a **0.0214** gap |
 | M19 | `scipy.special.stdtr` under `warnings.simplefilter("error")`, `df` in {0.05 … 300}, `x` in {+-1e8, +-5, 0, +-inf} | clean, finite everywhere |
@@ -134,10 +141,11 @@ class GarchModel:
         # can only simulate.
 ```
 
-Exactly three pairings are legal: `("GARCH", 0, "analytic")`, `("GARCH", 1, "exact")`,
-`("EGARCH", 1, "simulation")`, plus `("GARCH", 1, "simulation")` which must stay legal because
-`tests/test_compare.py` builds it to prove that `monte_carlo_error` finds a contestant by its
-method and not by its name. Everything else raises `ValueError` at construction.
+Exactly four pairings are legal: the three shipped specs `("GARCH", 0, "analytic")`,
+`("GARCH", 1, "exact")`, `("EGARCH", 1, "simulation")`, and `("GARCH", 1, "simulation")`, which
+must stay legal because `tests/test_compare.py` builds it to prove that `monte_carlo_error` finds
+a contestant by its method and not by its name. Everything else raises `ValueError` at
+construction.
 
 **Why a `Literal` and not an enum.** `compare/cohorts.py` tests `model.method == "simulation"`.
 A plain `Enum` makes that comparison silently `False` and drops EGARCH out of the Monte-Carlo
@@ -203,6 +211,32 @@ fourth method silently taking arch's analytic path is precisely R90's failure mo
 | `test_no_asymmetric_specification_asks_arch_for_a_multistep_analytic_forecast` | behavioural, `_FakeResult` records the calls | for every spec with `o != 0` and every h in (1, 5, 22, 66), every recorded arch call satisfies `call["horizon"] == 1 or call.get("method") == "simulation"` |
 | `test_the_method_and_the_variance_process_must_agree_at_construction` | red cases on `__post_init__` | `("GARCH", 1, "analytic")`, `("EGARCH", 1, "exact")`, `("GARCH", 0, "exact")` all raise; the three shipped specs construct |
 | `test_the_method_literal_names_exactly_the_three_supported_methods` | `typing.get_args(Method)` | the Literal is `("analytic", "simulation", "exact")`, so `assert_never`'s exhaustiveness has a named membership witness |
+
+Two further tests in `tests/test_garch.py` break and must change with them:
+
+- **`test_the_three_specs_are_exactly_what_r91_names`** asserts
+  `[("GARCH", 0, "analytic"), ("GARCH", 1, "simulation"), ("EGARCH", 1, "simulation")]`. The middle
+  entry becomes `("GARCH", 1, "exact")`. This test **is** R91's witness, so editing it amends a
+  recorded decision rather than fixing a test: R91's "GJR and EGARCH are simulated" becomes "GJR is
+  exact and EGARCH is simulated", and the decisions log needs that line.
+- **`test_the_simulated_specs_ask_for_simulation_with_the_stated_count`** reads `call["method"]`
+  for every spec. The exact branch passes **no** `method` to arch, so for GJR that is a `KeyError`,
+  not an assertion failure. It becomes the per-spec table in the first row above:
+  `method == "analytic"` and `horizon == h` for GARCH(1,1); `"method" not in call` and
+  `horizon == 1` for GJR; `method == "simulation"`, `horizon == h`, `simulations == 100_000` and a
+  callable `rng` for EGARCH. Keep its existing assertion that `random_state` is never passed.
+
+And one probe, which the task's constraints did not mention and which `garch.py`'s own docstring
+cites:
+
+- **`tools/measure_garch_forecast_error.py`** builds `dataclasses.replace(fitted.spec,
+  method="analytic")` for *every* specification, including GJR, to produce R90's headline figure.
+  `__post_init__` makes that construction raise `ValueError` — which the probe's existing
+  `except ValueError` would swallow into "analytic unavailable", silently deleting the measurement
+  R90 rests on. `block_analytic_against_simulation` must instead reach the analytic path
+  **without** mislabelling the spec, by calling `_path_sum(omega, alpha + gamma/2 + beta, m_1, h)`
+  for arch's recursion and `_path_sum(omega, phi, m_1, h)` for the exact one. That is the same
+  comparison W2 asserts, and it is where the §"what was measured" debt above is discharged.
 
 This is strictly stronger than what it replaces. The literal count checked *syntax* and would have
 passed a spec whose method string was assembled at runtime; the first replacement checks the
@@ -431,8 +465,8 @@ validated **without** the recursion, and only the end-to-end agreement test need
 
 ### W1 — the symmetric cross-check: two code paths, one answer, no `kappa`
 
-For `o = 0`, `phi = alpha + E[z^2]*0 ... = alpha + beta` with no `kappa` in it, and arch's
-analytic recursion is then the true mean (R118). So `_path_sum(omega, alpha + beta, m_1, h)` must
+For `o = 0` the leverage term is absent, so `phi = alpha*E[z^2] + beta = alpha + beta` with no
+`kappa` in it, and arch's analytic recursion is then the true mean (R118). So `_path_sum(omega, alpha + beta, m_1, h)` must
 reproduce `result.forecast(horizon=h, method="analytic").variance.iloc[-1].sum()`. Measured at
 **3.0e-15** relative worst case over 4 SPY origins x 4 horizons (M8). In the suite it runs on the
 toy fixture, at h in (1, 5, 22, 66), tolerance `rel=1e-11`.
@@ -459,7 +493,7 @@ cause: the claim "arch's feasible region assumes a symmetric error law" stops be
 library source and becomes a test. Run it on the toy fixture at h in (1, 5, 22, 66).
 
 As a by-product it corrects a figure: against the exact value, arch's analytic GJR is
-**39-45% low at h=66** on SPY (M10), not the 17.7% `garch.py`'s docstring records — that number
+**38-45% low at h=66** on SPY (M10), not the 17.7% `garch.py`'s docstring records — that number
 was measured on the probe series against simulation, and it is now superseded.
 
 ### W3 — the `kappa` identities, over the full parameter bounds
@@ -475,13 +509,37 @@ Four assertions, parametrized over `eta in {2.05, 2.5, 4, 6, 30, 300}` x
 | `0 < kappa < 1` | strict | a truncated second moment of a unit-variance law |
 | `lambda = +-1` returns a finite number | `math.isfinite` | the degenerate-branch guard; arch's bounds are closed |
 
-Plus `test_the_closed_form_matches_the_quadrature`, against `probe/gmom.py`'s Simpson integral
-**parametrized to `eta >= 4` only**, `abs=1e-10`. The restriction is deliberate and must be
-commented: at `eta = 2.1` Simpson is wrong by 0.0245 (M3) and a wider parametrization would be
-"fixed" by loosening the tolerance, which would hide the closed form's real error budget.
+Plus `test_the_closed_form_matches_an_independent_quadrature`, **parametrized to `eta >= 4`
+only**, `abs=1e-10`. The restriction is deliberate and must be commented: at `eta = 2.1` Simpson
+is wrong by 0.0245 (M3), and a wider parametrization would be "fixed" by loosening the tolerance,
+which would hide the closed form's real error budget.
 
-The quadrature stays in the scratchpad as a reference; if it is wanted as a committed oracle it
-belongs in `tools/`, not in `src/`.
+**The oracle is written inline in `tests/test_garch.py`, about fifteen lines, and reads its density
+from arch rather than from this module** — that independence is the whole value of the test:
+
+```python
+def _kappa_by_quadrature(eta: float, lam: float, *, u_max: float = 30.0, n: int = 200_000) -> float:
+    """``E[z**2 1{z<0}]`` by composite Simpson over ``z = sinh(u)``, from arch's own density.
+
+    Valid for ``eta >= 4`` only: the ``z**2`` tail is too heavy to truncate below that, and at
+    ``eta = 2.1`` this integral answers 0.4755 where the mirror symmetry forces exactly 1/2.
+    ``sinh`` turns the polynomial tail into exponential decay; Simpson's ``du**4`` error is then
+    far below the 1e-10 asserted. Never ``leggauss`` at large n: an O(n**3) eigensolve that
+    allocates 3.2 GB at n=20,000.
+    """
+    u = np.linspace(-u_max, u_max, n + 1)              # n even
+    weights = np.ones(n + 1)
+    weights[1:-1:2], weights[2:-1:2] = 4.0, 2.0
+    weights *= (u[1] - u[0]) / 3.0
+    z = np.sinh(u)
+    density = np.exp(
+        SkewStudent().loglikelihood([eta, lam], z, np.ones_like(z), individual=True)
+    ) * np.cosh(u) * weights
+    return float((z[z < 0] ** 2 * density[z < 0]).sum())
+```
+
+`np` and `SkewStudent` are already imported in that file. The same helper's `density.sum()` and
+`(z * density).sum()` give mass and `E[z]`, which is why no separate quadrature module is needed.
 
 ### W4 — agreement with simulation where simulation is trustworthy, and a red case
 
@@ -556,6 +614,13 @@ Three assertions, two of which change meaning:
 3. `test_the_generator_handed_to_arch_is_seeded_from_the_forecast_horizon` moves from
    `GJR11_SKEWT` to `EGARCH11_SKEWT`; the `_seed` key tests are untouched, because `_seed` is
    still live for EGARCH and its ledger-reproducing literal must not move.
+
+Two pieces of prose rot with this change and must be amended, not left:
+`tests/test_garch.py`'s module docstring says "nothing in this file needs the full simulation
+count" (W4 now does) and that the two simulated specs run the conformance suite "at horizon 22 and
+not 1, because at h=1 a simulation that ignored its seed would still pass clauses 5 and 6
+vacuously" — which stops being GJR's reason, since GJR reads no seed at any horizon. `_few` also
+becomes a no-op for GJR; leave it applied, so the call sites stay uniform, and say why.
 
 ### The refusal guard, and `fit_depends_on_horizon`
 
@@ -675,11 +740,13 @@ durable fix. Flagged here; not designed; not in this story.
 
 ### Scope: GJR's rows, at all four horizons
 
-`Evaluation.comparable()` intersects *defined-origin* sets. Measured in the live ledger (M16):
-every contestant has 251 / 250 / 247 / 238 origins at h = 1 / 5 / 22 / 66 on SPY, with
-`skipped = 0` and `dropped = 0` **everywhere**. So GJR never constrained the intersection; the
-counts are set by target availability, and switching GJR's forecast from simulated to exact
-**cannot move any other contestant's sample**. The exact branch is also strictly less likely to
+`Evaluation.comparable()` intersects *defined-origin* sets. Measured in the live ledger across
+**every symbol**, not SPY standing in for the others (M16): on SPY, QQQ and IWM alike, every
+contestant has 251 / 250 / 247 / 238 origins at h = 1 / 5 / 22 / 66, with `skipped = 0` and
+`dropped = 0` in all 24 symbol-horizon-loss configurations and no disagreement anywhere. **GJR has
+never skipped a single origin on any symbol**, so it never constrained the intersection; the counts
+are set by target availability, and switching GJR's forecast from simulated to exact **cannot move
+any other contestant's sample on any symbol**. The exact branch is also strictly less likely to
 refuse than the simulated one — it has no overflow route — so it cannot shrink GJR's own set
 either.
 
@@ -700,8 +767,12 @@ The task's premise holds for `trials.jsonl` and fails for `comparisons.jsonl`. T
 SPA alternative set, which is precisely R116's mechanism for why EGARCH at h=5 floored four other
 contestants' p-values. So after the re-run:
 
-- every contestant's **MCS membership and p-value** changes, at every horizon;
-- both **SPA** runs change, at every horizon;
+- every contestant's **MCS membership and p-value** *may* change, at every horizon, and none of
+  them can be assumed unchanged. At h=1 the input difference is a 1-ulp shift at some origins, so
+  the bootstrap exceedance counts will very likely come out identical; at h=22 and h=66 the shift
+  is percent-scale and they will not. The *procedure* does not depend on which: every comparison
+  record is re-made either way;
+- both **SPA** runs likewise, at every horizon;
 - **pairwise DMs not involving GJR are unaffected**, because `pairwise()` runs before
   `model_confidence_set()` and is genuinely pairwise.
 
@@ -765,5 +836,5 @@ in the hand-back report.
 3. **"Only GJR's rows change" is false for `comparisons.jsonl`** (Decision 8) and **h=1 is not
    unchanged** (M15).
 4. `garch.py`'s "17.7% low at h=66" for arch's analytic GJR understates it: against the exact
-   value it is 39-45% low on SPY (M10). Not a contradiction — the 17.7% was the probe series
+   value it is 38-45% low on SPY (M10). Not a contradiction — the 17.7% was the probe series
    against simulation — but the docstring now has a better number available.
