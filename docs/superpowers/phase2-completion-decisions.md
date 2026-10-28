@@ -855,3 +855,73 @@ different shas. Two things follow, neither of which needed a new test:
    contestants, the re-run with six, and every surviving contestant's origin count is unchanged —
    so EGARCH was defined wherever the other six were, and dropping it did not widen the
    intersection. `Evaluation.comparable()`'s intersection was not silently paying for R114.
+
+## R122, R123 — the recorded run, and a false reason the leaderboard prints
+
+### R122 — the run is recorded, and a third of it carries a dirty-tree flag I caused
+
+150 lines appended, ledger 114 -> 264, composition exactly as pre-registered: 42 at h=1 (seven
+contestants) and 36 at each of h=5, 22 and 66 (six). `egarch11_skewt` appears at h=1 and nowhere
+above it, so **R114 held in practice and not merely on paper**. `comparisons.jsonl` 4 -> 28.
+
+**The blemish is mine.** Part 2's 108 lines carry `git_dirty: true` because I committed the board
+while the shootout was running, and the leaderboard marks every one of those rows
+`[DIRTY TREE: the sha does not identify the code that produced this]`. Only documentation changed,
+but the flag cannot know that and **should not be taught to** — a flag that trusts the committer is
+not a flag. So a third of the headline is from a tree nobody can reconstruct.
+
+**Consequence, decided here rather than carried:** do not re-run part 2 to clean the flag. The
+closed form (R120) changes GJR's forecast and forces a re-run anyway. The recorded run that Phase 2
+exits on will be **one** clean-tree run after the closed form lands, with nothing else committing
+while it goes. Two expensive runs to fix a flag that one run fixes incidentally would be waste.
+
+**The dev window's `n_eff` is not the holdout's, and a write-up must not borrow across.** At h=22
+the dev run has stride 5, so `q = ⌊21/5⌋ = 4` and `n_eff = 49.2` — DM significance **is** claimed
+here. The pre-registered holdout read is stride 1 over a shorter window, giving `n_eff = 8.5` and
+refusing it. Both are right for their own window. h=66 refuses in both (dev `n_eff = 16.8` against
+the 20 that a 10% MCS needs), and the leaderboard prints the refusal with its arithmetic.
+
+**What the run confirms about GJR, against the live ledger rather than a probe.** On SPY at h=66
+it is last on MSE at 6.19e-4 against `har_levels_mz`'s 1.178e-4 — a factor of **5.26**, so the rank
+is far outside the estimator's 8.8% deficit. On QLIKE it is 4th at **-3.52307** against
+`har_levels_mz`'s **-3.50829**: a margin of **0.01478** against a 0.0073 systematic deficit, so
+R120's refusal of that one ordering is confirmed at the digit rather than asserted.
+
+**The truncation-equivalence report for this run is lost, and that is my driver's fault.** It
+redirected the shootout's stdout and printed only a per-part summary line, so the report
+`run_configuration` emits by delegation went nowhere. The exhaustive sweep was re-run standalone
+afterwards instead, which is the stronger witness. **Third time in this session a driver of mine
+discarded evidence** — `; echo "exit=$?"` masked an exit code and `-r s` dropped pytest's FAILED
+line. The pattern is always the same shape: a wrapper that summarises rather than passes through.
+
+### R123 — the withheld reason is false in every instance this run prints
+
+`leaderboard/_withheld_reasons` prints one wording for every unclaimed contestant:
+
+```python
+reasons.append(f"{name}'s Monte Carlo error is above the floor")
+```
+
+Three distinct causes reach `unclaimed`, and `compare/__init__.py` distinguishes all three — a
+figure above `MC_ERROR_CEILING_PERCENT`, a figure measured on another series **whatever its
+value**, and **no figure at all**. Only the first matches the printed sentence. Checked against
+this run:
+
+| what prints | GJR's figure | why it is actually unclaimed | is the printed reason true? |
+|---|---|---|---|
+| h=1, h=5 | `None` | **unmeasured** — and at h=1 there is nothing to measure, since the forecast takes no expectation | **no** |
+| h=22 | 0.207% | **source** — it is *under* the 1.5% ceiling | **no** |
+| h=66 | 0.514% | **source** — also under the ceiling | **no** |
+
+**So the reason is false in every instance the current run produces.** The only case it would
+describe correctly is EGARCH's 3.273% at h=66, which R114 excludes, so it never prints. No claim is
+wrongly *made* — the guard withholds correctly throughout, which is why this survived review — but
+the stated reason misinforms a reader about which rule fired, and "above the floor" invites exactly
+the wrong fix: re-measuring a figure that was never too large.
+
+**This is US-3.5's own escalation biting on a different field.** US-3.8 already carries "import the
+DM verdict wording rather than duplicate it"; `compare/__init__.py` line 278 holds the correct
+three-way sentence and the leaderboard wrote a one-way paraphrase instead. **A second duplication
+of the same kind, found by rendering the output rather than by reading the code** — which is also
+how the printed figure's missing source was found at US-3.4. Fix belongs in US-3.8, and the witness
+must assert the *reason text per cause*, not merely that some reason is printed.
