@@ -6,10 +6,27 @@ cannot pull ``arch`` through a side door. Assembling the roster is this module's
 ``test_only_cohorts_imports_the_model_modules`` is the witness.
 
 **The shootout** is the three baseline models, the three GARCH specifications (R91) and the
-recalibrated HAR (R96): seven contestants. ``har_levels`` is first and has to stay first, because
-the first contestant's ``observations`` is ``OriginResult.training_rows`` (R87). Its name is not
-``phase2-baseline``, which is reserved for the recorded run's contestants and which ``evaluate``
-refuses to let any other set carry.
+recalibrated HAR (R96): seven contestants (:data:`MULTISTEP` below drops one for h >= 2).
+``har_levels`` is first and has to stay first, because the first contestant's ``observations`` is
+``OriginResult.training_rows`` (R87). Its name is not ``phase2-baseline``, which is reserved for the
+recorded run's contestants and which ``evaluate`` refuses to let any other set carry.
+
+**The multistep cohort** is the same seven **minus** ``egarch11_skewt``, for h = 5, 22 and 66
+(R114). The reason is a fact about the specification, not "EGARCH was unstable": the recursion is
+``sigma2_{t+1} = C * (sigma2_t)**beta * exp(alpha*|z_t| + gamma*z_t)``, Hansen's standardized
+skew-t has **polynomial tails**, so ``E[exp(alpha*|z| + gamma*z)]`` is ``+infinity`` for any
+``alpha > 0`` and EGARCH(1,1) with skew-t errors has **no finite multi-step conditional variance**.
+Every h >= 2 forecast it makes is a simulated estimate of infinity (its sample mean diverges in the
+path count, measured in R114); only h = 1 is credible, because ``sigma2_{t+1}`` is known at ``t``
+and takes no expectation. The refusal is therefore available a priori from the model and the error
+law alone, with no draw and no target -- which is what separates it from a threshold on the
+forecast's size (look-ahead, selecting on the random draw, and unworkable because
+``Evaluation.comparable`` intersects origins across contestants). Run :data:`SHOOTOUT` at h=1 and
+:data:`MULTISTEP` at the rest. **Nothing enforces that pairing**: ``Cohort``,
+``evaluate`` and ``Evaluation.contestants`` have no notion of the horizons a contestant can answer,
+and a contestant declaring them is the durable fix and a design change, not this module's.
+Witness for membership, on its own line:
+``test_the_multistep_cohort_is_the_shootout_without_egarch_and_is_runnable_by_name``.
 
 **The Monte Carlo error table (R102).** ``gjr11_skewt`` and ``egarch11_skewt`` forecast by
 simulation, so their figures carry a sampling error that is *measured*, not assumed, and printed
@@ -31,7 +48,7 @@ re-measuring on the real panel -- with the source changed to name it -- is what 
 from __future__ import annotations
 
 from volab.models.base import Cohort
-from volab.models.garch import GARCH_MODELS, SIMULATIONS, GarchModel
+from volab.models.garch import EGARCH11_SKEWT, GARCH_MODELS, SIMULATIONS, GarchModel
 from volab.models.recalibrated import har_levels_mz
 from volab.walkforward import BASELINE_COHORT
 
@@ -40,10 +57,15 @@ SHOOTOUT = Cohort(
     (*BASELINE_COHORT.models, *GARCH_MODELS, har_levels_mz()),
 )
 
+MULTISTEP = Cohort(
+    "phase2-shootout-multistep",
+    tuple(model for model in SHOOTOUT.models if model.name != EGARCH11_SKEWT.name),
+)
+
 # Resolved by name from the command line. The baseline is deliberately absent: its run is the
 # walk-forward CLI's, and a second path to producing lines under that name is a second way for the
 # recorded run to be confused with something else.
-COHORTS: dict[str, Cohort] = {SHOOTOUT.name: SHOOTOUT}
+COHORTS: dict[str, Cohort] = {SHOOTOUT.name: SHOOTOUT, MULTISTEP.name: MULTISTEP}
 
 # Where the figures below were measured, **printed beside every one of them**. They come from the
 # probe's synthetic persistent, leveraged, skew-t series -- not from SPY, QQQ or any series a

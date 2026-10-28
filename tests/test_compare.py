@@ -36,12 +36,14 @@ import pytest
 from scipy import stats
 
 import volab.compare.__main__ as compare_cli
+import volab.compare.cohorts as cohorts_module
 import volab.walkforward as wf
 import volab.walkforward.__main__ as walkforward_cli
 from volab.compare import MC_ERROR_CEILING_PERCENT, analyse, describe, multiple, series_source
 from volab.compare.cohorts import (
     COHORTS,
     MONTE_CARLO_ERROR_SOURCE,
+    MULTISTEP,
     SHOOTOUT,
     monte_carlo_error,
 )
@@ -1030,17 +1032,16 @@ def test_a_refused_dm_column_is_null_in_the_record_not_nan() -> None:
 def test_a_simulated_contestant_above_the_error_floor_has_no_significance_claimed() -> None:
     """R102. EGARCH at h=66 measures 3.273% at S=100,000 -- worse than 0.951% at S=10,000 -- and
     R72's floor for a believable difference tops out at 1.5%. The flag is on the record and the
-    printed lines say so; the unmeasured and the below-floor are not flagged."""
+    printed lines say so; one below the floor, on this series, is not flagged."""
     assert MC_ERROR_CEILING_PERCENT == 1.5
     comparison = _comparison(
-        monte_carlo_error={"har_levels": 0.514, "rival": 3.273, "random_walk": None},
+        monte_carlo_error={"har_levels": 0.514, "rival": 3.273},
         monte_carlo_source="SPY h22",
     )
     assert comparison.unclaimed == ("rival",), "the figure is on this series, so only size decides"
     assert comparison.record()["unclaimed"] == ["rival"]
     text = "\n".join(describe(comparison))
     assert "3.273%" in text and "0.514%" in text
-    assert "not measured" in text
     rival_lines = [line for line in describe(comparison) if "rival" in line and " vs " in line]
     assert len(rival_lines) == 3
     assert all("no claim" in line for line in rival_lines)
@@ -1060,9 +1061,11 @@ def test_a_figure_measured_on_another_series_can_withhold_a_claim_but_never_auth
     series = _contenders(60, 0)
     figures = {"a": 0.163, "b": 3.273, "c": None}
     foreign = analyse(series, monte_carlo_error=figures, monte_carlo_source=SOURCE, reps=200)
-    assert foreign.unclaimed == ("a", "b"), "the low figure is withheld too; None is not a figure"
+    assert foreign.unclaimed == ("a", "b", "c"), (
+        "the low figure is withheld too, and so is no figure"
+    )
     measured = analyse(series, monte_carlo_error=figures, monte_carlo_source=own, reps=200)
-    assert measured.unclaimed == ("b",), "only a figure measured on this series can clear it"
+    assert measured.unclaimed == ("b", "c"), "only a figure measured on this series can clear it"
     assert not any("a 0.163%, no claim" in x for x in describe(measured))
     shown = [x for x in describe(foreign) if "a 0.163%" in x]
     assert shown and all("a 0.163%, no claim" in x for x in shown)
@@ -1071,32 +1074,51 @@ def test_a_figure_measured_on_another_series_can_withhold_a_claim_but_never_auth
     other = dataclasses.replace(series, horizon=5)
     assert analyse(
         other, monte_carlo_error=figures, monte_carlo_source=own, reps=200
-    ).unclaimed == (
-        "a",
-        "b",
+    ).unclaimed == ("a", "b", "c")
+
+
+def test_a_simulated_contestant_with_no_measurement_is_withheld() -> None:
+    """No figure is the purest form of the error the foreign-source rule closes: absence of
+    measured spread read as presence of precision. ``gjr11_skewt`` and ``egarch11_skewt`` have no
+    figure at h=1 and h=5 and are withheld there even on a source naming this very series; a
+    deterministic contestant has no entry in the map and keeps its claims."""
+    names = ("har_levels", "random_walk", "gjr", "egarch")
+    base = _named_contenders(247, 0, names, (0.0, 0.0, 0.01, 3.0))
+    series = dataclasses.replace(base, horizon=5)
+    comparison = analyse(
+        series,
+        monte_carlo_error={"gjr": None, "egarch": None},
+        monte_carlo_source=series_source(series),
+        reps=200,
     )
+    assert not comparison.claims_withheld, "n_eff is large, so only the Monte Carlo rule is in play"
+    assert comparison.unclaimed == ("gjr", "egarch")
+    assert comparison.record()["unclaimed"] == ["gjr", "egarch"]
+    by_pair = {(p.left, p.right): p for p in comparison.pairs}
+    assert not comparison.pair_claimed(by_pair[("har_levels", "gjr")])
+    assert comparison.pair_claimed(by_pair[("har_levels", "random_walk")]), "deterministic: kept"
+    text = "\n".join(describe(comparison))
+    assert "gjr not measured, no claim" in text and "egarch not measured, no claim" in text
+    assert "or where none was measured" in text
 
 
 def test_every_measured_cohort_figure_is_withheld_while_it_comes_from_the_probe_series() -> None:
-    """The shipped table, through the shipped source, onto a SPY series. At h=22 both simulated
-    contestants were claimable before this (0.207%, 0.163%); at h=66 only ``gjr11_skewt`` was."""
-    for horizon, expected in ((22, ("gjr", "egarch")), (66, ("gjr", "egarch"))):
+    """The shipped table, through the shipped source, onto a SPY series, at every horizon. At h=22
+    both simulated contestants were claimable before this (0.207%, 0.163%); at h=66 only
+    ``gjr11_skewt`` was; at h=1 and h=5 neither has a figure, and no figure is no claim."""
+    for horizon in (1, 5, 22, 66):
+        expected = ("gjr", "egarch")
         base = _named_contenders(60, 0, ("har_levels", "random_walk", "gjr", "egarch"), (0.0,) * 4)
         series = dataclasses.replace(base, horizon=horizon)
         figures = {
             "gjr": monte_carlo_error(SHOOTOUT, horizon)["gjr11_skewt"],
             "egarch": monte_carlo_error(SHOOTOUT, horizon)["egarch11_skewt"],
         }
-        assert all(v is not None for v in figures.values())
+        assert all((v is None) == (horizon in (1, 5)) for v in figures.values())
         comparison = analyse(
             series, monte_carlo_error=figures, monte_carlo_source=MONTE_CARLO_ERROR_SOURCE, reps=200
         )
         assert comparison.unclaimed == expected, horizon
-        assert not any(
-            comparison.pair_claimed(pair)
-            for pair in comparison.pairs
-            if {pair.left, pair.right} & set(expected)
-        )
 
 
 def _named_contenders(n: int, q: int, names: tuple[str, ...], gaps: tuple[float, ...]):
@@ -1337,10 +1359,28 @@ def test_the_shootout_cohort_is_the_seven_contestants_and_begins_with_har_levels
     assert len(set(SHOOTOUT.contestants)) == 7
     assert all(isinstance(model, Model) for model in SHOOTOUT.models)
     assert SHOOTOUT.name != BASELINE_COHORT_NAME, "the baseline name is the recorded run's alone"
-    assert {SHOOTOUT.name: SHOOTOUT} == COHORTS
+    assert {SHOOTOUT.name: SHOOTOUT, MULTISTEP.name: MULTISTEP} == COHORTS
     for cohort in COHORTS.values():
         # ``training_rows`` is the first contestant's ``observations`` (R87).
         assert cohort.models[0].name == "har_levels", cohort.name
+
+
+def test_the_multistep_cohort_is_the_shootout_without_egarch_and_is_runnable_by_name() -> None:
+    """EGARCH(1,1) with skew-t errors has no finite multi-step conditional variance (R114), so
+    every h >= 2 forecast it makes estimates infinity and only h=1, which takes no expectation, is
+    credible. The cohort for h = 5, 22 and 66 is therefore the seven minus that one. It keeps
+    ``har_levels`` first (R87), has a name of its own, and neither reuses the shootout's name nor
+    the baseline's, because a ledger row is keyed by cohort name and these are different sets."""
+    assert MULTISTEP.contestants == tuple(c for c in SHOOTOUT.contestants if c != "egarch11_skewt")
+    assert len(MULTISTEP.contestants) == 6 and MULTISTEP.contestants[0] == "har_levels"
+    assert MULTISTEP.models == tuple(m for m in SHOOTOUT.models if m.name != "egarch11_skewt")
+    assert len({SHOOTOUT.name, MULTISTEP.name, BASELINE_COHORT_NAME}) == 3
+    assert COHORTS[MULTISTEP.name] is MULTISTEP
+    assert monte_carlo_error(MULTISTEP, 22) == {"gjr11_skewt": 0.207}, "no EGARCH entry to read"
+    assert all(
+        phrase in (cohorts_module.__doc__ or "")
+        for phrase in ("R114", "polynomial tails", "no finite multi-step conditional variance")
+    ), "the reason is the specification-level fact, not 'it was unstable'"
 
 
 def test_the_shootout_cohort_contains_the_baseline_models_unchanged() -> None:

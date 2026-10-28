@@ -10,9 +10,9 @@ statistics live in ``dm`` and ``multiple`` and the only writer is ``sink`` (R95)
   membership is refused where ``n_eff < 2/alpha``;
 * R95 -- results go to a ``Sink``; nothing here opens a path;
 * R102 -- the measured Monte Carlo error is printed beside every simulated contestant, and no
-  significance is claimed for one above ``MC_ERROR_CEILING_PERCENT`` **or measured on a series
-  other than the one compared**: a figure from another series withholds a claim and never
-  authorises one.
+  significance is claimed for one above ``MC_ERROR_CEILING_PERCENT``, **measured on a series
+  other than the one compared, or not measured at all**: only a figure measured on the compared
+  series can authorise a claim, and everything else withholds one.
 """
 
 from __future__ import annotations
@@ -45,7 +45,8 @@ BENCHMARKS: tuple[str, ...] = ("har_levels", "random_walk")
 # 3.273% at S = 100,000. The ceiling can only *withhold*. Clearing it is no evidence of precision
 # unless the figure was measured on the series being compared: EGARCH at h=22 is 0.163% on the
 # probe's gentler synthetic process and 230.79% on SPY at the same path count, and a six-seed sd
-# of an estimator with no finite mean is not a measurement of it.
+# of an estimator with no finite mean is not a measurement of it. No figure at all is the same
+# error in its purest form: absence of measured spread is not presence of precision.
 MC_ERROR_CEILING_PERCENT = 1.5
 
 
@@ -77,10 +78,14 @@ def analyse(
     without its source it reads as that result's own error.
 
     **A figure authorises a claim only if it was measured on this series**, i.e. its source equals
-    :func:`series_source`. Any other source puts every measured contestant in ``unclaimed``
-    whatever the value; a figure above the ceiling is withheld on its own series too. A
-    contestant with no figure (``None``) is not flagged either way, as before. Witness:
-    ``test_a_figure_measured_on_another_series_can_withhold_a_claim_but_never_authorise_one``.
+    :func:`series_source`. Three things put a contestant in ``unclaimed``: a figure above the
+    ceiling, a figure measured on any other series (whatever its value), and **no figure**
+    (``None``).
+    The map holds simulated contestants only (``cohorts.monte_carlo_error`` builds it from
+    ``method == "simulation"``), so a deterministic contestant has no entry and keeps its claims.
+    Witnesses:
+    ``test_a_figure_measured_on_another_series_can_withhold_a_claim_but_never_authorise_one`` and
+    ``test_a_simulated_contestant_with_no_measurement_is_withheld``.
     """
     q = overlap_lag(series.horizon, series.stride)
     pairs = pairwise(series, q=q)
@@ -138,8 +143,9 @@ def analyse(
         unclaimed=tuple(
             name
             for name, value in errors.items()
-            if value is not None
-            and (monte_carlo_source != series_source(series) or value > MC_ERROR_CEILING_PERCENT)
+            if value is None
+            or monte_carlo_source != series_source(series)
+            or value > MC_ERROR_CEILING_PERCENT
         ),
         refusal=None if series.n else "no origin is comparable on this loss: nothing to compare",
     )
@@ -160,20 +166,19 @@ def _column_text(
 def _error_parts(comparison: Comparison, names: Sequence[str]) -> list[str]:
     """The measured Monte Carlo error of each simulated contestant among ``names`` (R102).
 
-    Empty if none of them is simulated. ``no claim`` marks one above the floor, **whether it is in
-    a set or out of it**: an exclusion is as much a significance claim as an inclusion.
+    Empty if none of them is simulated. ``no claim`` marks one that is withheld (above the floor,
+    measured elsewhere or not measured), **whether it is in a set or out of it**: an exclusion is
+    as much a significance claim as an inclusion.
     """
     parts = []
     for name in names:
         if name not in comparison.monte_carlo_error:
             continue
         value = comparison.monte_carlo_error[name]
-        if value is None:
-            parts.append(f"{name} not measured")
-        elif name in comparison.unclaimed:
-            parts.append(f"{name} {value:.3f}%, no claim")
-        else:
-            parts.append(f"{name} {value:.3f}%")
+        shown = "not measured" if value is None else f"{value:.3f}%"
+        parts.append(
+            f"{name} {shown}, no claim" if name in comparison.unclaimed else f"{name} {shown}"
+        )
     return parts
 
 
@@ -270,8 +275,8 @@ def describe(comparison: Comparison, *, trials: int | None = None) -> list[str]:
         parts = _error_parts(c, tuple(c.monte_carlo_error))
         lines.append(
             f"  Monte Carlo error (R102), measured on the {c.monte_carlo_source}, "
-            f"no claim above {MC_ERROR_CEILING_PERCENT:g}% nor on a figure measured on another "
-            f"series: " + "; ".join(parts)
+            f"no claim above {MC_ERROR_CEILING_PERCENT:g}%, on a figure measured on another "
+            f"series, or where none was measured: " + "; ".join(parts)
         )
     return lines
 
