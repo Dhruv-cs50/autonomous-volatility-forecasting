@@ -52,6 +52,9 @@ from volab.walkforward import (
 REPO = Path(__file__).resolve().parents[1]
 SRC = REPO / "src" / "volab" / "leaderboard"
 SOURCE = "synthetic probe series, not SPY"
+# The series ``_evaluation`` compares by default, which is what ``compare.series_source`` names: a
+# figure carrying exactly this source is the only kind that can authorise a claim (R102).
+ON_SERIES = "SPY h22"
 AT = dt.datetime(2026, 10, 27, 9, 30, tzinfo=dt.UTC)
 LATER = dt.datetime(2026, 11, 3, 9, 30, tzinfo=dt.UTC)
 BASELINE = ("har_levels", "har_semilog", "random_walk")
@@ -103,7 +106,8 @@ def _comparisons(
     horizon: int,
     n: int,
     cohort: str,
-    errors: tuple[tuple[str, float], ...],
+    errors: tuple[tuple[str, float | None], ...],
+    source: str = SOURCE,
 ):
     """The comparison for each loss, cached: the bootstrap is slow and is not what is tested."""
     evaluation = _evaluation(symbol=symbol, horizon=horizon, n=n, cohort=cohort)
@@ -112,7 +116,7 @@ def _comparisons(
             loss_series(evaluation, loss, cohort=cohort),
             reps=200,
             monte_carlo_error=dict(errors) or None,
-            monte_carlo_source=SOURCE if errors else None,
+            monte_carlo_source=source if errors else None,
         )
         for loss in sorted(LOSSES)
     ]
@@ -128,11 +132,14 @@ def _run(
     at: dt.datetime = AT,
     sha: str = "abcdef0123456789",
     dirty: bool | None = False,
-    errors: dict[str, float] | None = None,
+    errors: dict[str, float | None] | None = None,
+    source: str = SOURCE,
     comparisons: bool = True,
 ) -> None:
     """One run through the real sink: trials and (optionally) comparisons under one join key."""
-    evaluation, records = _comparisons(symbol, horizon, n, cohort, tuple((errors or {}).items()))
+    evaluation, records = _comparisons(
+        symbol, horizon, n, cohort, tuple((errors or {}).items()), source
+    )
     writer = JsonlSink(root)
     writer.append_trials(evaluation.trials(), at=at, sha=sha, dirty=dirty)
     if comparisons:
@@ -295,6 +302,7 @@ def test_the_committed_ledger_reads_correctly_and_is_not_touched() -> None:
         }
         assert {model for _rank, model, _value in ranked} == expected and len(ranked) == 3
     assert text.count("no comparison record") >= 12
+    assert "above the floor" not in text, "R123: that reason was false for every record printed"
     for row in legacy:
         assert row["model"] in text
     assert ledger.read_bytes() == before, "the leaderboard changed the committed ledger"
@@ -543,6 +551,8 @@ def test_a_contestant_above_the_error_floor_is_withheld_and_marked_wherever_it_a
     for line in rival_pairs:
         assert "WITHHELD" in line and "rival" in line and "Monte Carlo error" in line, line
         assert "3.273%" in line and SOURCE in line
+        # The fixture's source is another series, so the cause is source, whatever the value (R123).
+        assert "measured on another series" in line, line
     clean = [x for x in _pair_lines(text) if "rival" not in x]
     assert clean and not any("WITHHELD" in line for line in clean)
     spa = [x for x in text.splitlines() if x.strip().startswith("SPA")]
@@ -550,24 +560,206 @@ def test_a_contestant_above_the_error_floor_is_withheld_and_marked_wherever_it_a
     assert all("no claim" in row for row in text.splitlines() if "rival" in row and "3.273" in row)
 
 
-def test_a_claimed_spa_prints_its_p_values_and_no_verdict_the_record_does_not_hold(
-    tmp_path,
-) -> None:
-    """The record stores SPA's ``claimed`` flag and p-values but not the 5% reading. Reading the
-    p-value against 0.05 here would be recomputing the claim, so the line says the claim is
-    permitted and leaves the reading to the p-values it prints."""
+def test_a_claimed_spa_prints_its_p_values_and_the_verdict_the_record_stores(tmp_path) -> None:
+    """The sink stores SPA's 5% reading beside its p-values, so the line states what the record
+    states. Before US-3.8 the record held no reading and the line said only "claim permitted",
+    because reading the p-value against 0.05 here would have been recomputing the claim."""
     _run(tmp_path, n=100)
     text = _text(tmp_path)
-    stored = json.loads(
-        (tmp_path / sink.COMPARISON_LEDGER).read_text(encoding="utf-8").splitlines()[0]
-    )
+    stored = [
+        json.loads(line)
+        for line in (tmp_path / sink.COMPARISON_LEDGER).read_text(encoding="utf-8").splitlines()
+    ]
     spa = [x for x in text.splitlines() if x.strip().startswith("SPA")]
     assert len(spa) == 2 * len(LOSSES)
     for line in spa:
-        assert "WITHHELD" not in line and "claim permitted" in line and "n_eff=20.0" in line
-        assert "=>" not in line and "significantly" not in line
-    first = stored["spa"][0]
-    assert f"consistent={first['consistent']:.4f}" in spa[0]
+        assert "WITHHELD" not in line and "n_eff=20.0" in line
+    stored_spa = [entry for record in stored for entry in record["spa"]]
+    assert all(entry["claimed"] and entry["statement"] for entry in stored_spa)
+    for line, entry in zip(spa, stored_spa, strict=True):
+        assert f"consistent={entry['consistent']:.4f}" in line
+        assert line.endswith(f"  => {entry['statement']}"), line
+
+
+def test_the_spa_reading_printed_is_the_stored_one_not_a_rereading_of_the_p_value(
+    tmp_path,
+) -> None:
+    """Planted defect: change only the stored statement. A leaderboard that read the p-value
+    against 0.05 would not notice."""
+    _run(tmp_path, n=100)
+    path = tmp_path / sink.COMPARISON_LEDGER
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    for row in rows:
+        for entry in row["spa"]:
+            entry["statement"] = "STORED-SPA-READING"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    spa = [x for x in _text(tmp_path).splitlines() if x.strip().startswith("SPA")]
+    assert spa and all(line.endswith("  => STORED-SPA-READING") for line in spa)
+
+
+def test_a_claimed_spa_whose_reading_is_not_stored_prints_none_of_its_own(tmp_path) -> None:
+    """A record from before the reading was stored (the committed ledger's) still permits the
+    claim; the line says so and states no reading, rather than deriving one."""
+    _run(tmp_path, n=100)
+    path = tmp_path / sink.COMPARISON_LEDGER
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    for row in rows:
+        for entry in row["spa"]:
+            del entry["statement"]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    spa = [x for x in _text(tmp_path).splitlines() if x.strip().startswith("SPA")]
+    assert spa
+    for line in spa:
+        assert "claim permitted" in line and "=>" not in line and "beats" not in line, line
+
+
+def test_the_dm_wording_printed_is_the_stored_one_and_the_leaderboard_holds_none(tmp_path) -> None:
+    """The wording lives in the sink (``Comparison.pair_verdict``), which ``compare``'s own
+    console output also uses. The leaderboard cannot import ``compare`` (see its docstring), so
+    it prints what the record stores. Planted defect: change only the stored statement."""
+    _run(tmp_path, n=100)
+    path = tmp_path / sink.COMPARISON_LEDGER
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert all(pair["statement"] for row in rows for pair in row["dm"] if pair["claimed"])
+    for row in rows:
+        for pair in row["dm"]:
+            pair["statement"] = f"STORED-{pair['left']}-{pair['right']}"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    pairs = _pair_lines(_text(tmp_path))
+    assert pairs
+    for line in pairs:
+        left, right = re.match(r"^\s+(\w+) vs (\w+):", line).groups()  # type: ignore[union-attr]
+        assert line.endswith(f"  => STORED-{left}-{right}"), line
+    source = (SRC / "__init__.py").read_text(encoding="utf-8")
+    for phrase in ("significantly better", "no significant difference", "beats"):
+        assert phrase not in source, f"the leaderboard words a verdict itself: {phrase!r}"
+
+
+def test_a_claimed_pair_whose_statement_is_not_stored_shows_the_stored_code_not_words(
+    tmp_path,
+) -> None:
+    _run(tmp_path, n=100)
+    path = tmp_path / sink.COMPARISON_LEDGER
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    for row in rows:
+        for pair in row["dm"]:
+            del pair["statement"]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    pairs = _pair_lines(_text(tmp_path))
+    assert pairs
+    for line in pairs:
+        assert "WITHHELD" not in line and "significant" not in line, line
+        assert "stored 5% verdict" in line and "predates" in line, line
+
+
+# ---------------------------------------------------------------------------
+# Why a claim is withheld: one stated reason per cause (R123)
+# ---------------------------------------------------------------------------
+
+# What a reader is told, per cause. Spelled out here and not imported, so a reworded reason is a
+# deliberate edit to this table.
+# The figure is not in the sentence: it is printed only beside its source (R102).
+ABOVE = "rival's Monte Carlo error is above the 1.5% ceiling"
+ELSEWHERE = (
+    "rival's Monte Carlo error was measured on another series "
+    f"({SOURCE}), not on {ON_SERIES}, so it cannot authorise a claim whatever its value"
+)
+UNMEASURED = "rival's Monte Carlo error was not measured, so no precision is established"
+# (figure, source it was measured on) -> the sentences that must be printed
+CAUSES: dict[str, tuple[float | None, str, list[str]]] = {
+    "above the ceiling": (3.273, ON_SERIES, [ABOVE]),
+    "measured elsewhere, under the ceiling": (0.207, SOURCE, [ELSEWHERE]),
+    "not measured": (None, ON_SERIES, [UNMEASURED]),
+    # One figure can fire two rules at once; both are stated, not the first one matched.
+    "above the ceiling and elsewhere": (3.273, SOURCE, [ABOVE, ELSEWHERE]),
+}
+
+
+def _rival_withheld_lines(text: str) -> list[str]:
+    pairs = [x for x in _pair_lines(text) if "rival" in x]
+    spa = [x for x in text.splitlines() if x.strip().startswith("SPA")]
+    return pairs + spa
+
+
+@pytest.mark.parametrize("cause", sorted(CAUSES))
+def test_each_withheld_reason_states_its_own_cause_and_only_that_one(tmp_path, cause) -> None:
+    figure, source, expected = CAUSES[cause]
+    _run(tmp_path, n=100, errors={"rival": figure}, source=source)
+    text = _text(tmp_path)
+    lines = _rival_withheld_lines(text)
+    assert len(lines) == 3 * len(LOSSES) + 2 * len(LOSSES)
+    everything = {ABOVE, ELSEWHERE, UNMEASURED}
+    for line in lines:
+        assert "WITHHELD" in line, line
+        for sentence in expected:
+            assert sentence in line, (cause, line)
+        for sentence in everything - set(expected):
+            assert sentence not in line, (cause, line)
+    assert "above the floor" not in text
+
+
+def test_a_figure_that_clears_every_rule_is_not_withheld_and_states_no_reason(tmp_path) -> None:
+    _run(tmp_path, n=100, errors={"rival": 0.207}, source=ON_SERIES)
+    text = _text(tmp_path)
+    assert not any("WITHHELD" in line for line in _rival_withheld_lines(text))
+    assert "ceiling" not in text
+    assert "cannot authorise" not in text and "was not measured" not in text
+
+
+def test_the_stored_reasons_are_exactly_the_unclaimed_contestants() -> None:
+    """The sink restates ``analyse``'s three-way rule to word it, so this is the drift witness: for
+    any figure and source, a contestant has a stored reason if and only if it is unclaimed. The
+    ceiling itself (1.5) is not above it."""
+    evaluation = _evaluation(n=60)
+    grid = [
+        (figure, source)
+        for figure in (None, 0.0, 0.207, 1.5, 1.5001, 3.273)
+        for source in (ON_SERIES, SOURCE)
+    ]
+    for figure, source in grid:
+        for loss in sorted(LOSSES):
+            comparison = analyse(
+                loss_series(evaluation, loss, cohort="unit"),
+                reps=50,
+                monte_carlo_error={"rival": figure, "har_semilog": 0.1},
+                monte_carlo_source=source,
+            )
+            record = comparison.record()
+            reasons = record["unclaimed_reasons"]
+            assert isinstance(reasons, dict)
+            assert {name for name, why in reasons.items() if why} == set(
+                record["unclaimed"]  # type: ignore[arg-type]
+            ), (figure, source)
+            assert set(reasons) == set(record["unclaimed"]), (figure, source)  # type: ignore[arg-type]
+            # And the causes stored are exactly the ones that apply, the boundary included: 1.5
+            # is the ceiling and not above it, so on the compared series it states nothing.
+            stated = reasons.get("rival", [])
+            assert ("was not measured" in " ".join(stated)) == (figure is None), (figure, source)
+            assert ("another series" in " ".join(stated)) == (
+                figure is not None and source != ON_SERIES
+            ), (figure, source)
+            assert ("above the 1.5% ceiling" in " ".join(stated)) == (
+                figure is not None and figure > 1.5
+            ), (figure, source)
+
+
+def test_a_record_that_stores_no_reasons_says_so_rather_than_naming_a_cause(tmp_path) -> None:
+    """The committed ledger's records predate the stored reason, and the cause cannot be recovered
+    without re-deriving ``analyse``'s rule here. The old sentence was false for every one of
+    them, so it is not the fallback."""
+    _run(tmp_path, n=100, errors={"rival": 3.273})
+    path = tmp_path / sink.COMPARISON_LEDGER
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    for row in rows:
+        del row["unclaimed_reasons"]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    text = _text(tmp_path)
+    lines = _rival_withheld_lines(text)
+    assert lines
+    for line in lines:
+        assert "WITHHELD" in line and "rival" in line, line
+        assert "stores no reason" in line, line
+        assert "above the floor" not in line and "ceiling" not in line, line
 
 
 # ---------------------------------------------------------------------------

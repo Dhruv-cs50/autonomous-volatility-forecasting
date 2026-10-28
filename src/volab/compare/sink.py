@@ -67,7 +67,7 @@ def _block(block: BlockLength | None) -> dict[str, object] | None:
     }
 
 
-def _pair(pair: PairResult, claimed: bool) -> dict[str, object]:
+def _pair(pair: PairResult, claimed: bool, statement: str | None) -> dict[str, object]:
     dm = pair.dm
     return {
         "left": pair.left,
@@ -81,6 +81,8 @@ def _pair(pair: PairResult, claimed: bool) -> dict[str, object]:
         "disagree": dm.disagree,
         # Whether a verdict may be stated for this pair (see ``Comparison.pair_claimed``).
         "claimed": claimed,
+        # The verdict in words, stored so a reader prints it instead of wording it again (US-3.8).
+        "statement": statement,
     }
 
 
@@ -100,7 +102,7 @@ def _mcs(mcs: McsResult) -> dict[str, object]:
     }
 
 
-def _spa(spa: SpaResult, claimed: bool) -> dict[str, object]:
+def _spa(spa: SpaResult, claimed: bool, statement: str | None) -> dict[str, object]:
     return {
         "benchmark": spa.benchmark,
         "n_eff": _finite(spa.n_eff),
@@ -111,6 +113,8 @@ def _spa(spa: SpaResult, claimed: bool) -> dict[str, object]:
         "refusal": spa.refusal,
         # Whether a verdict may be stated (see ``Comparison.spa_claimed``).
         "claimed": claimed,
+        # The 5% reading in words, ``None`` unless ``claimed`` (see ``Comparison.spa_verdict``).
+        "statement": statement,
     }
 
 
@@ -194,6 +198,47 @@ class Comparison:
             return f"some contestant beats {spa.benchmark} at 5% (consistent p)"
         return f"no contestant shown to beat {spa.benchmark} at 5% (consistent p)"
 
+    def unclaimed_reasons(self) -> dict[str, list[str]]:
+        """For each unclaimed contestant, one sentence per rule that withholds its claim (R123).
+
+        ``analyse`` puts a contestant in ``unclaimed`` for three distinct causes: a figure above
+        ``MC_ERROR_CEILING_PERCENT``, a figure measured on a series other than the one compared
+        **whatever its value**, and no figure at all. A reader told the wrong one is pointed at
+        the wrong fix (re-measure a figure that was never too large), and a figure can fire more
+        than one rule, so every one that applies is stated. This restates ``analyse``'s rule to
+        word it, hence ``test_the_stored_reasons_are_exactly_the_unclaimed_contestants``; the rule
+        should ultimately emit its own cause.
+        """
+        # In the function because ``volab.compare`` imports this module before it defines the
+        # ceiling, so a module-level import is circular.
+        from volab.compare import MC_ERROR_CEILING_PERCENT
+
+        this_series = f"{self.symbol} h{self.horizon}"
+        reasons: dict[str, list[str]] = {}
+        for name in self.unclaimed:
+            value = self.monte_carlo_error.get(name)
+            why: list[str] = []
+            if value is None:
+                why.append(
+                    f"{name}'s Monte Carlo error was not measured, so no precision is established"
+                )
+            else:
+                if self.monte_carlo_source != this_series:
+                    why.append(
+                        f"{name}'s Monte Carlo error was measured on another series "
+                        f"({self.monte_carlo_source}), not on {this_series}, so it cannot "
+                        "authorise a claim whatever its value"
+                    )
+                if value > MC_ERROR_CEILING_PERCENT:
+                    # The figure itself is not in the sentence: it is printed only beside its
+                    # source (R102), and a reason is read without it.
+                    why.append(
+                        f"{name}'s Monte Carlo error is above the "
+                        f"{MC_ERROR_CEILING_PERCENT:g}% ceiling"
+                    )
+            reasons[name] = why
+        return reasons
+
     def record(self) -> dict[str, object]:
         return {
             "symbol": self.symbol,
@@ -213,12 +258,15 @@ class Comparison:
             "mcs_method": self.method,
             "dm_tests": self.dm_tests,
             "dm_significance_claimed": not self.claims_withheld,
-            "dm": [_pair(pair, self.pair_claimed(pair)) for pair in self.pairs],
+            "dm": [
+                _pair(pair, self.pair_claimed(pair), self.pair_verdict(pair)) for pair in self.pairs
+            ],
             "mcs": _mcs(self.mcs),
-            "spa": [_spa(spa, self.spa_claimed(spa)) for spa in self.spa],
+            "spa": [_spa(spa, self.spa_claimed(spa), self.spa_verdict(spa)) for spa in self.spa],
             "monte_carlo_error": {name: _finite(v) for name, v in self.monte_carlo_error.items()},
             "monte_carlo_error_source": self.monte_carlo_source,
             "unclaimed": list(self.unclaimed),
+            "unclaimed_reasons": self.unclaimed_reasons(),
             "refusal": self.refusal,
         }
 

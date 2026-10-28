@@ -24,6 +24,14 @@ Monte-Carlo error is printed only beside the series it was measured on (R102 and
 ruling): ``analyse`` raises on one without the other, and a record that carries one anyway has the
 figure withheld here rather than printed bare, where it would read as the neighbouring row's own.
 
+**Wording is stored, not repeated (US-3.8).** Every sentence that states a verdict or a reason --
+the DM and SPA 5% readings, and why a contestant has no claim (R123) -- is written by
+``compare.sink`` into the record, and printed here verbatim. This module cannot import the sink's
+wording (it would import ``volab.compare``, see below), and a paraphrase drifts: the one it held
+said "above the floor" of every unclaimed contestant, which was false for each of the 28 records
+in the first recorded run. A record written before a sentence was stored prints that it was not,
+never a guess (``test_a_record_that_stores_no_reasons_says_so_rather_than_naming_a_cause``).
+
 **It opens no path to write** (R95, R109): ``compare``'s sink is the only writer.
 ``test_no_leaderboard_module_can_write_a_path`` scans for it and
 ``test_rendering_creates_nothing_where_there_is_no_ledger`` checks it.
@@ -225,9 +233,16 @@ def _withheld_reasons(record: Mapping[str, Any], pair: Mapping[str, Any] | None)
     if not record["dm_significance_claimed"]:
         reasons.append(f"n_eff={_number(record['n_eff'], '.1f')}, too thin for a claim")
     names = [pair["left"], pair["right"]] if pair is not None else list(record["monte_carlo_error"])
+    # Three causes put a contestant in ``unclaimed`` and the sink words each (R123). A record from
+    # before it did has no cause on file, and the cause cannot be recovered without re-deriving
+    # ``analyse``'s rule here, so it says that instead of guessing: the one sentence this used to
+    # print was false for every record in the committed ledger.
+    stored: Mapping[str, Sequence[str]] = record.get("unclaimed_reasons") or {}
     for name in names:
         if name in record["unclaimed"]:
-            reasons.append(f"{name}'s Monte Carlo error is above the floor")
+            reasons.extend(
+                stored.get(name) or [f"{name} has no claim, and this record stores no reason"]
+            )
     if pair is not None:
         if pair["headline"]["refusal"] or pair["bartlett"]["refusal"]:
             reasons.append("a column refused")
@@ -255,11 +270,14 @@ def _pair_line(record: Mapping[str, Any], pair: Mapping[str, Any]) -> str:
     text += _mc_text(record, (pair["left"], pair["right"]))
     if not pair["claimed"]:
         return text + _withheld(record, pair)
-    verdict = pair["headline"]["verdict"]
-    if verdict == 0:
-        return text + "  => no significant difference at 5% (both columns)"
-    better = pair["left"] if verdict == -1 else pair["right"]
-    return text + f"  => {better} significantly better at 5% (both columns)"
+    # The sink stores the verdict in words. A record from before it did has the code and not the
+    # words, and the code is shown as it is rather than worded here.
+    if "statement" in pair:
+        return text + f"  => {pair['statement']}"
+    return text + (
+        f"  => stored 5% verdict {pair['headline']['verdict']:+d} (-1 left better, 0 neither, "
+        "+1 right better); this record predates stored verdict wording"
+    )
 
 
 def _spa_line(record: Mapping[str, Any], spa: Mapping[str, Any], cohort_wide: str) -> str:
@@ -271,9 +289,13 @@ def _spa_line(record: Mapping[str, Any], spa: Mapping[str, Any], cohort_wide: st
         f"{head} p lower={_number(spa['lower'])} consistent={_number(spa['consistent'])} "
         f"upper={_number(spa['upper'])} {tag}{cohort_wide}"
     )
-    # The record stores whether SPA may be claimed, not the 5% reading, and reading the p-value
-    # against 0.05 here would be recomputing the claim. So a permitted claim prints its p-values.
-    return line + (_withheld(record, None) if not spa["claimed"] else "  [claim permitted]")
+    if not spa["claimed"]:
+        return line + _withheld(record, None)
+    # The 5% reading is the sink's, stored beside the p-values: reading the p-value against 0.05
+    # here would be recomputing the claim. A record from before it was stored permits the claim
+    # and states no reading.
+    statement = spa.get("statement")
+    return line + (f"  => {statement}" if statement else "  [claim permitted]")
 
 
 def _comparison_lines(record: Mapping[str, Any]) -> list[str]:
