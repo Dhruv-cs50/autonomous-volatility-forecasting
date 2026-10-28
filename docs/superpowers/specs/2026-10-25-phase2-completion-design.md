@@ -399,7 +399,7 @@ section 3.3 are what proves that rather than this paragraph.
 instantiate for their own contestant:
 
 ```python
-def conformance_suite(model: Model, *, toy: Toy) -> None
+def conformance_suite(model: Model, *, toy: Toy, rebuild: Callable[[pd.DataFrame], Model]) -> None  # rebuild added by R111
 ```
 
 asserting, for that contestant:

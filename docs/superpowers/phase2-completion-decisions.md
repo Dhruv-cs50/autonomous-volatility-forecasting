@@ -355,7 +355,9 @@ committed probe rather than taken from the reports.
   place: a contestant that `.copy()`d the frame at construction, derived a Series from it (pandas
   3.0.6 copy-on-write separates that from later writes to the parent), or loaded its own frame.
   Those need the model **rebuilt** from a perturbed frame, which is what
-  `test_recalibrated.py`'s `forecast_moves_with_the_unknowable` guard does for one contestant.
+  `test_recalibrated.py`'s `forecast_moves_with_the_unknowable` guard did for one contestant.
+  **That guard is now gone**, subsumed by clause 8 below, which uses the same perturbation and the
+  same rebuild for every contestant — so the mechanism survived and stopped being one file's.
 
   **Why that is not simply added as an optional argument**, which is the implementer's argument
   and it is correct: an opt-in `rebuild=` would be skipped by exactly the contestant that needed
@@ -458,3 +460,47 @@ the non-PSD case are all exact arithmetic. Gates verified by the coordinator: **
 
   *Cost if wrong:* a reader takes a figure for a property. Which is the whole reason this document
   separates "a `tools/` command", "an existing test id" and "historical" at the top.
+
+---
+
+## R111 — the rebuild factory is mandatory, and it passes vacuously today on purpose
+
+US-3.3c closed R105's remaining case. `conformance_suite(model, *, toy, rebuild)` now takes a
+keyword-only factory **with no default**, so a caller cannot decline it: omitting it is a
+`TypeError`, which is the one form of "mandatory" that cannot be forgotten.
+`clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets` builds the contestant twice — once
+from the honest target frame, once from a copy whose post-origin targets are scaled — and requires
+the two forecasts to agree.
+
+**The before/after that shows it does something**, which is the part a count of passing tests
+cannot tell you: a plant whose constructor does `self.frame = targets.copy()` **passes clause 2
+and passes clause 7**, and fails clause 8. The same holds for a plant that stores a derived
+`Series`, which R105 predicted and the implementer confirmed. So the hole R105 named is shut.
+
+**It passes vacuously for all seven current contestants, and the docstring says so.** None of them
+takes a target frame at construction, so every `rebuild` is a closure ignoring its argument. The
+clause tests nothing today; its value is entirely prospective, against the contestant someone
+writes next. Recorded in this tone deliberately — a clause described as though it were checking
+something now is how a suite comes to be trusted for work it is not doing.
+
+Three limits, stated rather than left to be discovered:
+
+1. It cannot detect a factory that ignores its argument when the contestant genuinely needs the
+   frame. That is the vacuity above, and no test can close it — only review of the call site can.
+2. It does not catch a contestant that loads its own frame from a store, because a rebuild hands
+   it no new data. Truncation equivalence misses that too; **R106's store scan is the cover**, and
+   the two were written a day apart without either knowing it was completing the other.
+3. The factory's model must share the name of the model under test, which the clause enforces, or
+   a factory could quietly substitute a different contestant.
+
+*Cost if wrong:* a clause that runs for every contestant and costs about clause 7 — roughly 1.5s
+across all seven — in exchange for closing a leak class that has already escaped this project
+twice on the target side (R72, R78).
+
+**Two process notes, recorded because the honest report is worth more than the tidy one.** The
+implementer committed twice with the lint check red and fixed it in two follow-up commits rather
+than quietly amending, so `d0f1902..18762b1` is four commits for one story; the history is left as
+it happened. And it implemented clause 8 before writing the plant test, then demonstrated the test
+could fail by neutering the clause — which is not test-first, is reported as not test-first, and is
+weaker evidence than a genuine red run. The same departure as US-3.2 and US-3.3, and the third
+time it is worth noting that the method keeps losing to the convenience of writing the code first.
