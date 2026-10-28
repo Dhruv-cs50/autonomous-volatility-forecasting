@@ -925,3 +925,84 @@ three-way sentence and the leaderboard wrote a one-way paraphrase instead. **A s
 of the same kind, found by rendering the output rather than by reading the code** — which is also
 how the printed figure's missing source was found at US-3.4. Fix belongs in US-3.8, and the witness
 must assert the *reason text per cause*, not merely that some reason is printed.
+
+## R124, R125 — the estimator decisions, and four things measurement overturned
+
+Design: `docs/superpowers/specs/2026-10-28-gjr-exact-forecast-design.md` (`b2f6b16`, `f9b39a8`),
+ratified by reference. The user chose to build the closed form before registering, so R120's open
+item is closed.
+
+### R124 — the three decisions the design left to me
+
+**Ledger provenance: boundary sha and a required clean tree. No schema change.** Not a `method`
+field on `Trial` and not a rename. The design priced all three and called only the third
+self-describing; the reason it is still the wrong trade is one the design did not state. **The
+leaderboard already partitions by `(at, git_sha)`** and renders each run as its own labelled
+section, so a reader never compares two runs' GJR rows without seeing which run each came from —
+per-trial self-description is redundant at the level anyone actually reads. And `method` is
+GARCH-specific: adding it to `Trial` puts a field on 264 lines that is meaningless for four of the
+seven contestants. A rename conflicts with the pre-registered contestant name, which is worse than
+either.
+
+**EGARCH keeps simulating at h=1, and the reason is post-hoc selection.** The design flagged this
+rather than deciding it, correctly. Making it exact would cost nothing technically and would hand
+its h=1 result a significance claim it currently cannot carry. **It leads h=1 QLIKE on the recorded
+run at -7.38769.** Its h=1 simulation is already exactly correct — every one of the 100,000 paths
+is identical, because `sigma2_{t+1}` is deterministic — so **there is no defect to fix, only a
+claim to upgrade, for a contestant we have already watched win.** That is the thing
+pre-registration exists to prevent, and it does not stop being that because the mechanism is sound.
+
+**The contrast with GJR is the whole justification for treating them differently**, and it must be
+stated or the GJR change looks like the same move. GJR's estimator is *unusable*: 238 of 238 SPY
+origins over the 1.5% ceiling at h=66, a seed spread that does not fall with S, and R115
+unsatisfiable at the reveal because measuring on-series needs an exact value to compare against.
+The change is forced by the method's own failure, and the h=5 benefit is incidental to it. EGARCH
+at h=1 has no failure. Revisit only after a contestant can declare its horizons (US-3.9) — an exact
+EGARCH must *refuse* h>=2, and nothing enforces that today.
+
+**Order: the re-run happens before registration.** That was the point of building the closed form.
+
+**Two test changes authorised, both recorded because they touch earlier rulings.**
+`test_the_three_specs_are_exactly_what_r91_names` is amended to `("GARCH", 1, "exact")`, which
+**amends R91's recorded table** — the implementer was right to refuse to do that unasked. And the
+AST literal-count test is **deleted, not weakened**: it checked syntax, it would have passed a
+method string assembled at runtime, and it never covered EGARCH at all. Three stronger witnesses
+replace it, one of them behavioural.
+
+### R125 — four of my own claims that did not survive being measured
+
+**The quadrature I called "verified" is wrong across arch's actual bounds.** I handed the design a
+Simpson scheme as verified to 1e-10, on the strength of the earlier probe's identity checks. Across
+`eta`'s full range it is off by **0.228** at `eta = 2.05, lambda = -0.9`, and returns
+`kappa = 0.4755` at `eta = 2.10, lambda = 0` where symmetry forces exactly 1/2 — the `z^2` tail is
+too heavy to truncate at `sinh(30)`. It is sound for `eta >= 4`, and SPY fits 5.01-7.03, so nothing
+already recorded is wrong. **But I passed on another agent's verification as my own without
+checking its range**, and "verified" meant "verified where it was tried". Production now uses a
+closed form instead (exact up to the Student-t CDF, `scipy.special.stdtr`), which agrees with the
+oracle to 5.6e-12 where the oracle is trustworthy and costs 15us against 11-24ms.
+
+**R119's instruction to re-measure the Monte-Carlo table on the real panel is superseded, not
+done.** GJR leaves the table entirely once it is exact, so there is no reader for an SPY figure;
+and EGARCH's entries *cannot* be re-measured on-series, because R114 established it has no finite
+multi-step mean for an error to be measured against. So the table loses GJR's two rows as
+unreachable and keeps EGARCH's two behind an invariant test that no figure outlives the contestant
+that needed it. My ruling asked for a measurement that the right fix makes unnecessary.
+
+**R90's "17.7% low at h=66" understates arch's analytic GJR by half.** Against the exact value it
+is **38-45% low** on SPY. Not a contradiction — 17.7% was the probe series measured against
+simulation, and this is the real panel measured against a closed form — but the honest number is
+now available and is much worse, which strengthens rather than weakens R90's original call.
+
+**The geometric sum would have been a silent 51% error, and its guard would never have fired.** I
+offered the closed-form geometric series and iteration as alternatives and asked for a ruling.
+Iteration wins, and not on elegance: on SPY's GARCH(1,1) fits the geometric form is wrong by
+6.0%/25.2%/51.0% at h=5/22/66, because `alpha + beta` arrives as `1 - O(eps)` and
+`1 - phi` cancels catastrophically — **and the `phi == 1.0` branch that was supposed to protect it
+never fires at `1 - 1e-16`.** R118 records persistence pinned to 1 within 1e-9 at 192 of 250
+origins, so the unprotected case is the *modal* one. Iteration matches an 80-bit evaluation to
+exactly 0.0, at 66 scalar steps.
+
+**The pattern across all four.** Every one is an assumption of mine that a measurement reversed,
+and three of the four were about numerical behaviour I had reasoned about rather than run. R119's
+is different and worse: it prescribed work before the fix was designed, so it asked for a
+measurement the real fix retires.
