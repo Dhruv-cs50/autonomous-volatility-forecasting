@@ -158,7 +158,8 @@ a one-way door, with a one-line diff and a green suite.
 
 **Ruling: P3-01 is story one**, before any Phase 3 code exists — a witness pinning
 `SHOOTOUT.contestants` and `MULTISTEP.contestants` to the pre-registration's own list, with the
-document's section 2 quoted in the docstring and R130 and the registering sha `65617ee` named. It
+document's section 5 prohibition quoted in the docstring, its **section 1** contestant list as
+the literals, and R130 and the registering sha `65617ee` named. It
 is the cheapest story in the phase and the only one protecting something that cannot be undone.
 
 ---

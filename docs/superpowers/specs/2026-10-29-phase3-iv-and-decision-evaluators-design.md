@@ -104,7 +104,8 @@ registration with a one-line diff and a green suite.
 
 **P3-01 is therefore story one of this phase**, before any Phase 3 code exists: a witness pinning
 `SHOOTOUT.contestants` and `MULTISTEP.contestants` to the pre-registration's own list, with the
-document's section 2 quoted in the test's docstring and the test naming R130 and the registering
+document's section 5 prohibition quoted in the test's docstring, its **section 1** contestant
+list as the literals, and the test naming R130 and the registering
 sha. It is the cheapest story in the phase and the only one that protects something irreversible.
 
 ---
