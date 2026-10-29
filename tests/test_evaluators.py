@@ -968,7 +968,11 @@ def test_zero_breaches_gives_a_defined_kupiec_statistic() -> None:
         float(stats.chi2.sf(-2.0 * 251 * math.log(0.99), 1)), rel=1e-12
     )
     assert 0.02 < result.kupiec_p < 0.03
-    assert result.christoffersen_p is not None and math.isfinite(result.christoffersen_p)
+    # Kupiec stands; Christoffersen has nothing to test on, and says so rather than answering 1.0.
+    assert result.refusal is None
+    assert result.christoffersen_p is None
+    assert result.christoffersen_withheld is not None
+    assert "no breach in 251 origins" in result.christoffersen_withheld
 
 
 def test_a_statistic_that_rounds_just_below_zero_is_a_p_value_of_one() -> None:
@@ -982,7 +986,9 @@ def test_all_breaches_gives_defined_statistics() -> None:
     result = coverage([True] * 30, alpha=0.025, horizon=5, stride=5)
     assert result.breaches == 30
     assert result.kupiec_p is not None and 0.0 <= result.kupiec_p < 1e-6
-    assert result.christoffersen_p is not None and math.isfinite(result.christoffersen_p)
+    assert result.refusal is None and result.christoffersen_p is None
+    assert result.christoffersen_withheld is not None
+    assert "every one of 30 origins breached" in result.christoffersen_withheld
 
 
 def _markov_log_likelihood(hits: Sequence[bool], p01: float, p11: float) -> float:
@@ -1002,8 +1008,9 @@ def _christoffersen_by_the_loop(hits: Sequence[bool]) -> float:
     pairs = list(zip(hits, hits[1:], strict=False))
     from_clear = [now for before, now in pairs if not before]
     from_breach = [now for before, now in pairs if before]
-    p01 = sum(from_clear) / len(from_clear)
-    p11 = sum(from_breach) / len(from_breach)
+    # A state never left has no estimate, and the loop below never asks for it.
+    p01 = sum(from_clear) / len(from_clear) if from_clear else 0.5
+    p11 = sum(from_breach) / len(from_breach) if from_breach else 0.5
     p = sum(now for _, now in pairs) / len(pairs)
     unrestricted = _markov_log_likelihood(hits, p01, p11)
     restricted = _markov_log_likelihood(hits, p, p)
@@ -1032,11 +1039,58 @@ def test_christoffersen_detects_clustered_breaches() -> None:
     assert clustered.breaches == spread.breaches == 10
 
 
-def test_no_breach_pattern_is_a_cluster() -> None:
-    # With nothing to cluster the independence statistic is zero, so its p-value is one -- which
-    # says the test could not reject, not that independence was shown.
-    assert coverage([False] * 251, alpha=0.01, horizon=1, stride=1).christoffersen_p == 1.0
-    assert coverage([True] * 30, alpha=0.01, horizon=1, stride=1).christoffersen_p == 1.0
+# Sequences on which the independence statistic is zero by construction, with the reason each gives.
+# The last four are not "no breach" or "all breach" but have the same property: a breach only at the
+# first or last origin, or every origin but the first or last breached.
+DEGENERATE = [
+    ([False] * 251, "no breach in 251 origins"),
+    ([True] * 30, "every one of 30 origins breached"),
+    (_hits(40, [0]), "the only breach is the first of 40 origins"),
+    (_hits(40, [39]), "the only breach is the last of 40 origins"),
+    (_hits(40, range(39)), "every origin before the last breached"),
+    (_hits(40, range(1, 40)), "every origin after the first breached"),
+]
+
+
+@pytest.mark.parametrize(("hits", "why"), DEGENERATE)
+def test_a_degenerate_breach_sequence_withholds_christoffersen_with_the_reason(
+    hits: list[bool], why: str
+) -> None:
+    """A p of 1.0 here would read as "independence not rejected" and is evidence of nothing.
+
+    The statistic is zero by construction on these (the loop-based likelihood ratio, which does not
+    share ``coverage``'s counting, gives p = 1 for each), so the p-value is withheld and the reason
+    is carried instead. Kupiec is still reported: it is informative on all of them.
+    """
+    result = coverage(hits, alpha=0.01, horizon=1, stride=1)
+    assert _christoffersen_by_the_loop(hits) == pytest.approx(1.0, abs=1e-12), "not degenerate"
+    assert result.christoffersen_p is None
+    assert result.christoffersen_withheld is not None and why in result.christoffersen_withheld
+    assert result.refusal is None and result.kupiec_p is not None
+
+
+@pytest.mark.parametrize(
+    "hits",
+    [
+        CLUSTERED,
+        SPREAD,
+        _hits(60, [3, 4, 20, 41, 42, 43]),
+        _hits(40, [0, 1, 30]),
+        _hits(40, [5, 39]),
+    ],
+)
+def test_a_breach_sequence_with_transitions_to_compare_still_gets_its_p_value(
+    hits: list[bool],
+) -> None:
+    result = coverage(hits, alpha=0.01, horizon=1, stride=1)
+    assert result.christoffersen_withheld is None
+    assert result.christoffersen_p == pytest.approx(_christoffersen_by_the_loop(hits), rel=1e-9)
+
+
+def test_a_refused_coverage_result_has_no_independence_reason_of_its_own() -> None:
+    # The refusal already says why neither p-value is there; a second reason would contradict it.
+    result = coverage([False] * 30, alpha=0.01, horizon=22, stride=5)
+    assert result.refusal is not None and result.christoffersen_withheld is None
 
 
 @pytest.mark.parametrize("alpha", [0.0, 1.0, -0.01, float("nan")])

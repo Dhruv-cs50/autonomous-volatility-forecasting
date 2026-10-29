@@ -232,9 +232,13 @@ def decision_series(
 class CoverageResult:
     """What ``coverage`` found: the count, what was expected, and the two p-values.
 
-    ``kupiec_p`` and ``christoffersen_p`` are ``None`` exactly when ``refusal`` is a reason; the
-    counts are reported either way. A ``christoffersen_p`` of ``1.0`` over a sequence with no
-    breach, or only breaches, is uninformative (see ``coverage``), not evidence of independence.
+    ``refusal`` is a reason when neither p-value could be computed (an overlapping window, or too
+    few origins); both are then ``None``. ``christoffersen_withheld`` is a reason when only
+    ``christoffersen_p`` is ``None``: the breach sequence leaves the independence statistic zero by
+    construction (no breach at all, every origin breached, a lone breach at either end), so its
+    p-value would be 1.0 whatever the true dependence. That 1.0 would read as "independence not
+    rejected" and is evidence of nothing, so it is withheld with the reason instead. ``kupiec_p`` is
+    informative on those sequences and is reported. The counts are reported either way.
     """
 
     breaches: int
@@ -242,6 +246,7 @@ class CoverageResult:
     kupiec_p: float | None
     christoffersen_p: float | None
     refusal: str | None
+    christoffersen_withheld: str | None = None
 
 
 def _log_likelihood_term(count: int, probability: float) -> float:
@@ -253,6 +258,31 @@ def _log_likelihood_term(count: int, probability: float) -> float:
     probabilities, and ``math.log`` raises on it rather than returning ``-inf``.
     """
     return 0.0 if count == 0 else count * math.log(probability)
+
+
+def _independence_untestable(n: list[list[int]], count: int, breaches: int) -> str | None:
+    """Why the independence statistic is zero by construction on these transitions, or ``None``.
+
+    ``n[a][b]`` counts steps from state ``a`` to ``b`` (1 is a breach). The statistic compares the
+    breach probability after a clear origin with the one after a breach, so it is identically zero
+    when either state is never left, or when the probability of arriving in a breach is the same
+    for every step (none or all of the origins after the first breached).
+    """
+    if breaches == 0:
+        why = f"no breach in {count} origins"
+    elif breaches == count:
+        why = f"every one of {count} origins breached"
+    elif n[0][1] + n[1][1] == 0:
+        why = f"the only breach is the first of {count} origins"
+    elif n[0][0] + n[1][0] == 0:
+        why = "every origin after the first breached"
+    elif n[1][0] + n[1][1] == 0:
+        why = f"the only breach is the last of {count} origins"
+    elif n[0][0] + n[0][1] == 0:
+        why = "every origin before the last breached"
+    else:
+        return None
+    return f"independence cannot be tested: {why}"
 
 
 def _chi_squared_p(statistic: float) -> float:
@@ -272,14 +302,15 @@ def coverage(hits: Sequence[bool], alpha: float, *, horizon: int, stride: int) -
       ordinary -- the expectation is 2.5 over 251 origins at ``alpha = 0.01`` -- and the statistic
       is defined there; so it is when every origin breaches.
     * **Christoffersen** (1998), independence only: the indicator is a first-order Markov chain
-      whose breach probability does not depend on the previous origin's outcome. **A
-      ``christoffersen_p`` of ``1.0`` from a sequence with no breach, or with only breaches, is
-      uninformative, not reassuring.** There are then no transitions out of one of the two states,
-      so nothing is available to compare, the statistic is zero by construction and the p-value is
-      one whatever the true dependence. That is the ordinary case at ``alpha = 0.01`` over a few
-      hundred origins, so an operator will often see it. Read it as "the test could not reject",
-      never as evidence that breaches are independent; Kupiec's p, which is informative at zero
-      breaches, is the one that speaks to that sequence.
+      whose breach probability does not depend on the previous origin's outcome. **On a sequence
+      with nothing to compare the p-value is withheld, not reported as 1.0.** With no breach, with
+      every origin breached, or with a lone breach at the first or last origin, one of the two
+      states is never left or never entered after the start, the statistic is zero by construction
+      and its p-value would be one whatever the true dependence -- a number that reads as
+      "independence not rejected" and is evidence of nothing. No breach is the ordinary case at
+      ``alpha = 0.01`` over a few hundred origins, so this is the path an operator will usually
+      see. ``christoffersen_p`` is then ``None`` and ``christoffersen_withheld`` says why;
+      Kupiec's p, which is informative at zero breaches, is the one that speaks to that sequence.
 
     **Both assume independent indicators, so an overlapping window is refused.** An h-day return
     shares ``h - stride`` sessions with the next origin's when ``stride < horizon``, so successive
@@ -326,11 +357,13 @@ def coverage(hits: Sequence[bool], alpha: float, *, horizon: int, stride: int) -
     n = [[0, 0], [0, 0]]
     for before, now in zip(flags, flags[1:], strict=False):
         n[before][now] += 1
-    from_clear, from_breach = n[0][0] + n[0][1], n[1][0] + n[1][1]
-    # A state never left has no estimate, and then every term that would use it has a zero count.
-    p01 = n[0][1] / from_clear if from_clear else 0.0
-    p11 = n[1][1] / from_breach if from_breach else 0.0
-    p = (n[0][1] + n[1][1]) / (from_clear + from_breach)
+    withheld = _independence_untestable(n, count, breaches)
+    if withheld is not None:
+        return CoverageResult(breaches, expected, _chi_squared_p(kupiec), None, None, withheld)
+    # Neither state is empty past this point, so both transition probabilities are estimable.
+    p01 = n[0][1] / (n[0][0] + n[0][1])
+    p11 = n[1][1] / (n[1][0] + n[1][1])
+    p = (n[0][1] + n[1][1]) / (count - 1)
     independence = -2.0 * (
         _log_likelihood_term(n[0][0] + n[1][0], 1.0 - p)
         + _log_likelihood_term(n[0][1] + n[1][1], p)
@@ -414,6 +447,12 @@ def vol_target(
     P&L spans, and the caller supplies it: this function takes no dates and cannot check that the
     flags cover the window. It is the move ``MONTE_CARLO_ERROR_SOURCE`` made before US-3.9b retired
     it: a figure that cannot be fixed here is printed with what it is wrong about.
+
+    **The P&L is also an approximation, for a second reason.** ``position * return`` takes the
+    signed h-day *log* return as if it were the simple return a position earns; the two differ by
+    ``exp(r) - 1 - r``, about ``r ** 2 / 2``. That is negligible for a small ``r`` and grows with
+    its square, so the approximation degrades for large returns and long horizons. Like the
+    ex-date bias it is a known, disclosed limitation of the result and is not corrected here.
 
     ``TARGET_VOL`` is calibrated to nothing in this repository (see its comment). A forecast that
     is not strictly positive and finite is refused rather than turned into an ``inf`` position or
