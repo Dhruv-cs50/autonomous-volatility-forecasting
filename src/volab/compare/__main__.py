@@ -36,8 +36,8 @@ import pandas as pd
 from volab.compare import analyse, describe
 from volab.compare.cohorts import (
     COHORTS,
-    MONTE_CARLO_ERROR_SOURCE,
     SHOOTOUT,
+    MonteCarlo,
     answering,
     monte_carlo_error,
 )
@@ -114,17 +114,17 @@ def _refuse_horizons(cohort: Cohort, horizons: Sequence[int]) -> bool:
     return refused
 
 
-def _report(errors: dict[str, float | None], line: str) -> None:
+def _report(errors: MonteCarlo, line: str) -> None:
     """``print``, with the measured Monte Carlo error appended to a simulated contestant's line.
 
     ``run_configuration`` prints one line per trial that begins with the contestant's name
     (``evaluation.trials()``), and R102 puts the error beside every simulated figure.
     """
     words = line.split()
-    if words and words[0] in errors:
-        value = errors[words[0]]
+    if words and words[0] in errors.percent:
+        value = errors.percent[words[0]]
         shown = "not measured" if value is None else f"{value:.3f}%"
-        line += f"  [MC error {shown} ({MONTE_CARLO_ERROR_SOURCE})]"
+        line += f"  [MC error {shown} ({errors.source})]"
     print(line)
 
 
@@ -197,8 +197,8 @@ def _run(settings: Settings, arguments: argparse.Namespace, sink: Sink) -> int:
             comparisons: list[Comparison] = [
                 analyse(
                     loss_series(evaluation, loss, cohort=cohort.name),
-                    monte_carlo_error=errors,
-                    monte_carlo_source=MONTE_CARLO_ERROR_SOURCE,
+                    monte_carlo_error=errors.percent,
+                    monte_carlo_source=errors.source,
                 )
                 for loss in LOSSES
             ]

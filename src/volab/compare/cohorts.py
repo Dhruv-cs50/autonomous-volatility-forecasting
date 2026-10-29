@@ -34,40 +34,44 @@ are those that answer every horizon above 1 (:func:`multistep_members`), and ``-
 to the cohort's own set. Nobody types either list. Witness for membership, on its own line:
 ``test_the_multistep_cohort_is_the_shootout_without_egarch_and_is_runnable_by_name``.
 
-**The Monte Carlo error table (R102).** ``egarch11_skewt`` is the one contestant that forecasts by
-simulation, so its figures carry a sampling error that is *measured*, not assumed, and printed
-beside them. ``gjr11_skewt`` used to be the other and no longer is: its forecast is exact
-(R117-R123), so it has no Monte-Carlo error to measure, drops out of :func:`monte_carlo_error` at
-every horizon, and its two figures were deleted rather than left as live-looking data nothing
-could read. The figures are those R102 records, from ``tools/measure_garch_forecast_error.py`` at
-``S = 100_000`` paths, **on the probe's series and not on SPY's** (R102 says they are
-series-dependent). h=1 and h=5 were never measured and are reported as ``None``, not interpolated.
-EGARCH at h=66 is 3.273% -- *more* paths made it worse than 0.951% at S=10,000 -- which is why
-``volab.compare`` withholds significance for it. Its two entries are unreachable in the registered
-pairing (:data:`MULTISTEP` has no EGARCH) but reachable by construction, and their job is to stop a
-figure being invented for a path count or horizon nobody measured. R119's instruction that the
-table carry SPY figures is superseded: for GJR the table has no reader, and for EGARCH no finite
-mean exists (R114) whose error could be measured.
+**Measured Monte Carlo error travels with the contestant (US-3.9b).** ``egarch11_skewt`` is the one
+contestant that forecasts by simulation (``gjr11_skewt`` stopped when its forecast became exact,
+R117-R123), and a simulated forecast carries a sampling error that is *measured*, not assumed, and
+printed beside it (R102). The figures used to live in a table here, keyed ``(contestant, horizon)``,
+one module away from the contestant that needed them, and R119 recorded the result: it duplicated
+what the contestant already knew and went stale the moment a real measurement existed. A contestant
+now declares a :class:`~volab.models.base.Sampling` and any ``Measurement`` it has *on that
+declaration*, so a figure is attached to the instance that measured it and **cannot outlive it** --
+removing the contestant removes the figure, renaming it renames the figure, and a figure measured at
+another path count reads as not measured. :func:`monte_carlo_error` only collects.
 
-**These figures can only withhold a claim, never authorise one.** They were measured on a series
-that is not the one a shootout compares, and ``analyse`` lets a figure clear the ceiling only if
-its source is the evaluated series (``volab.compare.series_source``). EGARCH at h=22 reads 0.163%
-here, on a process (alpha 0.05, beta 0.87) far gentler than SPY's fit (alpha ~0.25, beta ~0.96) --
-and a six-seed sd of an estimator with **no finite mean** is not evidence of precision whatever it
-reads. There is deliberately no SPY counterpart quoted: this docstring carried "230.79% on SPY"
-until R129, a figure no committed probe prints, and in any case a percentage error against a
-divergent quantity invites being read as an error bar when R114 established the quantity does not
-exist. So every entry below is withheld wherever it is used, and the only thing that would change
-that for GJR was making it exact (R127) -- which removed it from this table entirely.
+Nothing is measured today, so ``egarch11_skewt`` declares ``Sampling(paths=...)`` with no
+``Measurement``. Its two remaining table rows (h=22 and h=66) were **deleted, not migrated**: the
+horizon guard (``domain.max_horizon == 1``) makes them unreachable by construction, the ground R125
+removed GJR's rows on. Its h=1 error is identically zero -- every path is the same number -- but
+that is *not measured on the evaluated series*, and declaring it zero would hand a significance
+claim to the contestant leading h=1 QLIKE after it was seen to lead (R124 refused exactly that).
+``test_egarch_is_unclaimed_at_h1_and_its_error_is_not_declared_zero`` is the guard.
+
+**A figure can only withhold a claim, never authorise one.** ``analyse`` lets a figure clear the
+ceiling only if its source is the evaluated series (``volab.compare.series_source``), and "no
+figure" reads as *not measured* and withholds. When no member has a measurement the cohort's
+source is :data:`~volab.compare.NO_MEASUREMENT`, a sentence and not a series' name, so it can
+never authorise anything. The h=1 shootout line therefore reads
+``[MC error not measured (no measurement exists)]`` where it used to name a synthetic probe's
+series, and the comparison record stores the new sentence; who is in ``unclaimed``, and the
+reason given, are unchanged. Earlier records keep their own string (R126).
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 
+from volab.compare import NO_MEASUREMENT
 from volab.features.targets import HORIZONS
 from volab.models.base import Cohort, Model
-from volab.models.garch import GARCH_MODELS, SIMULATIONS, GarchModel
+from volab.models.garch import GARCH_MODELS
 from volab.models.recalibrated import har_levels_mz
 from volab.walkforward import BASELINE_COHORT
 
@@ -108,35 +112,42 @@ def answering(horizon: int, registry: Mapping[str, Cohort] | None = None) -> tup
     return tuple(name for name, cohort in cohorts.items() if cohort.refusal(horizon) is None)
 
 
-# Where the figures below were measured, **printed beside every one of them**. They come from the
-# probe's synthetic persistent, leveraged, skew-t series -- not from SPY, QQQ or any series a
-# shootout runs on -- so a bare ``3.273%`` beside a real result would read as that result's own
-# error: true of the probe, false of the run. The day the figures are re-measured on the real
-# panel, this string and the table change together, and the printed form follows.
-MONTE_CARLO_ERROR_SOURCE = "synthetic probe series, not SPY"
+@dataclass(frozen=True)
+class MonteCarlo:
+    """The measured error of every simulated contestant in a cohort at one horizon."""
 
-# Percent, ``(contestant, horizon) -> sd over six seeds as a percentage of the mean``, at
-# S = 100_000. R102's table, re-measured by the coordinator from the committed probe. Only the
-# contestants that simulate: ``test_every_monte_carlo_figure_is_reachable`` fails on a stale key.
-MONTE_CARLO_ERROR_PERCENT: dict[tuple[str, int], float] = {
-    ("egarch11_skewt", 22): 0.163,
-    ("egarch11_skewt", 66): 3.273,
-}
+    # Percent, by contestant; ``None`` where none was measured. Only simulated contestants appear.
+    percent: dict[str, float | None]
+    # The one series every figure was measured on. :data:`~volab.compare.NO_MEASUREMENT` when a
+    # member simulates and none has a measurement; ``None`` only when no member simulates.
+    source: str | None
 
 
-def monte_carlo_error(cohort: Cohort, horizon: int) -> dict[str, float | None]:
+def monte_carlo_error(cohort: Cohort, horizon: int) -> MonteCarlo:
     """The measured error in percent for each simulated contestant in ``cohort`` at ``horizon``.
 
-    A contestant is simulated if it *says* so (``method == "simulation"``), not if it is called a
-    particular name. An exact or analytic contestant has no sampling error and is absent. ``None``
-    means no measurement exists -- every horizon but 22 and 66, and any path count but the one
-    measured -- and is printed as "not measured".
+    A contestant is simulated if it *declares* so (``domain.sampling``), not if it is a particular
+    class or has a particular name, and the figure is read off that declaration: there is no table
+    here, so no key that can name a contestant that is not in the cohort. An exact or analytic
+    contestant declares no sampling and is absent. ``None`` means no measurement exists at this
+    horizon *for the path count in use* and is printed as "not measured", never as zero.
+
+    **Raises** ``ValueError`` if two members were measured on different series: the comparison
+    record stores one source per record, so it could label only one of them.
     """
-    out: dict[str, float | None] = {}
+    percent: dict[str, float | None] = {}
+    sources: dict[str, str] = {}
     for model in cohort.models:
-        if isinstance(model, GarchModel) and model.method == "simulation":
-            measured = model.simulations == SIMULATIONS
-            out[model.name] = (
-                MONTE_CARLO_ERROR_PERCENT.get((model.name, horizon)) if measured else None
-            )
-    return out
+        sampling = model.domain.sampling
+        if sampling is None:
+            continue
+        percent[model.name] = sampling.error(horizon)
+        if sampling.source is not None:
+            sources[model.name] = sampling.source
+    if len(set(sources.values())) > 1:
+        raise ValueError(
+            "simulated contestants measured on different series cannot share a comparison "
+            f"record, which holds one monte_carlo_error_source: {sources}"
+        )
+    source = next(iter(sources.values())) if sources else (NO_MEASUREMENT if percent else None)
+    return MonteCarlo(percent, source)

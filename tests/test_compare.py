@@ -42,10 +42,9 @@ import volab.walkforward.__main__ as walkforward_cli
 from volab.compare import MC_ERROR_CEILING_PERCENT, analyse, describe, multiple, series_source
 from volab.compare.cohorts import (
     COHORTS,
-    MONTE_CARLO_ERROR_PERCENT,
-    MONTE_CARLO_ERROR_SOURCE,
     MULTISTEP,
     SHOOTOUT,
+    MonteCarlo,
     answering,
     monte_carlo_error,
     multistep_members,
@@ -78,10 +77,12 @@ from volab.models.base import (
     Domain,
     Forecast,
     Forecaster,
+    Measurement,
     Model,
+    Sampling,
     TrainingView,
 )
-from volab.models.garch import EGARCH11_SKEWT, GARCH11_SKEWT, GARCH_MODELS, GJR11_SKEWT, GarchModel
+from volab.models.garch import EGARCH11_SKEWT, GARCH11_SKEWT, GARCH_MODELS, GJR11_SKEWT
 from volab.walkforward import (
     BASELINE_COHORT,
     BASELINE_COHORT_NAME,
@@ -1070,7 +1071,7 @@ def test_a_figure_measured_on_another_series_can_withhold_a_claim_but_never_auth
     This docstring quoted "230.79% on SPY" until R129 struck it: no committed probe prints it, and
     a percentage error against a quantity R114 showed to be divergent is not an error bar."""
     own = series_source(_contenders(60, 0))
-    assert own == "SPY h1" and own != MONTE_CARLO_ERROR_SOURCE
+    assert own == "SPY h1" and own != monte_carlo_error(SHOOTOUT, 1).source
     series = _contenders(60, 0)
     figures = {"a": 0.163, "b": 3.273, "c": None}
     foreign = analyse(series, monte_carlo_error=figures, monte_carlo_source=SOURCE, reps=200)
@@ -1116,21 +1117,21 @@ def test_a_simulated_contestant_with_no_measurement_is_withheld() -> None:
     assert "or where none was measured" in text
 
 
-def test_every_measured_cohort_figure_is_withheld_while_it_comes_from_the_probe_series() -> None:
-    """The shipped table, through the shipped source, onto a SPY series, at every horizon. The only
-    simulated contestant is ``egarch11_skewt`` (GJR is exact and has no entry): at h=22 it was
-    claimable before this (0.163%), at h=1 and h=5 it has no figure, and no figure is no claim."""
-    for horizon in (1, 5, 22, 66):
-        base = _named_contenders(60, 0, ("har_levels", "random_walk", "egarch"), (0.0,) * 3)
-        series = dataclasses.replace(base, horizon=horizon)
-        errors = monte_carlo_error(SHOOTOUT, horizon)
-        assert set(errors) == {"egarch11_skewt"}, "GJR is exact: nothing of it to withhold"
-        figures = {"egarch": errors["egarch11_skewt"]}
-        assert all((v is None) == (horizon in (1, 5)) for v in figures.values())
-        comparison = analyse(
-            series, monte_carlo_error=figures, monte_carlo_source=MONTE_CARLO_ERROR_SOURCE, reps=200
-        )
-        assert comparison.unclaimed == ("egarch",), horizon
+def test_a_shipped_cohort_figure_is_withheld_whatever_series_it_is_compared_on() -> None:
+    """The shipped figures, through the shipped source, onto a SPY series. EGARCH is the only
+    simulated contestant (GJR is exact) and the only horizon it can be evaluated at is 1, where it
+    has no figure -- and no figure is no claim, even if the source it is given names the very
+    series being compared."""
+    assert SHOOTOUT.horizons(HORIZONS) == (1,)
+    base = _named_contenders(60, 0, ("har_levels", "random_walk", "egarch"), (0.0,) * 3)
+    series = dataclasses.replace(base, horizon=1)
+    errors = monte_carlo_error(SHOOTOUT, 1)
+    assert set(errors.percent) == {"egarch11_skewt"}, "GJR is exact: nothing of it to withhold"
+    figures = {"egarch": errors.percent["egarch11_skewt"]}
+    assert figures == {"egarch": None}
+    for source in (errors.source, series_source(series)):
+        comparison = analyse(series, monte_carlo_error=figures, monte_carlo_source=source, reps=200)
+        assert comparison.unclaimed == ("egarch",), source
 
 
 def test_egarch_is_unclaimed_at_h1_and_its_error_is_not_declared_zero() -> None:
@@ -1141,13 +1142,15 @@ def test_egarch_is_unclaimed_at_h1_and_its_error_is_not_declared_zero() -> None:
     base = _named_contenders(60, 0, ("har_levels", "random_walk", "egarch11_skewt"), (0.0,) * 3)
     series = dataclasses.replace(base, horizon=1)
     errors = monte_carlo_error(SHOOTOUT, 1)
-    assert errors["egarch11_skewt"] is None
+    assert errors.percent["egarch11_skewt"] is None
     sampling = EGARCH11_SKEWT.domain.sampling
     assert sampling is not None and sampling.measured == () and sampling.error(1) is None
-    comparison = analyse(
-        series, monte_carlo_error=errors, monte_carlo_source=series_source(series), reps=200
-    )
-    assert comparison.unclaimed == ("egarch11_skewt",)
+    # The shipped source, and then the evaluated series' own name: neither may authorise a claim.
+    for source in (errors.source, series_source(series)):
+        comparison = analyse(
+            series, monte_carlo_error=errors.percent, monte_carlo_source=source, reps=200
+        )
+        assert comparison.unclaimed == ("egarch11_skewt",), source
 
 
 def _named_contenders(n: int, q: int, names: tuple[str, ...], gaps: tuple[float, ...]):
@@ -1406,7 +1409,8 @@ def test_the_multistep_cohort_is_the_shootout_without_egarch_and_is_runnable_by_
     assert len({SHOOTOUT.name, MULTISTEP.name, BASELINE_COHORT_NAME}) == 3
     assert COHORTS[MULTISTEP.name] is MULTISTEP
     for horizon in (5, 22, 66):
-        assert monte_carlo_error(MULTISTEP, horizon) == {}, (
+        errors = monte_carlo_error(MULTISTEP, horizon)
+        assert errors.percent == {} and errors.source is None, (
             "no simulated contestant is left: EGARCH is not in the cohort and GJR is exact"
         )
     assert all(
@@ -1493,55 +1497,186 @@ def test_only_cohorts_imports_the_model_modules() -> None:
             assert not garch and not recalibrated, f"{module.name} imports a contestant module"
 
 
-def test_the_monte_carlo_error_is_the_recorded_figure_for_each_simulated_contestant() -> None:
-    """R102's table at S=100,000. h=1 and h=5 were never measured and are not invented.
-
-    Only EGARCH simulates now. GJR is exact (R117-R123): it is absent from the map at every
-    horizon, not ``None`` -- ``None`` would say "simulated, unmeasured" and trigger R115's rule.
-    """
-    assert monte_carlo_error(SHOOTOUT, 66) == {"egarch11_skewt": 3.273}
-    assert monte_carlo_error(SHOOTOUT, 22) == {"egarch11_skewt": 0.163}
-    for horizon in (1, 5):
-        assert monte_carlo_error(SHOOTOUT, horizon) == {"egarch11_skewt": None}
-    for horizon in (1, 5, 22, 66):
+def test_no_monte_carlo_figure_is_invented_for_the_shipped_contestants() -> None:
+    """EGARCH is the only shipped contestant that simulates and it has no measurement, so it
+    reads ``None`` at every horizon -- including the ones it can no longer be evaluated at, whose
+    rows were deleted (the horizon guard makes them unreachable). GJR is exact: absent at every
+    horizon, not ``None`` -- ``None`` would say "simulated, unmeasured" and trigger R115's rule."""
+    for horizon in HORIZONS:
         errors = monte_carlo_error(SHOOTOUT, horizon)
-        assert "garch11_skewt" not in errors, "the analytic one has none"
-        assert "gjr11_skewt" not in errors, "the exact one has none"
-    assert 3.273 > MC_ERROR_CEILING_PERCENT > 0.163, "the floor separates EGARCH h=66 from h=22"
+        assert errors.percent == {"egarch11_skewt": None}, horizon
+        assert "garch11_skewt" not in errors.percent, "the analytic one has none"
+        assert "gjr11_skewt" not in errors.percent, "the exact one has none"
 
 
-def test_a_simulated_contestant_is_found_by_its_method_and_its_figure_is_not_invented() -> None:
-    # GJR *simulated*: a legal pairing kept so this proves the contestant is found by its method
-    # and not by its name or its being GJR.
-    renamed = dataclasses.replace(GJR11_SKEWT, method="simulation", name="my_gjr")
-    cohort = Cohort("probe", (BASELINE_COHORT.models[0], renamed, GARCH11_SKEWT))
-    assert monte_carlo_error(cohort, 66) == {"my_gjr": None}, (
-        "found as simulated by its method, but the table is keyed to the measured spec by name, "
-        "so a figure is not invented for one that was never measured"
-    )
-    assert monte_carlo_error(Cohort("probe", (GJR11_SKEWT,)), 66) == {}, "exact: not simulated"
-    fewer_paths = dataclasses.replace(EGARCH11_SKEWT, simulations=10_000)
-    assert monte_carlo_error(Cohort("probe", (fewer_paths,)), 66) == {"egarch11_skewt": None}, (
-        "the table is for S=100,000 only; another path count is a different, unmeasured figure"
-    )
-    assert monte_carlo_error(BASELINE_COHORT, 66) == {}
+@dataclasses.dataclass(frozen=True)
+class _Sampled:
+    """A contestant that is **not** a ``GarchModel`` and simulates, declaring its own figures.
 
-
-def test_every_monte_carlo_figure_is_reachable() -> None:
-    """A figure keyed to a contestant that no cohort simulates can never be printed or withheld.
-
-    Without this, retiring a simulated contestant leaves its figures behind as live-looking data.
-    A partial check: horizon-level reachability cannot be tested until a contestant declares the
-    horizons it can answer.
+    The shape US-3.9b exists for: nothing in ``cohorts`` names it, so any figure it reports is
+    read off the instance and not looked up.
     """
-    simulated = {
-        model.name
-        for cohort in COHORTS.values()
-        for model in cohort.models
-        if isinstance(model, GarchModel) and model.method == "simulation"
+
+    sampling: Sampling
+    name: str = "sampled_rw"
+
+    @property
+    def fit_depends_on_horizon(self) -> bool:
+        return BASELINE_COHORT.models[2].fit_depends_on_horizon
+
+    @property
+    def domain(self) -> Domain:
+        return Domain(sampling=self.sampling)
+
+    def fit(self, view: TrainingView) -> Forecaster:
+        return BASELINE_COHORT.models[2].fit(view)
+
+
+def _measured(paths: int = 100_000, source: str = "SPY h22", percent: float = 0.4) -> Sampling:
+    return Sampling(paths=paths, measured=(Measurement(percent, source, 22, paths),))
+
+
+HEAD = BASELINE_COHORT.models[0]
+
+
+def test_a_figure_measured_at_another_path_count_reads_as_not_measured() -> None:
+    """W13. The path count a figure was measured at travels with it, so a contestant run at
+    another count reads ``None`` -- through the cohort, not just through ``Sampling.error``."""
+    right = _Sampled(_measured(paths=100_000))
+    assert cohorts_module.monte_carlo_error(Cohort("probe", (HEAD, right)), 22).percent == {
+        "sampled_rw": 0.4
     }
-    assert simulated, "the set being compared against must not be empty"
-    assert {name for name, _ in MONTE_CARLO_ERROR_PERCENT} <= simulated
+    # The same declared figure, a different path count in use: only the paths differ.
+    fewer = _Sampled(Sampling(paths=10_000, measured=right.sampling.measured))
+    assert cohorts_module.monte_carlo_error(Cohort("probe", (fewer,)), 22).percent == {
+        "sampled_rw": None
+    }
+    # A real contestant, run at another path count than anything measured.
+    egarch = dataclasses.replace(EGARCH11_SKEWT, simulations=10_000)
+    assert cohorts_module.monte_carlo_error(Cohort("probe", (egarch,)), 1).percent == {
+        "egarch11_skewt": None
+    }
+
+
+def test_a_simulated_contestant_removed_from_a_cohort_takes_its_figures_with_it() -> None:
+    """W14, and the structural replacement for the deleted reachability test. The table's sin was
+    surviving its reader; a figure attached to the instance that measured it cannot.
+
+    An empty cohort is the trivial case, so the three that bite are here: the figure is reported
+    while the contestant is in the cohort, nothing is left of it (not even a source label) when it
+    is out, and a **renamed** copy carries it under the new name -- which a name-keyed table
+    resurrected under any spelling would fail."""
+    assert cohorts_module.monte_carlo_error(Cohort("probe", ()), 22).percent == {}
+    spy = _Sampled(_measured())
+    inside = cohorts_module.monte_carlo_error(Cohort("probe", (HEAD, spy)), 22)
+    assert inside.percent == {"sampled_rw": 0.4} and inside.source == "SPY h22"
+    outside = cohorts_module.monte_carlo_error(Cohort("probe", (HEAD,)), 22)
+    assert outside.percent == {} and outside.source is None, "no residual label survives"
+    renamed = dataclasses.replace(spy, name="renamed")
+    assert cohorts_module.monte_carlo_error(Cohort("probe", (HEAD, renamed)), 22).percent == {
+        "renamed": 0.4
+    }
+
+
+def test_no_module_level_table_in_cohorts_is_keyed_by_a_contestant_and_a_horizon() -> None:
+    """The retired table was ``dict[tuple[str, int], float]``. Gone, and nothing of that shape
+    stands in for it under another name."""
+    assert not hasattr(cohorts_module, "MONTE_CARLO_ERROR_PERCENT")
+    assert not hasattr(cohorts_module, "MONTE_CARLO_ERROR_SOURCE")
+    for name, value in vars(cohorts_module).items():
+        if isinstance(value, dict):
+            assert not any(
+                isinstance(key, tuple)
+                and any(isinstance(part, str) for part in key)
+                and any(isinstance(part, int) for part in key)
+                for key in value
+            ), f"{name} is a table keyed by (contestant, horizon): a figure with no owner"
+
+
+def test_two_simulated_contestants_measured_on_different_series_are_refused() -> None:
+    """W15. The comparison record stores one source per record, so two contestants naming two
+    series would be labelled with one of them -- a mislabelled figure. Raised where the whole
+    cohort is first seen, naming both contestants and both series."""
+    one = _Sampled(_measured(source="SPY h22"), name="one")
+    other = _Sampled(_measured(source="QQQ h22"), name="other")
+    with pytest.raises(ValueError, match=r"one.*SPY h22|SPY h22.*one") as caught:
+        cohorts_module.monte_carlo_error(Cohort("probe", (HEAD, one, other)), 22)
+    message = str(caught.value)
+    assert all(part in message for part in ("one", "other", "SPY h22", "QQQ h22")), message
+    agreeing = _Sampled(_measured(source="SPY h22", percent=0.9), name="agrees")
+    both = cohorts_module.monte_carlo_error(Cohort("probe", (HEAD, one, agreeing)), 22)
+    assert both.percent == {"one": 0.4, "agrees": 0.9} and both.source == "SPY h22"
+
+
+def test_a_simulated_contestant_is_found_by_its_declaration_and_nothing_is_invented() -> None:
+    """Not by its class and not by its name: a non-GARCH contestant that declares ``Sampling`` is
+    found, the exact and analytic ones declare none and are absent, and an unmeasured one reads
+    ``None`` (R115: "not measured" is not zero)."""
+    unmeasured = _Sampled(Sampling(paths=1000), name="unmeasured")
+    found = cohorts_module.monte_carlo_error(Cohort("probe", (HEAD, unmeasured)), 22)
+    assert found.percent == {"unmeasured": None}
+    # GJR *simulated*, the legal pairing kept so this proves GARCH is found by its method too.
+    renamed = dataclasses.replace(GJR11_SKEWT, method="simulation", name="my_gjr")
+    cohort = Cohort("probe", (HEAD, renamed, GARCH11_SKEWT))
+    assert cohorts_module.monte_carlo_error(cohort, 66).percent == {"my_gjr": None}
+    exact = cohorts_module.monte_carlo_error(Cohort("probe", (GJR11_SKEWT,)), 66)
+    assert exact.percent == {} and exact.source is None, "exact: not simulated"
+    baseline = cohorts_module.monte_carlo_error(BASELINE_COHORT, 66)
+    assert baseline.percent == {} and baseline.source is None
+
+
+def test_the_shipped_shootout_declares_no_figure_and_says_so_in_its_source() -> None:
+    """EGARCH ships with no ``Measurement`` (R124), so at the one horizon it can be evaluated at
+    the cohort carries one unmeasured figure and the sentence "no measurement exists" -- which no
+    series' name can ever equal, so it can only withhold."""
+    errors = cohorts_module.monte_carlo_error(SHOOTOUT, 1)
+    assert errors.percent == {"egarch11_skewt": None}
+    assert errors.source == "no measurement exists"
+    for symbol in ("SPY", "QQQ", "IWM", "no"):
+        for horizon in HORIZONS:
+            assert errors.source != f"{symbol} h{horizon}"
+
+
+def test_the_registered_read_withholds_exactly_egarch_at_h1_and_nothing_else() -> None:
+    """The one-way door. Every cohort at every horizon it can be evaluated at, through the shipped
+    figures and the shipped source and into ``analyse``: ``egarch11_skewt`` at h=1 is unclaimed and
+    for the sentence it always had, and no other contestant at any horizon is withheld by this
+    machinery. Retiring the table must change what is *printed*, never what is *claimed*."""
+    for cohort in COHORTS.values():
+        for horizon in cohort.horizons(HORIZONS):
+            names = tuple(cohort.contestants)
+            base = _named_contenders(60, 0, names, (0.0,) * len(names))
+            series = dataclasses.replace(base, horizon=horizon)
+            errors = cohorts_module.monte_carlo_error(cohort, horizon)
+            comparison = analyse(
+                series,
+                monte_carlo_error=errors.percent,
+                monte_carlo_source=errors.source,
+                reps=200,
+            )
+            expected = ("egarch11_skewt",) if (cohort is SHOOTOUT and horizon == 1) else ()
+            assert comparison.unclaimed == expected, (cohort.name, horizon)
+            if expected:
+                reasons = comparison.record()["unclaimed_reasons"]
+                assert reasons == {
+                    "egarch11_skewt": [
+                        "egarch11_skewt's Monte Carlo error was not measured, "
+                        "so no precision is established"
+                    ]
+                }
+
+
+def test_the_description_does_not_say_it_was_measured_on_the_lack_of_a_measurement() -> None:
+    series = _named_contenders(60, 0, ("har_levels", "random_walk", "egarch11_skewt"), (0.0,) * 3)
+    errors = cohorts_module.monte_carlo_error(SHOOTOUT, 1)
+    comparison = analyse(
+        series, monte_carlo_error=errors.percent, monte_carlo_source=errors.source, reps=200
+    )
+    lines = describe(comparison)
+    summary = [x for x in lines if x.startswith("  Monte Carlo error (R102)")]
+    assert len(summary) == 1
+    assert "on the no measurement" not in summary[0]
+    assert "no measurement exists" in summary[0] and "egarch11_skewt not measured" in summary[0]
 
 
 # ---------------------------------------------------------------------------
@@ -2045,13 +2180,15 @@ def test_the_drivers_trial_lines_carry_the_error_of_a_simulated_contestant(
     mean. The shootout passes a ``report`` that appends the measured error to a simulated
     contestant's line (R102), and leaves every other line alone."""
     shootout.monkeypatch.setattr(
-        compare_cli, "monte_carlo_error", lambda cohort, horizon: {"rw_scaled": 0.5, "ghost": None}
+        compare_cli,
+        "monte_carlo_error",
+        lambda cohort, horizon: MonteCarlo({"rw_scaled": 0.5, "ghost": None}, "SPY h1"),
     )
     shootout.main(["--symbol", "SPY", "--horizon", "1", *WINDOW])
     printed = capsys.readouterr().out.splitlines()
     scaled = [line for line in printed if line.startswith("  rw_scaled ")]
     assert len(scaled) == len(LOSSES) and all(
-        line.endswith(f"[MC error 0.500% ({MONTE_CARLO_ERROR_SOURCE})]") for line in scaled
+        line.endswith("[MC error 0.500% (SPY h1)]") for line in scaled
     )
     plain = [line for line in printed if line.startswith("  har_levels ")]
     assert plain and not any("MC error" in line for line in plain)
@@ -2087,10 +2224,14 @@ def test_every_printed_monte_carlo_error_names_the_series_it_was_measured_on() -
     )
 
 
-def test_the_shipped_source_says_it_is_not_the_run_s_series() -> None:
-    """When US-3.7 re-measures on the real panel this constant is what changes, and the printed
-    form follows it; until then it must not read as SPY's."""
-    assert "not SPY" in MONTE_CARLO_ERROR_SOURCE and "probe" in MONTE_CARLO_ERROR_SOURCE
+def test_an_unmeasured_trial_line_says_so_and_names_no_series(capsys) -> None:
+    """The line an operator sees for EGARCH at h=1: not measured, and the reason there is no
+    series to name. It must not read as zero or as precision."""
+    compare_cli._report(monte_carlo_error(SHOOTOUT, 1), "  egarch11_skewt mean=1.0")
+    compare_cli._report(monte_carlo_error(SHOOTOUT, 1), "  har_levels mean=1.0")
+    egarch, har = capsys.readouterr().out.splitlines()
+    assert egarch.endswith("[MC error not measured (no measurement exists)]")
+    assert "MC error" not in har
 
 
 def test_spa_is_withheld_where_the_effective_sample_is_thin_exactly_as_dm_is() -> None:
