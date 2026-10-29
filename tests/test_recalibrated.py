@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import functools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -31,7 +32,8 @@ from test_truncation_equivalence import _synthetic
 
 import volab.models.recalibrated as recalibrated
 import volab.walkforward as wf
-from volab.errors import ModelSkip, SchemaError
+from volab.config import load_settings
+from volab.errors import DatasetNotFound, ModelSkip, SchemaError
 from volab.models.base import Cohort, Forecast, Forecaster, Model, TrainingView
 from volab.models.recalibrated import (
     CALIBRATION_POINTS,
@@ -582,3 +584,245 @@ def test_an_in_sample_mincer_zarnowitz_scores_better_and_is_refused() -> None:
     assert any(
         "completed on" in line or "origin itself" in line for line in sample_leaks(leaky, toy)
     ), "the in-sample fit passed the sample guard"
+
+
+# ---------------------------------------------------------------------------
+# The shipped 60 and 40 on the real panel, at the horizons the toy cannot reach (US-3.14).
+#
+# The toy has no usable regression pair at h >= 22, so those horizons were covered only by the
+# hand-built lattice test above, on synthetic numbers. Here the view is the one ``evaluate`` builds
+# from the curated store, read to ``dev_end`` by ``load_for`` and by nothing else, and the claims
+# are relations and refusals: nothing below is a number copied from a run.
+# ---------------------------------------------------------------------------
+
+REAL_SYMBOL = "SPY"
+# The recorded run's stride. The floor test also runs at stride 1, where one session moves the
+# pair count by exactly one and the two sides of 40 are adjacent origins.
+RECORDED_STRIDE = 5
+
+
+@functools.cache
+def real_frames(horizon: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The curated panel and targets for ``REAL_SYMBOL``, read once per horizon (about 3 s each).
+
+    Cached here and not in a module-scoped fixture: a higher-scoped fixture runs before the
+    autouse ones, so the read would escape the holdout police. The first call is made from inside
+    a test body and is policed; ``load_for`` takes no ``end`` of its own and stops at ``dev_end``.
+    Callers must not mutate the frames.
+    """
+    try:
+        return wf.load_for(load_settings(), REAL_SYMBOL, horizon)
+    except DatasetNotFound as missing:
+        pytest.fail(
+            f"the curated store holds no {REAL_SYMBOL} data ({missing}); rebuild it with "
+            "`uv run --locked python -m volab.ingest build-raw`, then `curate`, then "
+            "`python -m volab.features build`"
+        )
+
+
+class ViewRecorder:
+    """Remembers every view ``evaluate`` hands it, so a test holds the real shape of a view.
+
+    Its own name, not ``Recording``'s ``har_levels``: it sits in a cohort beside ``BASE``, and two
+    contestants of one name would share a slot in ``OriginResult.forecasts``.
+    """
+
+    name = "view_recorder"
+    fit_depends_on_horizon = True
+
+    def __init__(self) -> None:
+        self.views: list[TrainingView] = []
+
+    def fit(self, view: TrainingView) -> Forecaster:
+        self.views.append(view)
+        return BASE.fit(view)
+
+
+def walk_real(
+    horizon: int,
+    origins: list[dt.date],
+    stride: int,
+    *models: Model,
+    audit: wf.RunAudit | None = None,
+) -> tuple[wf.Evaluation, list[TrainingView]]:
+    """``evaluate`` over the real panel at ``origins``, with ``models`` beside a view recorder."""
+    panel, targets = real_frames(horizon)
+    recorder = ViewRecorder()
+    evaluation = wf.evaluate(
+        panel,
+        targets,
+        origins,
+        symbol=REAL_SYMBOL,
+        horizon=horizon,
+        calendar=get_calendar(load_settings()),
+        every=stride,
+        audit=audit,
+        cohort=Cohort("real-data-witness", (*models, recorder)),
+    )
+    return evaluation, recorder.views
+
+
+def late_origins(horizon: int, count: int) -> list[dt.date]:
+    """The last ``count`` stride-5 origins of 2023 whose target has completed, as the run's are."""
+    settings = load_settings()
+    _, targets = real_frames(horizon)
+    every = wf.scoreable_origins(
+        settings,
+        targets,
+        first=dt.date(2023, 7, 3),
+        last=dt.date(2023, 12, 29),
+        every=RECORDED_STRIDE,
+    )
+    return every[-count:]
+
+
+@pytest.mark.parametrize("horizon", [22, 66])
+def test_the_shipped_contestant_fits_on_real_data_where_the_toy_has_no_pairs(horizon: int) -> None:
+    audit = wf.RunAudit()
+    origins = late_origins(horizon, 3)
+    evaluation, views = walk_real(
+        horizon, origins, RECORDED_STRIDE, BASE, har_levels_mz(), audit=audit
+    )
+    assert [result.origin for result in evaluation.results] == origins
+    assert evaluation.refusals == ()
+    assert audit.violations() == []
+    assert [view.origin for view in views] == origins
+
+    for result, view in zip(evaluation.results, views, strict=True):
+        base, recalibrated_value = result.forecasts[BASE.name], result.forecasts["har_levels_mz"]
+        assert view.horizon == horizon and view.stride == RECORDED_STRIDE
+        # Finite and on the variance scale: the same order as the forecast it recalibrates. A
+        # sample scaled wrongly puts the intercept orders of magnitude out.
+        assert math.isfinite(recalibrated_value) and base > 0
+        assert 0.25 < recalibrated_value / base < 4, (
+            f"{result.origin}: {recalibrated_value} vs {base}"
+        )
+        # Not the plain forecast in disguise: float noise would satisfy ``!=``, so a margin.
+        assert abs(recalibrated_value - base) > 1e-3 * base
+
+        fitted = fit_recalibrated(har_levels_mz(), view)
+        assert fitted.value == recalibrated_value, "the harness and a direct fit disagree"
+        assert fitted.base_value == base
+        assert fitted.value == fitted.intercept + fitted.slope * fitted.base_value
+        assert (fitted.slope, fitted.intercept) != (1.0, 0.0)
+
+        # The regression is the least-squares line through the pairs it was handed, by the closed
+        # form and not by ``fit_ols``: the real forecasts are of order 1e-3, which is the scale the
+        # toy's 1e-6 never reached.
+        sample = fitted.calibration
+        forecasts, realized = sample["forecast"].astype(float), sample["realized"].astype(float)
+        spread = ((forecasts - forecasts.mean()) ** 2).sum()
+        slope = ((forecasts - forecasts.mean()) * (realized - realized.mean())).sum() / spread
+        assert fitted.slope == pytest.approx(slope, rel=1e-6)
+        assert fitted.intercept == pytest.approx(
+            realized.mean() - slope * forecasts.mean(), rel=1e-6
+        )
+
+        # Nothing in the sample postdates the origin, and every target in it was still pending at
+        # its own inner origin -- so ``<= origin`` is a claim about something that could be false.
+        assert sample["target_as_of"].max() <= view.origin
+        assert sample["origin"].max() < view.origin
+        assert (sample["target_as_of"] > sample["origin"]).all()
+
+
+@pytest.mark.parametrize("horizon", [22, 66])
+def test_the_sixty_point_lookback_bounds_what_the_real_fit_consumes(horizon: int) -> None:
+    (view,) = walk_real(horizon, late_origins(horizon, 1), RECORDED_STRIDE)[1]
+    shipped = fit_recalibrated(har_levels_mz(), view)
+    sample = shipped.calibration
+    assert len(sample) == CALIBRATION_POINTS
+
+    # The bound is binding: older pairs exist, and a lookback one longer takes exactly one more,
+    # the nearest-older, leaving the sixty the shipped model used untouched.
+    older = fit_recalibrated(RecalibratedHar(BASE, calibration_points=CALIBRATION_POINTS + 1), view)
+    assert len(older.calibration) == CALIBRATION_POINTS + 1
+    assert older.calibration.iloc[1:].reset_index(drop=True).equals(sample)
+    assert older.calibration["origin"].iloc[0] < sample["origin"].iloc[0]
+    assert older.value != shipped.value, "the extra pair changed nothing, so the bound is inert"
+    # And the training window the base fit consumed is far longer than the sixty-point span: the
+    # lookback bounds the regression, not the HAR underneath it.
+    assert min(as_of_dates(view.training)) < sample["origin"].min()
+    usable = view.training.dropna(subset=[*wf.HAR_REGRESSORS, view.response])
+    assert shipped.observations == len(usable)
+    assert shipped.observations > 5 * CALIBRATION_POINTS
+
+    # Sixty lattice points are sixty strides, read off the view's own session list.
+    sessions = list(view.returns.index)
+    positions = [sessions.index(inner) for inner in sample["origin"]]
+    assert {later - earlier for earlier, later in zip(positions, positions[1:], strict=False)} == {
+        RECORDED_STRIDE
+    }
+    # The newest pair is the nearest lattice point whose target had completed: at least ``horizon``
+    # sessions back, and less than one stride further than that.
+    newest = len(sessions) - 1 - positions[-1]
+    assert newest % RECORDED_STRIDE == 0 and horizon <= newest < horizon + RECORDED_STRIDE
+
+
+def pairs_at(horizon: int, stride: int, origin: dt.date) -> int:
+    """The usable calibration pairs the shipped contestant would have at ``origin``, 0 if the
+    origin cannot be fitted at all (too few training rows for ``evaluate`` to build a view)."""
+    views = walk_real(horizon, [origin], stride)[1]
+    return len(calibration_sample(BASE, views[0], CALIBRATION_POINTS)) if views else 0
+
+
+def floor_crossing(horizon: int, stride: int) -> tuple[dt.date, dt.date]:
+    """Adjacent sessions with ``MINIMUM_PAIRS - 1`` and ``MINIMUM_PAIRS`` usable pairs.
+
+    A real pair of origins, found by bisection over a stretch of 2017 to 2019 where the count
+    climbs from none to the full sixty (the first stretch with 250 training rows is what holds it
+    down): the count never falls as the origin moves later, and rises by at most one a session.
+    """
+    sessions = wf.origins_in(
+        get_calendar(load_settings()), dt.date(2017, 6, 1), dt.date(2019, 12, 31)
+    )
+    low, high = 0, len(sessions) - 1
+    assert pairs_at(horizon, stride, sessions[low]) < MINIMUM_PAIRS, "no thin origin to start from"
+    assert pairs_at(horizon, stride, sessions[high]) >= MINIMUM_PAIRS, "the count never reaches 40"
+    while high - low > 1:
+        middle = (low + high) // 2
+        if pairs_at(horizon, stride, sessions[middle]) >= MINIMUM_PAIRS:
+            high = middle
+        else:
+            low = middle
+    return sessions[low], sessions[high]
+
+
+@pytest.mark.parametrize("stride", [1, RECORDED_STRIDE])
+@pytest.mark.parametrize("horizon", [22, 66])
+def test_the_forty_pair_floor_refuses_one_pair_short_and_fits_at_forty_on_real_origins(
+    horizon: int, stride: int
+) -> None:
+    """Real origins on both sides of the shipped floor, not a lowered one and not a synthetic one.
+
+    Early in the panel the count is held down by the 250 training rows an inner fit needs, so some
+    real origin has 39 pairs and the next session has 40 (see ``floor_crossing``). The unmodified
+    ``har_levels_mz`` refuses the first with a recorded ``ModelSkip`` and fits the second."""
+    short, enough = floor_crossing(horizon, stride)
+    evaluation, views = walk_real(horizon, [short, enough], stride, BASE, har_levels_mz())
+    assert [view.origin for view in views] == [short, enough]
+    assert [len(calibration_sample(BASE, view, CALIBRATION_POINTS)) for view in views] == [
+        MINIMUM_PAIRS - 1,
+        MINIMUM_PAIRS,
+    ]
+
+    with pytest.raises(ModelSkip) as raised:
+        har_levels_mz().fit(views[0])
+    assert f"{MINIMUM_PAIRS - 1} usable calibration pair(s) at {short}" in str(raised.value)
+    assert f"fewer than the {MINIMUM_PAIRS} required" in str(raised.value)
+    fitted = fit_recalibrated(har_levels_mz(), views[1])
+    assert len(fitted.calibration) == MINIMUM_PAIRS
+    assert math.isfinite(fitted.value) and fitted.value != fitted.base_value
+
+    # Through the harness: refused and recorded against the contestant at the short origin only,
+    # with the baseline beside it still forecasting -- so the NaN is not the base in disguise.
+    short_result, enough_result = evaluation.results
+    assert [(origin, name) for origin, name, _ in evaluation.refusals] == [(short, "har_levels_mz")]
+    assert evaluation.refusals[0][2] == str(raised.value)
+    assert math.isnan(short_result.forecasts["har_levels_mz"])
+    assert math.isfinite(short_result.forecasts[BASE.name])
+    assert enough_result.forecasts["har_levels_mz"] == fitted.value
+
+    # The floor is what refused, and nothing else about that origin: one pair fewer demanded and
+    # the same view fits, on exactly the 39 pairs it has.
+    lowered = fit_recalibrated(RecalibratedHar(BASE, minimum_pairs=MINIMUM_PAIRS - 1), views[0])
+    assert len(lowered.calibration) == MINIMUM_PAIRS - 1
