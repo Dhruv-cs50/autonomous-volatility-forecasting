@@ -247,13 +247,29 @@ It has auto-archive-on-PR-close enabled and is expected to archive shortly after
 Everything load-bearing it holds is in `docs/superpowers/phase2-completion-decisions.md` through
 R142 and on its board. Plan on not being able to ask it.
 
-### One claim in its message that is not confirmed, and is left unasserted
+### One claim this ruling first declined to adopt, then verified — AMENDED 2026-10-29
 
-It reports that the user was offered "I'll read it first" and chose not to read the spec. **The
-options actually put to the user from this session were "Write the plan" and "Changes first"**,
-and the reply was "Spec looks right. Write the implementation plan." So what is established is
-that the user approved without requesting changes; whether they read it is **not** established
-here and is not recorded as though it were.
+**As first written, this section was wrong, and the correction is the Phase 2 session's.**
+
+It had reported that the user was offered "I'll read it first" and declined. This ruling answered
+that the options put to the user **from this session** were "Write the plan" and "Changes first",
+so whether they read the spec was not established. That reasoning was sound on the information
+to hand, and the conclusion was still false: the offer was made in **the Phase 2 session**, which
+this session could not see.
+
+**Verified here before amending**, rather than accepted on the second telling. A search of that
+session's transcript returns a user turn whose content is exactly `Yes, write the plan`, and its
+own contemporaneous note naming the rejected alternative: *"...ite the plan" over "I'll read it
+first", so the spec stands approved by waiver rather than review."* Two excerpts, one of them the
+user's own words.
+
+**So the fact is established: the spec is approved by waiver, not by review.** The amendment is
+made because this is the same log that carried a wrong figure for two sprints (R129), and a small
+untrue statement about the user is exactly the kind that survives by being small.
+
+**Neither the action nor the procedure changes.** The plan's load-bearing assumptions block is
+right on its own merits, whoever read what; and declining to record an unverifiable claim was
+correct, with the right repair being to go and verify it, which is what happened.
 
 The underlying point stands on its own merits regardless, and is acted on: the spec's
 load-bearing assumptions — above all R135's reconstruction — are now collected at the **top of
