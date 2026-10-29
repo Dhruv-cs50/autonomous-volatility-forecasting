@@ -1,7 +1,11 @@
 # Phase 3 sprint board — IV contestant and decision evaluators
 
 **Design:** `docs/superpowers/specs/2026-10-29-phase3-iv-and-decision-evaluators-design.md`
-**Decisions:** `docs/superpowers/phase3-decisions.md`, from R135 (R134 is Phase 2's, recorded at `8e3b65b`).
+**Decisions:** `docs/superpowers/phase3-decisions.md`. **Numbering is allocated (R150):**
+R135-R141 and **R150 onward** are Phase 3's; **R142-R149 are reserved** for the Phase 2
+completion session. The next Phase 3 ruling is **R151**, not R142 — the gap is deliberate.
+**Plan:** `docs/superpowers/plans/2026-10-29-phase3-iv-and-decision-evaluators.md`, committed at
+`6ded822`. Its load-bearing assumptions block is the first thing to read.
 **Branch:** `phase-3-iv-and-evaluators`, cut from `phase-2-completion-groundwork` at `ea050b2`.
 
 **The exit criterion is a RECONSTRUCTION, not a quoted requirement.** The framework document is
