@@ -845,6 +845,39 @@ class Evaluation:
         return out
 
 
+def with_knowable_targets(table: pd.DataFrame, knowable: pd.DataFrame, column: str) -> pd.DataFrame:
+    """The rows of ``table`` whose target had completed, each carrying its target as ``column``.
+
+    Values are read from ``knowable``, not from a dict built over the whole target frame. Under
+    the store's dedupe on ``(symbol, ts)`` the two agree, so this is not a live bug; it removes
+    the dependence on that dedupe rather than documenting it, because a frame holding two
+    vintages of one base session would otherwise have let the later one -- possibly with
+    ``as_of > origin`` -- win the lookup. Shared by ``evaluate`` and ``coverage_refusal``, so the
+    two cannot disagree about which rows are training rows.
+    """
+    emitted = list(as_of_dates(table))
+    values = {
+        stamp.date(): float(value)
+        for stamp, value in zip(
+            pd.to_datetime(knowable["ts"], utc=True), knowable[column], strict=True
+        )
+    }
+    usable = table[[day in values for day in emitted]].copy()
+    usable[column] = [values[day] for day in as_of_dates(usable)]
+    return usable
+
+
+def training_rows(usable: pd.DataFrame, column: str, required: Sequence[str] = ()) -> int:
+    """Training rows that count: non-null in the HAR regressors, the response and ``required``.
+
+    The one definition of "enough training rows", used by ``evaluate``'s sufficiency skip and by
+    ``coverage_refusal``. ``HAR_REGRESSORS`` stay an unconditional floor: they are the view's own
+    contract, and deriving them from the HARs' declarations would stop a GARCH-only cohort
+    skipping null-regressor origins.
+    """
+    return len(usable.dropna(subset=[*HAR_REGRESSORS, column, *required]))
+
+
 def evaluate(
     panel: pd.DataFrame,
     targets: pd.DataFrame,
@@ -928,6 +961,14 @@ def evaluate(
                 f"the table built through {origin} ends at {emitted[-1]}: the session span no "
                 "longer reaches the cutoff, so this origin has no row of its own"
             )
+        # A declared column the table does not have is wiring, not data: every origin would be
+        # equally broken, so the run aborts instead of skipping each origin with a reason.
+        absent = [name for name in cohort.requires if name not in table.columns]
+        if absent:
+            raise ValueError(
+                f"cohort {cohort.name!r} declares required column(s) {absent} that the feature "
+                f"table does not have; its columns are {list(table.columns)}"
+            )
         row = table.iloc[-1]
         rows.append(table.iloc[[-1]])
 
@@ -935,21 +976,11 @@ def evaluate(
         # ``knowable_targets``, by name, so a test can replace it with the wrong one and watch
         # the audit below notice -- which it could not before.
         knowable = knowable_targets(targets, origin)
-        # Values are read from ``knowable``, not from a dict built over the whole target frame.
-        # Under the store's dedupe on ``(symbol, ts)`` the two agree, so this is not a live bug;
-        # it removes the dependence on that dedupe rather than documenting it, because a frame
-        # holding two vintages of one base session would otherwise have let the later one --
-        # possibly with ``as_of > origin`` -- win the lookup.
-        values = {
-            stamp.date(): float(value)
-            for stamp, value in zip(
-                pd.to_datetime(knowable["ts"], utc=True), knowable[column], strict=True
-            )
-        }
+        # Values are read from ``knowable`` (see ``with_knowable_targets``), never from the whole
+        # target frame.
         if audit is not None and len(knowable):
             audit.record_training(origin, max(as_of_dates(knowable)))
-        usable = table[[day in values for day in emitted]].copy()
-        usable[column] = [values[day] for day in as_of_dates(usable)]
+        usable = with_knowable_targets(table, knowable, column)
         # Built from ``knowable``, not from a dict over the whole target frame: the rule above
         # applies to the completion date for exactly the reason it applied to the value. A column
         # the HARs never read -- ``fit_ols`` selects its regressors and response by name -- that
@@ -962,7 +993,7 @@ def evaluate(
         }
         usable["target_as_of"] = [completed[day] for day in as_of_dates(usable)]
 
-        if len(usable.dropna(subset=[*HAR_REGRESSORS, column])) < minimum_training:
+        if training_rows(usable, column, cohort.requires) < minimum_training:
             skipped.append((origin, f"only {len(usable)} knowable training row(s)"))
             continue
         # An origin whose own regressors are null has no forecast, and that is skipped rather
@@ -970,7 +1001,9 @@ def evaluate(
         # missing bar has a null monthly component, because an incomplete window is null here and
         # never partially filled. Scoring it as a NaN would quietly shrink the denominator of
         # every loss while the origin still appeared to have been evaluated.
-        null_regressors = [name for name in HAR_REGRESSORS if pd.isna(row[name])]
+        null_regressors = [
+            name for name in (*HAR_REGRESSORS, *cohort.requires) if pd.isna(row[name])
+        ]
         if null_regressors:
             skipped.append((origin, f"null regressor(s) at the origin: {null_regressors}"))
             continue
@@ -1029,6 +1062,77 @@ def evaluate(
         contestants=cohort.contestants,
         refusals=tuple(refusals),
         cohort=cohort.name,
+    )
+
+
+def coverage_refusal(
+    stored: pd.DataFrame,
+    targets: pd.DataFrame,
+    required: Sequence[str],
+    origins: Sequence[dt.date],
+    *,
+    horizon: int,
+    minimum_training: int,
+) -> str | None:
+    """Why ``required`` cannot support a run over ``origins``, or ``None`` when it can.
+
+    A configuration is refused when, at the **first requested origin**, a column in ``required``
+    has fewer than ``minimum_training`` sessions that are both non-null **and have a completed
+    target** -- the predicate ``evaluate`` counts, through the same ``with_knowable_targets`` and
+    ``training_rows``. That is keyed to the ``minimum_training``-th such session and not to the
+    column's first: a window beginning at the first non-null session would otherwise pass, and the
+    contestant would then decline on thin training while ``Evaluation.comparable`` intersected
+    those origins out of **every** contestant's loss (US-3.9, measured: 69 of the 119 origins a
+    VIX1D contestant would cost the shootout are caught by the first-session rule, 119 by this).
+    ``targets`` and ``horizon`` are required, not conveniences: the qualifying origin sits ``h``
+    sessions after the ``minimum_training``-th non-null session, and a signature without them can
+    only compute the wrong boundary.
+
+    **An interior gap is not refused.** It is a data accident (bond holidays with XNYS open), and
+    ``evaluate`` skips the origin for everyone with the column named. A window too thin for the
+    HAR floor alone is not this refusal's either: the column is not to blame, and that is today's
+    per-origin skipping.
+
+    ``stored`` is the persisted feature table ``run_configuration`` already holds for the
+    truncation comparison, and ``targets`` is the frame it passes to ``evaluate``: no read path is
+    opened and no ``end`` is taken. The decision reads the whole of both, sessions after the first
+    origin included. That is a configuration-level decision and not a forecast -- the standing of
+    ``scoreable_origins``, which reads the whole target frame to choose origins -- and no value
+    from it reaches a fit; ``RunAudit`` continues to police the per-origin builds.
+    """
+    if not required or not origins:
+        return None
+    absent = [name for name in required if name not in stored.columns]
+    if absent:
+        raise ValueError(
+            f"required column(s) {absent} are not in the stored feature table, "
+            f"whose columns are {list(stored.columns)}"
+        )
+    column = target_column(horizon)
+    stored_days = list(as_of_dates(stored))
+
+    def rows(origin: dt.date, extra: Sequence[str]) -> int:
+        built = stored[[day <= origin for day in stored_days]]
+        usable = with_knowable_targets(built, knowable_targets(targets, origin), column)
+        return training_rows(usable, column, extra)
+
+    first = origins[0]
+    if rows(first, ()) < minimum_training or rows(first, required) >= minimum_training:
+        return None
+    short = [name for name in required if rows(first, (name,)) < minimum_training] or list(required)
+    qualifying = next((o for o in origins if rows(o, required) >= minimum_training), None)
+    where = (
+        f"none of the {len(origins)} requested origins qualifies"
+        if qualifying is None
+        else f"the first that qualifies is {qualifying}, and {origins.index(qualifying)} of the "
+        f"{len(origins)} requested origins precede it"
+    )
+    return (
+        f"column(s) {short} have fewer than {minimum_training} sessions that are both non-null and "
+        f"have a completed target at the first requested origin {first} (h={horizon}); {where}. "
+        "Every other contestant's origins before that would be intersected out of its loss "
+        "(Evaluation.comparable). Move --from to the first origin that qualifies, or run the "
+        "contestant in a cohort of its own"
     )
 
 
@@ -1115,8 +1219,10 @@ class ConfigurationOutcome:
     trials: tuple[Trial, ...]
     # Ledger lines this configuration appended.
     written: int
-    # An audit recorded a read past a cutoff (R63). Nothing was appended for this configuration;
-    # the caller flushes what earlier ones counted and exits non-zero.
+    # Nothing was appended for this configuration and the caller exits non-zero. Two causes with
+    # the same consequence: an audit recorded a read past a cutoff (R63), or the cohort's declared
+    # columns do not cover the window (``coverage_refusal``), in which case ``evaluation`` is
+    # ``None`` because no fit was made.
     refused: bool
     # The built rows differ from the persisted table. The caller's exit status, not a refusal.
     disagrees: bool
@@ -1188,6 +1294,32 @@ def run_configuration(
         )
     report(f"  {len(origins)} origin(s) from {origins[0]} to {origins[-1]}")
 
+    # Coverage is checked only for a cohort that declares a requirement, so every existing run's
+    # output is unchanged, and the stored table is read once for this and the comparison below.
+    stored: pd.DataFrame | None = None
+    loaded = False
+    if cohort.requires:
+        stored, loaded = persisted(), True
+        if stored is None:
+            # Nothing to check is not a pass, and not a refusal on no evidence either: it falls
+            # through to ``evaluate``'s per-origin skips, which still record each reason.
+            report("  coverage: NOT CHECKED, the store holds no built table")
+        else:
+            reason = coverage_refusal(
+                stored,
+                targets,
+                cohort.requires,
+                origins,
+                horizon=horizon,
+                minimum_training=minimum_training,
+            )
+            if reason is not None:
+                # Before ``evaluate``, or the fits this exists to prevent have already run.
+                report(f"  REFUSED: {reason}")
+                return ConfigurationOutcome(
+                    evaluation=None, trials=(), written=0, refused=True, disagrees=False
+                )
+
     audit = RunAudit()
     evaluation = evaluate(
         panel,
@@ -1216,7 +1348,9 @@ def run_configuration(
         "every one stopping at its own origin"
     )
 
-    compared, difference = compare_against_persisted(evaluation.features, persisted())
+    compared, difference = compare_against_persisted(
+        evaluation.features, stored if loaded else persisted()
+    )
     disagrees = False
     if compared == 0:
         # Nothing to compare is not agreement. Printing "0 of 0 identical" and exiting 0 would be

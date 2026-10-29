@@ -662,17 +662,13 @@ def test_a_missing_final_return_is_an_empty_window_and_a_skip() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("method", get_args(Method))
-@pytest.mark.parametrize("o", [0, 1])
-@pytest.mark.parametrize("volatility", ["GARCH", "EGARCH"])
+@pytest.mark.parametrize(("volatility", "o", "method"), sorted(LEGAL))
 def test_only_egarch_is_bounded_and_the_bound_follows_the_variance_process(
     volatility: Any, o: int, method: Any
 ) -> None:
     """Over every legal pairing, built positionally as ``GarchModel`` is everywhere: a bound that
     were a field would have broken this construction, and one set at a call site could disagree
     with the specification. Derived, it cannot."""
-    if (volatility, o, method) not in LEGAL:
-        pytest.skip("not a legal pairing")
     spec = GarchModel("x", volatility, o, method)
     assert spec.domain.max_horizon == (1 if volatility == "EGARCH" else None)
 

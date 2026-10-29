@@ -10,14 +10,28 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import re
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
+import pandas as pd
 import pytest
-from model_conformance import SYMBOL, Spy, make_toy, run_cohort
+from model_conformance import SYMBOL, Spy, Toy, make_toy, run_cohort
 
+from volab.features.build import build_features
 from volab.features.targets import HORIZONS
 from volab.models import base
 from volab.models.base import UNRESTRICTED, Cohort, Domain, Measurement, Model, Sampling
+from volab.sessions import get_calendar
+from volab.walkforward import (
+    ConfigurationOutcome,
+    Trial,
+    coverage_refusal,
+    evaluate,
+    run_configuration,
+    scoreable_origins,
+)
 
 
 class _Declares:
@@ -189,3 +203,257 @@ def test_the_driver_refuses_before_counting_an_empty_window() -> None:
             report=lambda _: None,
         )
     assert written == []
+
+
+# -- Form 2: a contestant that can answer, but only over a shorter history ------------------------
+#
+# The toy carries SPY's bars beside every VIX-family and FRED series, so a late-starting series is
+# a row filter on the panel and needs no fixture surgery. VIX1D feeds ``iv_h1``.
+
+REQUIRED = "iv_h1"
+MINIMUM = 10
+
+
+def _sessions(toy: Toy) -> list[dt.date]:
+    # VIX, which every test leaves whole: VIX1D is the series they cut.
+    return sorted(set(toy.panel[toy.panel["symbol"] == "VIX"]["as_of"]))
+
+
+def _without_vix1d_before(toy: Toy, day: dt.date) -> Toy:
+    """``toy`` with VIX1D beginning at ``day``, as the real series begins on 2022-05-13."""
+    gone = (toy.panel["symbol"] == "VIX1D") & (toy.panel["as_of"] < day)
+    return dataclasses.replace(toy, panel=toy.panel[~gone].reset_index(drop=True))
+
+
+def _without_vix1d_on(toy: Toy, day: dt.date) -> Toy:
+    """``toy`` with one interior VIX1D session missing: a data accident, not a window error."""
+    gone = (toy.panel["symbol"] == "VIX1D") & (toy.panel["as_of"] == day)
+    return dataclasses.replace(toy, panel=toy.panel[~gone].reset_index(drop=True))
+
+
+def _stored(toy: Toy) -> pd.DataFrame:
+    """The feature table the store would hold for ``toy``: built once, from the whole panel."""
+    return build_features(
+        toy.panel, through=_sessions(toy)[-1], calendar=get_calendar(toy.settings)
+    )
+
+
+@dataclass
+class _Driven:
+    outcome: ConfigurationOutcome
+    lines: list[Trial]
+    reports: list[str]
+
+
+def _drive(
+    toy: Toy,
+    cohort: Cohort,
+    *,
+    first: dt.date,
+    last: dt.date,
+    every: int = 1,
+    minimum: int = MINIMUM,
+    persisted: Callable[[], pd.DataFrame | None] | None = None,
+) -> _Driven:
+    lines: list[Trial] = []
+    reports: list[str] = []
+
+    def append(trials: Sequence[Trial]) -> int:
+        lines.extend(trials)
+        return len(trials)
+
+    outcome = run_configuration(
+        toy.settings,
+        SYMBOL,
+        toy.horizon,
+        toy.panel,
+        toy.targets,
+        calendar=get_calendar(toy.settings),
+        first=first,
+        last=last,
+        every=every,
+        minimum_training=minimum,
+        cohort=cohort,
+        persisted=(lambda: _stored(toy)) if persisted is None else persisted,
+        append=append,
+        report=reports.append,
+    )
+    return _Driven(outcome, lines, reports)
+
+
+def _needs() -> Spy:
+    return Spy("needs_iv", domain=Domain(requires=(REQUIRED,)))
+
+
+def _first_origin_evaluate_stops_skipping(
+    toy: Toy, first: dt.date, last: dt.date, minimum: int = MINIMUM
+) -> dt.date:
+    """The oracle: run ``evaluate`` itself, over the origins the driver would use, and read the
+    first one not skipped for want of training rows. Nothing here shares code with
+    ``coverage_refusal``."""
+    origins = scoreable_origins(toy.settings, toy.targets, first=first, last=last, every=1)
+    evaluation = evaluate(
+        toy.panel,
+        toy.targets,
+        origins,
+        symbol=SYMBOL,
+        horizon=toy.horizon,
+        calendar=get_calendar(toy.settings),
+        minimum_training=minimum,
+        every=1,
+        cohort=Cohort("oracle", (_needs(),)),
+    )
+    thin = {day for day, why in evaluation.skipped if "knowable training row" in why}
+    return next(day for day in origins if day not in thin)
+
+
+def test_a_contestant_whose_required_column_starts_mid_window_refuses_the_run() -> None:
+    """The red case. VIX1D begins at session 100 and the window begins at 60, so for 40 sessions
+    the contestant has no ``iv_h1`` and every other contestant's origin would be intersected away.
+    Refused, with the column, the origin that does qualify and how many precede it."""
+    toy = _without_vix1d_before(make_toy(5), _sessions(make_toy(5))[100])
+    contestant = _needs()
+    driven = _drive(
+        toy,
+        Cohort("iv", (Spy("plain"), contestant)),
+        first=_sessions(toy)[60],
+        last=_sessions(toy)[-1],
+    )
+    assert driven.outcome.refused and driven.outcome.written == 0 and driven.lines == []
+    assert contestant.views == [], "the refusal came after a fit"
+    text = "\n".join(driven.reports)
+    assert "REFUSED" in text and REQUIRED in text
+    qualifying = _first_origin_evaluate_stops_skipping(toy, _sessions(toy)[60], _sessions(toy)[-1])
+    assert str(qualifying) in text
+    assert re.search(r"\b\d+ of the \d+ requested origins precede it", text), text
+    assert "--from" in text and "cohort of its own" in text, "both remedies are named"
+
+
+def test_the_coverage_refusal_agrees_with_the_origin_evaluate_stops_skipping() -> None:
+    """At a long horizon, where the target lag bites hardest.
+
+    First: a window beginning exactly at the column's first non-null session is **still**
+    refused. A rule keyed to the first non-null session passes it, and the contestant then
+    declines on thin training until it has ``minimum_training`` rows with completed targets while
+    the intersection quietly removes those origins from everyone's loss. Second: the origin the
+    refusal names is the origin ``evaluate`` itself stops skipping, so the two cannot disagree by
+    ``h`` sessions -- the error the design's first draft made.
+
+    The toy's SPY has a missing bar, which leaves the 22-session HAR component null for 22
+    sessions after it; VIX1D therefore begins after that, at session 96, with a minimum of 3."""
+    minimum = 3
+    base = make_toy(22)
+    sessions = _sessions(base)
+    start = sessions[96]
+    toy = _without_vix1d_before(base, start)
+    last = sessions[-1]
+
+    driven = _drive(toy, Cohort("iv", (_needs(),)), first=start, last=last, minimum=minimum)
+    assert driven.outcome.refused, "the window begins at the first non-null session and is refused"
+
+    expected = _first_origin_evaluate_stops_skipping(toy, start, last, minimum)
+    assert expected >= sessions[96 + 22], "the lag moved the boundary 22 sessions past the start"
+    assert str(expected) in "\n".join(driven.reports)
+
+    # Moving --from to the named origin is accepted, so the remedy the message gives works.
+    accepted = _drive(toy, Cohort("iv", (_needs(),)), first=expected, last=last, minimum=minimum)
+    assert not accepted.outcome.refused and accepted.outcome.written > 0
+
+
+def test_an_interior_gap_in_a_required_column_skips_the_origin_for_everyone_with_a_reason() -> None:
+    """The FRED case, measured at 3 of 247 origins: a data accident. Not refused; the origin is
+    skipped for every contestant, recorded, and every trial's origin count drops by exactly one."""
+    base = make_toy(5)
+    sessions = _sessions(base)
+    gap = sessions[100]
+    window = {"first": sessions[98], "last": sessions[110]}
+    cohort = Cohort("iv", (Spy("plain"), _needs()))
+
+    clean = _drive(base, cohort, **window)
+    gappy_toy = _without_vix1d_on(base, gap)
+    gappy = _drive(gappy_toy, cohort, **window)
+
+    assert not gappy.outcome.refused
+    assert gappy.outcome.evaluation is not None
+    skipped = dict(gappy.outcome.evaluation.skipped)
+    assert gap in skipped and REQUIRED in skipped[gap]
+    assert {t.model: t.origins for t in clean.lines} == {"plain": 13, "needs_iv": 13}
+    assert {t.model: t.origins for t in gappy.lines} == {"plain": 12, "needs_iv": 12}
+
+
+def test_coverage_is_reported_as_not_checked_when_the_store_holds_no_built_table() -> None:
+    """Nothing to check is not a pass: said in the voice of the truncation line, and the run
+    falls through to the per-origin skips instead of being refused on no evidence."""
+    toy = make_toy(5)
+    sessions = _sessions(toy)
+    driven = _drive(
+        toy,
+        Cohort("iv", (_needs(),)),
+        first=sessions[98],
+        last=sessions[104],
+        persisted=lambda: None,
+    )
+    text = "\n".join(driven.reports)
+    assert "coverage: NOT CHECKED, the store holds no built table" in text
+    assert not driven.outcome.refused and driven.outcome.written > 0
+
+
+def test_a_cohort_that_requires_nothing_prints_no_coverage_line_and_reads_the_store_once() -> None:
+    """Existing output must not change, and ``persisted`` is a store read in the CLI."""
+    toy = make_toy(5)
+    sessions = _sessions(toy)
+    reads: list[int] = []
+
+    def persisted() -> pd.DataFrame | None:
+        reads.append(1)
+        return _stored(toy)
+
+    plain = _drive(
+        toy,
+        Cohort("plain", (Spy("plain"),)),
+        first=sessions[98],
+        last=sessions[104],
+        persisted=persisted,
+    )
+    assert "coverage" not in "\n".join(plain.reports) and len(reads) == 1
+    reads.clear()
+    needing = _drive(
+        toy, Cohort("iv", (_needs(),)), first=sessions[98], last=sessions[104], persisted=persisted
+    )
+    assert len(reads) == 1, "one read serves the coverage check and the truncation comparison"
+    assert not needing.outcome.refused and needing.outcome.written > 0
+
+
+def test_a_declared_column_the_feature_table_does_not_have_is_a_value_error() -> None:
+    """Wiring, not data: every origin would be equally broken, so ``evaluate`` aborts the run
+    rather than skipping each origin with a reason."""
+    toy = make_toy(5)
+    typo = Spy("typo", domain=Domain(requires=("iv_h2",)))
+    with pytest.raises(ValueError, match="iv_h2"):
+        run_cohort(toy, Cohort("c", (typo,)))
+
+
+def test_the_coverage_check_is_silent_about_a_window_too_early_for_everyone() -> None:
+    """A window where the HAR floor alone is thin is today's behaviour -- per-origin skips for
+    every contestant -- and the column is not to blame, so it is not this refusal's to make."""
+    toy = make_toy(5)
+    sessions = _sessions(toy)
+    reason = coverage_refusal(
+        _stored(toy),
+        toy.targets,
+        (REQUIRED,),
+        [sessions[24]],
+        horizon=5,
+        minimum_training=MINIMUM,
+    )
+    assert reason is None
+
+
+def test_coverage_refusal_of_nothing_required_is_none() -> None:
+    toy = make_toy(5)
+    assert (
+        coverage_refusal(
+            _stored(toy), toy.targets, (), [_sessions(toy)[60]], horizon=5, minimum_training=MINIMUM
+        )
+        is None
+    )
