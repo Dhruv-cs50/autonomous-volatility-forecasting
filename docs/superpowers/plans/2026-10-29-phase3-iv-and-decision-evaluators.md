@@ -460,7 +460,13 @@ commit** by reading `tests/test_import_discipline.py` rather than assuming it.
 def test_gaussian_var_and_es_at_one_percent() -> None:
     var, es = var_es(variance=0.0004, alpha=0.01)       # sigma = 0.02
     assert var == pytest.approx(0.02 * 2.3263478740, rel=1e-9)
-    assert es == pytest.approx(0.02 * 2.6652142437, rel=1e-9)
+    assert es == pytest.approx(0.02 * 2.6652142203458, rel=1e-9)   # corrected: see below
+
+
+# The ES multiplier above was written as 2.6652142437 in the first draft of this plan. **Wrong**,
+# by 8.8e-9 relative — it fails its own `rel=1e-9`. The true value is phi(z_0.01)/0.01 =
+# 2.6652142203458, confirmed independently by quadrature of E[-X | X < -z]. Caught by task 5's
+# implementer, which also added a quadrature cross-check rather than trusting any literal.
 
 
 def test_es_is_always_more_extreme_than_var() -> None:
