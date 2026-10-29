@@ -38,6 +38,7 @@ from volab.compare.cohorts import (
     COHORTS,
     MONTE_CARLO_ERROR_SOURCE,
     SHOOTOUT,
+    answering,
     monte_carlo_error,
 )
 from volab.compare.series import loss_series
@@ -45,6 +46,7 @@ from volab.compare.sink import Comparison, JsonlSink, Sink
 from volab.config import Settings, load_settings
 from volab.errors import DatasetNotFound
 from volab.features.targets import HORIZONS
+from volab.models.base import Cohort
 from volab.paths import Tier
 from volab.sessions import get_calendar, sessions_between
 from volab.store import load_panel
@@ -81,6 +83,35 @@ def _persisted(settings: Settings, symbol: str) -> pd.DataFrame | None:
     except DatasetNotFound:
         return None
     return frame.sort_values("as_of").reset_index(drop=True)
+
+
+def _refuse_horizons(cohort: Cohort, horizons: Sequence[int]) -> bool:
+    """Print why ``cohort`` cannot be evaluated at each of ``horizons`` it cannot answer, and the
+    registered cohorts that can. ``True`` when anything was refused.
+
+    The text is ``cohort.refusal(h)`` itself, the function ``evaluate`` raises from, so this guard
+    is not a second rule that could word it or fire differently. It exists because refusing here
+    costs the operator nothing, where ``evaluate``'s ``ValueError`` would arrive mid-run, after
+    the git state and the storage reads, as a traceback (R62's posture for ``--to``: refused
+    loudly, before work).
+    """
+    refused = False
+    for horizon in horizons:
+        reason = cohort.refusal(horizon)
+        if reason is None:
+            continue
+        refused = True
+        print(reason)
+        # The mapping this module resolves names from, not ``cohorts.COHORTS`` by import: the
+        # alternative has to be one the operator can actually pass to ``--cohort``.
+        alternatives = answering(horizon, COHORTS)
+        if alternatives:
+            print(
+                f"  run instead: --cohort {' or --cohort '.join(alternatives)} --horizon {horizon}"
+            )
+        else:
+            print(f"  no registered cohort can be evaluated at h={horizon}")
+    return refused
 
 
 def _report(errors: dict[str, float | None], line: str) -> None:
@@ -214,7 +245,8 @@ def main(argv: Sequence[str] | None = None, *, sink: Sink | None = None) -> int:
         action="append",
         type=int,
         choices=list(HORIZONS),
-        help="repeatable; defaults to every configured horizon",
+        help="repeatable; defaults to the horizons the cohort can answer, which for a cohort with "
+        "a horizon-limited member is fewer than every configured horizon",
     )
     parser.add_argument(
         "--from",
@@ -244,7 +276,6 @@ def main(argv: Sequence[str] | None = None, *, sink: Sink | None = None) -> int:
     )
     arguments = parser.parse_args(argv)
     arguments.symbols = arguments.symbols or list(settings.universe)
-    arguments.horizons = arguments.horizons or list(HORIZONS)
 
     # The seal, enforced rather than documented (R62).
     if arguments.stop > settings.splits.dev_end:
@@ -253,6 +284,27 @@ def main(argv: Sequence[str] | None = None, *, sink: Sink | None = None) -> int:
             "the holdout is sealed and this entry point has no key"
         )
         return 1
+
+    # Before the git state and every load. An explicit horizon is refused when the cohort cannot
+    # answer it, because an operator who named a horizon meant it. The default is the cohort's own
+    # set, so the bare command is correct rather than refused: the old default was every horizon,
+    # which for the shootout put an estimate of infinity on the ledger.
+    cohort = COHORTS[arguments.cohort]
+    if arguments.horizons:
+        if _refuse_horizons(cohort, arguments.horizons):
+            return 1
+    else:
+        arguments.horizons = list(cohort.horizons(HORIZONS))
+        if not arguments.horizons:
+            print(f"cohort {cohort.name!r} answers none of the configured horizons {HORIZONS}")
+            return 1
+        left_out = [h for h in HORIZONS if h not in arguments.horizons]
+        if left_out:
+            running = ", ".join(map(str, arguments.horizons))
+            print(
+                f"--horizon not given: running h={running}, the horizons cohort {cohort.name!r} "
+                f"can answer; left out: {cohort.refusal(left_out[0])}"
+            )
 
     print(f"storage root {settings.storage_root}")
     print(f"reads stop at dev_end {settings.splits.dev_end}")

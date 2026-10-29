@@ -46,7 +46,9 @@ from volab.compare.cohorts import (
     MONTE_CARLO_ERROR_SOURCE,
     MULTISTEP,
     SHOOTOUT,
+    answering,
     monte_carlo_error,
+    multistep_members,
 )
 from volab.compare.dm import (
     Column,
@@ -70,6 +72,7 @@ from volab.compare.multiple import (
 from volab.compare.series import LossSeries, loss_series
 from volab.compare.sink import COMPARISON_LEDGER, Comparison, JsonlSink, Sink
 from volab.config import load_settings
+from volab.features.targets import HORIZONS
 from volab.models.base import (
     Cohort,
     Domain,
@@ -1395,6 +1398,45 @@ def test_the_multistep_cohort_is_the_shootout_without_egarch_and_is_runnable_by_
     ), "the reason is the specification-level fact, not 'it was unstable'"
 
 
+def test_the_cohort_horizons_are_derived_from_the_declarations() -> None:
+    """By value, so the registered pairing -- the shootout at h=1, the multistep cohort above --
+    is what is asserted. Nobody types either list: EGARCH's bound produces the first."""
+    assert SHOOTOUT.horizons(HORIZONS) == (1,)
+    assert MULTISTEP.horizons(HORIZONS) == (1, 5, 22, 66)
+    assert BASELINE_COHORT.horizons(HORIZONS) == (1, 5, 22, 66)
+    assert [SHOOTOUT.refusal(h) is None for h in HORIZONS] == [True, False, False, False]
+    assert all(MULTISTEP.refusal(h) is None for h in HORIZONS)
+
+
+def test_the_shootout_refusal_names_egarch_and_its_bound() -> None:
+    reason = SHOOTOUT.refusal(22)
+    assert reason is not None
+    assert "phase2-shootout" in reason and "'egarch11_skewt'" in reason and "h<=1" in reason
+    assert "22" in reason
+
+
+def test_a_second_horizon_limited_contestant_stays_out_of_the_multistep_cohort() -> None:
+    """Under the old name filter this needed someone to remember. Derived, a contestant that
+    declares ``max_horizon=5`` is excluded because of what it declares."""
+
+    short = _Limited(BASELINE_COHORT.models[2], 5, name="short_five")
+    members = (*SHOOTOUT.models, short)
+    kept = multistep_members(members)
+    assert short not in kept and EGARCH11_SKEWT not in kept
+    assert [m.name for m in kept] == [m.name for m in MULTISTEP.models]
+    assert multistep_members(SHOOTOUT.models) == MULTISTEP.models
+    # The cohort the shootout becomes with it is still refused at h=5 only by EGARCH's bound.
+    assert Cohort("x", members).horizons(HORIZONS) == (1,)
+
+
+def test_answering_names_the_registered_cohorts_that_can_answer_a_horizon() -> None:
+    assert answering(22) == (MULTISTEP.name,)
+    assert answering(1) == (SHOOTOUT.name, MULTISTEP.name)
+    wide = Cohort("wide", BASELINE_COHORT.models)
+    assert answering(22, {"narrow": TOY_LIMITED, "wide": wide}) == ("wide",)
+    assert answering(22, {"narrow": TOY_LIMITED}) == ()
+
+
 def test_the_shootout_cohort_contains_the_baseline_models_unchanged() -> None:
     assert SHOOTOUT.models[:3] == BASELINE_COHORT.models
     assert SHOOTOUT.models[3:6] == GARCH_MODELS
@@ -1605,9 +1647,34 @@ class _Scaled:
         return _ScaledForecaster(self.base.fit(view), self.factor)
 
 
+@dataclasses.dataclass(frozen=True)
+class _Limited:
+    """A baseline model that declares it answers only up to ``max_horizon``."""
+
+    base: Model
+    max_horizon: int
+    name: str = "rw_limited"
+
+    @property
+    def fit_depends_on_horizon(self) -> bool:
+        return self.base.fit_depends_on_horizon
+
+    @property
+    def domain(self) -> Domain:
+        return Domain(max_horizon=self.max_horizon)
+
+    def fit(self, view: TrainingView) -> Forecaster:
+        return self.base.fit(view)
+
+
 TOY_COHORT = Cohort(
     "toy-shootout", (*BASELINE_COHORT.models, _Scaled(BASELINE_COHORT.models[2], 1.3))
 )
+# A cohort a run is refused at h=5, and the unrestricted one a refusal should point at.
+TOY_LIMITED = Cohort(
+    "toy-limited", (*BASELINE_COHORT.models, _Limited(_Scaled(BASELINE_COHORT.models[2], 1.3), 1))
+)
+TOY_WIDE = Cohort("toy-wide", BASELINE_COHORT.models)
 WINDOW = ["--from", "2024-03-01", "--to", "2024-06-28", "--minimum-training", "20"]
 
 
@@ -1808,6 +1875,134 @@ class _ListSink:
         self.comparisons.extend(records)
         self.stamps.add((at, sha, dirty))
         return len(records)
+
+
+class _Registry:
+    """The toy registry the refusal tests run against: one limited cohort, one that can answer."""
+
+    def __init__(self, shootout: _Entry) -> None:
+        shootout.monkeypatch.setattr(
+            compare_cli, "COHORTS", {TOY_LIMITED.name: TOY_LIMITED, TOY_WIDE.name: TOY_WIDE}
+        )
+        self.entry = shootout
+        self.sink = _ListSink()
+
+    def run(self, *argv: str) -> int:
+        return int(compare_cli.main(["run", "--cohort", TOY_LIMITED.name, *argv], sink=self.sink))
+
+
+@pytest.fixture
+def registry(shootout: _Entry) -> _Registry:
+    return _Registry(shootout)
+
+
+def test_the_compare_cli_refuses_a_cohort_above_its_horizon_and_writes_nothing(
+    registry: _Registry, capsys
+) -> None:
+    """The red case that matters most. The trap is not "a wrong number" but "a plausible number",
+    so the assertion that matters is that no number was produced: on the real cohort the old
+    behaviour was 7 contestants x 3 symbols x 2 losses of ordinary-looking lines, one of them an
+    estimate of infinity."""
+    code = registry.run("--symbol", "SPY", "--horizon", "5", *WINDOW)
+    printed = capsys.readouterr().out
+    assert code == 1, printed
+    assert "'rw_limited'" in printed and "h<=1" in printed
+    assert registry.sink.trials == [] and registry.sink.comparisons == []
+    assert not (registry.entry.root / "data").exists()
+    assert "git " not in printed and "storage root" not in printed, "it refused before any work"
+
+
+def test_the_printed_refusal_is_the_cohorts_own_text(registry: _Registry, capsys) -> None:
+    """A guard, not a second rule: the CLI and ``evaluate`` cannot word it differently."""
+    registry.run("--symbol", "SPY", "--horizon", "5", *WINDOW)
+    reason = TOY_LIMITED.refusal(5)
+    assert reason is not None and reason in capsys.readouterr().out
+
+
+def test_the_refusal_names_a_cohort_that_can_answer_the_horizon(
+    registry: _Registry, capsys
+) -> None:
+    """A refusal nobody can act on is a worse trap than the original."""
+    registry.run("--symbol", "SPY", "--horizon", "5", *WINDOW)
+    printed = capsys.readouterr().out
+    assert TOY_WIDE.name in printed and TOY_LIMITED.name not in printed.split("instead")[-1]
+
+
+def test_the_refusal_says_so_when_no_registered_cohort_can_answer(
+    registry: _Registry, capsys
+) -> None:
+    registry.entry.monkeypatch.setattr(compare_cli, "COHORTS", {TOY_LIMITED.name: TOY_LIMITED})
+    assert registry.run("--symbol", "SPY", "--horizon", "5", *WINDOW) == 1
+    assert "no registered cohort" in capsys.readouterr().out
+
+
+def test_one_out_of_domain_horizon_among_several_refuses_the_whole_run(
+    registry: _Registry, capsys
+) -> None:
+    """Not a partial run: h=1 is answerable, but an operator who named h=5 meant it, and the
+    refusal comes before h=1 is evaluated so there is nothing half-written to explain."""
+    code = registry.run("--symbol", "SPY", "--horizon", "1", "--horizon", "5", *WINDOW)
+    capsys.readouterr()
+    assert code == 1 and registry.sink.trials == []
+
+
+def test_the_real_shootout_is_refused_above_h1_before_anything_is_read(
+    capsys, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The invocation the story exists for, against the real registry and the real settings. It
+    must return before a git state, a storage read or a fit. Both are armed to fail loudly, so a
+    regression of the guard is an assertion and not a twenty-minute run of the real shootout."""
+
+    def unreachable(*_: object, **__: object) -> None:
+        raise AssertionError("the refusal came after work had started")
+
+    monkeypatch.setattr(compare_cli, "load_for", unreachable)
+    monkeypatch.setattr(compare_cli, "git_state", unreachable)
+    for horizon in ("5", "22", "66"):
+        sink = _ListSink()
+        code = compare_cli.main(
+            ["run", "--cohort", SHOOTOUT.name, "--horizon", horizon, "--symbol", "SPY"], sink=sink
+        )
+        printed = capsys.readouterr().out
+        assert code == 1, printed
+        assert "'egarch11_skewt'" in printed and "h<=1" in printed
+        assert MULTISTEP.name in printed
+        assert sink.trials == [] and sink.comparisons == []
+
+
+def test_the_default_horizons_are_the_cohorts_own_and_the_run_says_why(
+    registry: _Registry, capsys
+) -> None:
+    """A bare ``run`` over a cohort limited to h=1 evaluates h=1 only, and does not make the
+    operator pass a flag to get correct behaviour."""
+    code = registry.run("--symbol", "SPY", *WINDOW)
+    printed = capsys.readouterr().out
+    assert code == 0, printed
+    assert {trial.horizon for trial in registry.sink.trials} == {1}
+    assert "SPY h1:" in printed and "SPY h5:" not in printed
+    assert "--horizon" in printed and "'rw_limited'" in printed, "it must say why"
+
+
+def test_the_default_says_nothing_when_it_narrows_nothing(shootout: _Entry, capsys) -> None:
+    sink = _ListSink()
+    code = compare_cli.main(
+        ["run", "--cohort", TOY_COHORT.name, "--symbol", "SPY", "--horizon", "1", *WINDOW],
+        sink=sink,
+    )
+    printed = capsys.readouterr().out
+    assert code == 0
+    assert "defaults to" not in printed
+
+
+def test_a_cohort_that_answers_no_configured_horizon_is_refused(shootout: _Entry, capsys) -> None:
+    nothing = Cohort("toy-nothing", (_Limited(BASELINE_COHORT.models[0], 0),))
+    shootout.monkeypatch.setattr(compare_cli, "COHORTS", {nothing.name: nothing})
+    sink = _ListSink()
+    code = compare_cli.main(
+        ["run", "--cohort", nothing.name, "--symbol", "SPY", *WINDOW], sink=sink
+    )
+    printed = capsys.readouterr().out
+    assert code == 1 and "answers none" in printed and sink.trials == []
 
 
 def test_a_run_through_another_sink_writes_no_file_at_all(shootout: _Entry, capsys) -> None:

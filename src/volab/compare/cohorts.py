@@ -21,11 +21,17 @@ path count, measured in R114); only h = 1 is credible, because ``sigma2_{t+1}`` 
 and takes no expectation. The refusal is therefore available a priori from the model and the error
 law alone, with no draw and no target -- which is what separates it from a threshold on the
 forecast's size (look-ahead, selecting on the random draw, and unworkable because
-``Evaluation.comparable`` intersects origins across contestants). Run :data:`SHOOTOUT` at h=1 and
-:data:`MULTISTEP` at the rest. **Nothing enforces that pairing**: ``Cohort``,
-``evaluate`` and ``Evaluation.contestants`` have no notion of the horizons a contestant can answer,
-and a contestant declaring them is the durable fix and a design change, not this module's.
-Witness for membership, on its own line:
+``Evaluation.comparable`` intersects origins across contestants).
+
+**The pairing is enforced, and derived (US-3.9).** Each contestant declares a
+:class:`~volab.models.base.Domain`; ``GarchModel`` derives EGARCH's bound (``max_horizon=1``) from
+its specification. A cohort asked for a horizon some member cannot answer is **refused**
+(``Cohort.refusal``, raised by ``evaluate`` and checked first by the CLI), never silently narrowed:
+``Trial.cohort`` is the only record of which contestants a ledger line was scored against, and the
+ledger already holds 14 ``phase2-shootout`` lines at each of h=5 and h=22 meaning seven. So
+``SHOOTOUT.horizons(HORIZONS) == (1,)`` falls out of the declaration, :data:`MULTISTEP`'s members
+are those that answer every horizon above 1 (:func:`multistep_members`), and ``--horizon`` defaults
+to the cohort's own set. Nobody types either list. Witness for membership, on its own line:
 ``test_the_multistep_cohort_is_the_shootout_without_egarch_and_is_runnable_by_name``.
 
 **The Monte Carlo error table (R102).** ``egarch11_skewt`` is the one contestant that forecasts by
@@ -57,8 +63,11 @@ that for GJR was making it exact (R127) -- which removed it from this table enti
 
 from __future__ import annotations
 
-from volab.models.base import Cohort
-from volab.models.garch import EGARCH11_SKEWT, GARCH_MODELS, SIMULATIONS, GarchModel
+from collections.abc import Mapping
+
+from volab.features.targets import HORIZONS
+from volab.models.base import Cohort, Model
+from volab.models.garch import GARCH_MODELS, SIMULATIONS, GarchModel
 from volab.models.recalibrated import har_levels_mz
 from volab.walkforward import BASELINE_COHORT
 
@@ -67,15 +76,37 @@ SHOOTOUT = Cohort(
     (*BASELINE_COHORT.models, *GARCH_MODELS, har_levels_mz()),
 )
 
-MULTISTEP = Cohort(
-    "phase2-shootout-multistep",
-    tuple(model for model in SHOOTOUT.models if model.name != EGARCH11_SKEWT.name),
-)
+
+def multistep_members(models: tuple[Model, ...]) -> tuple[Model, ...]:
+    """Those of ``models`` that answer every configured horizon above 1, in their order.
+
+    Derived from the declarations. A name filter needed someone to remember it when a second
+    horizon-limited contestant arrived; this excludes it because of what it declares.
+    """
+    return tuple(
+        model
+        for model in models
+        if all(model.domain.answers(horizon) for horizon in HORIZONS if horizon >= 2)
+    )
+
+
+MULTISTEP = Cohort("phase2-shootout-multistep", multistep_members(SHOOTOUT.models))
 
 # Resolved by name from the command line. The baseline is deliberately absent: its run is the
 # walk-forward CLI's, and a second path to producing lines under that name is a second way for the
 # recorded run to be confused with something else.
 COHORTS: dict[str, Cohort] = {SHOOTOUT.name: SHOOTOUT, MULTISTEP.name: MULTISTEP}
+
+
+def answering(horizon: int, registry: Mapping[str, Cohort] | None = None) -> tuple[str, ...]:
+    """Names of the cohorts in ``registry`` that can be evaluated at ``horizon``, in its order.
+
+    What a refusal points the operator at, so nobody has to remember the pairing. ``registry``
+    defaults to :data:`COHORTS`; the command line passes the mapping *it* resolved names from.
+    """
+    cohorts = COHORTS if registry is None else registry
+    return tuple(name for name, cohort in cohorts.items() if cohort.refusal(horizon) is None)
+
 
 # Where the figures below were measured, **printed beside every one of them**. They come from the
 # probe's synthetic persistent, leveraged, skew-t series -- not from SPY, QQQ or any series a
