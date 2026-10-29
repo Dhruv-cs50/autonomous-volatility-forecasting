@@ -56,7 +56,7 @@ Each has already cost this project time, so each is stated rather than assumed:
 | US-3.11 | Implement the closed form, retire GJR's simulation | `src/volab/models/garch.py`, `src/volab/compare/cohorts.py`, `tests/` | GJR forecasts exactly at every horizon, leaves R115 entirely, and `MONTE_CARLO_ERROR_PERCENT` loses its GJR rows because `monte_carlo_error()` keys off `method == "simulation"` | **done** `2e8b023`, `39e644c`, `75ae610`, `fb58468`, `a21bb8c` — **`75ae610` is the boundary sha** R124's provenance decision rests on. All five witnesses built, including W2 (arch's analytic GJR *is* the `kappa = 1/2` recursion), which turns R118's root cause into a test. R91's table amended to `("GARCH", 1, "exact")` (R127) |
 | US-3.12 | The one clean recorded run | — | **one** shootout on a clean tree with nothing else committing, replacing both the dirty-tree part 2 and GJR's simulated rows in a single pass (R122) | **done** `4865619`, `6e0da08` — zero dirty flags, ledger 264 -> 414, truncation equivalence `N of N` at all twelve configurations, and 132 of 150 overlapping values bit-identical with all 18 changes being GJR at h>=2 (R128) |
 | US-3.13 | The transitive numeric ban the GJR design specified and nobody built | `tests/test_import_discipline.py` | the sealed path reaches no numeric library *indirectly* either, with two guards against the walk passing emptily | **done** `234b85d`, corrected in R129 — the first version's walk missed parent-package `__init__` edges *and said in its docstring that it did not*, and skipped relative imports; both closed, `arch` added to `NUMERIC_ROOTS`, and verified by planting numpy in `models/__init__.py` on the real tree |
-| US-3.6 | `delivery-auditor` over this board against git at the sprint close | — | the board and the repository agree, and the board is corrected where they do not | todo, last |
+| US-3.6 | `delivery-auditor` over this board against git at the sprint close | — | the board and the repository agree, and the board is corrected where they do not | **done** (R129) — it confirmed five of six claims with measured numbers and found six things wrong, including a witness of mine whose docstring described a stronger test than the code performed. Every finding acted on in `b81c455` |
 
 **US-3.1b reported DONE_WITH_CONCERNS, and the concerns were right.** It kept the design as
 written rather than departing from it silently, and raised two things it could not decide alone:
@@ -221,3 +221,44 @@ its null changed.
   repository. Partial unblocks exist that do not: HAR-RV-IV can use the already-ingested VIX
   family, and the VaR/ES and vol-target evaluators need only forecasts and prices.
 - **Phase 5 needs Postgres and LLM API keys**, which an agent cannot provision.
+
+
+## Sprint close
+
+**Phase 2 completion is done, with one story carried and one criterion deviated from.** Closed on
+the strength of R129's audit rather than on assertion: every story the board calls done has a
+commit, its witnesses exist by name and bite, and the gates are green — `ruff`, `ruff format`,
+`mypy --strict` over 37 files, **1360 tests passing**.
+
+**What the phase exits on.** `python -m volab.leaderboard` prints a reproducible leaderboard per
+symbol and horizon from the two committed ledgers, computing nothing of its own: seven contestants
+at h=1 and six above it, both losses, DM with the Harvey correction, MCS and SPA, `n_eff` beside
+every multiple-comparison figure and a printed refusal wherever the window is too thin. The
+recorded run behind it is `4865619` and `6e0da08`, on a clean tree, with
+`N of N origins identical` at all twelve configurations.
+
+**The deviation, which is not ticked off.** The framework says *"logged in MLflow"*. This phase
+logs to the append-only git-tracked ledger and **refuses MLflow for a stated reason** (R84): 3.x
+needs `pyarrow<26`, the project pins `>=26`, and relaxing it would change the engine under
+`store.py` on which the byte-exact comparator — and therefore the whole point-in-time claim —
+rests. Any write-up citing Phase 2 must say which criterion it met.
+
+**Carried into Phase 3, deliberately and not quietly:**
+
+1. **US-3.9 is not started.** Nothing enforces the cohort-to-horizon pairing, so `--cohort
+   phase2-shootout --horizon 22` would include `egarch11_skewt` where R114 established it has no
+   finite multi-step mean, and the output would look entirely ordinary while being meaningless.
+   Narrower than it was — GJR is exact at every horizon now, so EGARCH is the only horizon-limited
+   contestant — but still an operator trap, and the durable fix is a contestant declaring its own
+   horizons.
+2. **`har_levels_mz` has no witness at h >= 22.** It has ledger lines there now, which is not the
+   same thing as a test. R129 flagged it and it is **not** discharged.
+3. **`egarch11_skewt` still simulates at h=1** by decision (R124), so R115 withholds its
+   significance although its h=1 Monte-Carlo error is identically zero. Revisit only after US-3.9,
+   and only with the post-hoc-selection reasoning in R124 in view.
+4. **`Splits` still has no holdout end**, which collides head-on with Phase 4's unattended daily
+   runs and needs a user decision before a single Phase 4 story exists.
+
+**What is not Phase 2's and never was:** the holdout read itself. The pre-registration is a DRAFT
+with section 4 blank by design; filling it, committing on a clean tree and recording the content
+hash is the registration, and it is a one-way door belonging to the user.
