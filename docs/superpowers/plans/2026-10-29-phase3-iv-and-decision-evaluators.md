@@ -546,7 +546,11 @@ def test_the_horizon_return_is_the_log_return_from_the_origin_to_h_sessions_late
 
 def test_it_reads_no_further_than_dev_end() -> None:
     # The standing argument, executable: an origin whose horizon runs past dev_end has no entry
-    # rather than a value read past the seal. The autouse holdout fixture is the second check.
+    # rather than a value read past the seal. NOTE: the autouse holdout fixture is NOT a second
+    # check here -- it fires only when `end` exceeds the repository's configured dev_end
+    # (2025-12-31), and a synthetic store sealed earlier can never trip it. The real guards are
+    # the assertion that every `load_panel` call carries `end == dev_end`, and a sentinel close
+    # beyond the seal that must not appear in any value.
     assert late_origin not in horizon_returns(settings, "SPY", [late_origin], horizon=66)
 
 
@@ -585,6 +589,32 @@ git commit -m "Add Gaussian VaR/ES and the FZ0 joint loss as a LossSeries (P3-05
 - Produces: `CoverageResult` (frozen: `breaches: int`, `expected: float`, `kupiec_p: float | None`,
   `christoffersen_p: float | None`, `refusal: str | None`);
   `coverage(hits: Sequence[bool], alpha: float, *, horizon: int, stride: int) -> CoverageResult`.
+
+- [ ] **Step 0: Pin the invariant task 5's refusal rests on**
+
+`decision_series` **raises** when a comparable origin has no signed return, rather than dropping
+it. Task 5's review established this is safe by construction and not merely loud: the variance
+target is NaN if *any* return in `t+1..t+h` is NaN, while `horizon_returns` drops only when an
+**endpoint** close is missing, so the target's origin set is a strict subset of the returns' on
+the data axis; and on the time axis `scoreable_origins` and `horizon_returns` both require
+`t+h <= dev_end` on the same calendar. Hence `comparable("qlike")` is a subset of
+`horizon_returns.keys()` **for any symbol**, not only the one that was probed.
+
+That subset relation is the premise the whole raise-rather-than-drop choice rests on, and task 5
+left it stated rather than tested. Pin it:
+
+```python
+def test_every_comparable_origin_has_a_signed_return(...) -> None:
+    """The premise behind `decision_series` raising rather than dropping. A missing
+    interior return already NaNs the variance target, so a comparable origin cannot lack a
+    signed one."""
+    returns = horizon_returns(settings, symbol, origins, horizon=horizon)
+    assert evaluation.comparable("qlike") <= set(returns)
+```
+
+Build a toy whose panel has an **interior** missing close and a **boundary** missing close, and
+assert the subset holds in both. A boundary gap must drop the origin from `returns`; an interior
+gap must already have dropped it from `comparable`.
 
 - [ ] **Step 1: Write the failing tests**
 
