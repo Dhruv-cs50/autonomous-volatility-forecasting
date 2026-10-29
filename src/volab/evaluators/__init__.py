@@ -24,6 +24,10 @@ against and is never what one is fitted on. The tests demonstrate this rather th
 origins' stride is shorter than the horizon, since their overlapping returns break the independence
 both tests assume; ``coverage``'s docstring says why a HAC correction was not used instead.
 
+``vol_target`` sizes a volatility-targeted position from the same forecasts and reports its P&L.
+Close-to-close returns ignore distributions, so that P&L is wrong on ex-dates; the result carries
+the ``has_distribution`` count beside it as a disclosure, not a correction.
+
 This package is off the sealed point-in-time path and may import scipy: nothing sealed imports it,
 and ``tests/test_import_discipline.py`` would fail if a sealed module reached it.
 
@@ -45,7 +49,7 @@ from scipy.stats import chi2, norm
 
 from volab.compare.series import LossSeries
 from volab.config import Settings
-from volab.features.build import CLOSE_COLUMN
+from volab.features.build import CLOSE_COLUMN, SESSIONS_PER_YEAR
 from volab.ingest.curate import BARS_DATASET
 from volab.panel import KEYS, as_of_dates
 from volab.sessions import get_calendar, sessions_between
@@ -331,4 +335,137 @@ def coverage(hits: Sequence[bool], alpha: float, *, horizon: int, stride: int) -
     )
     return CoverageResult(
         breaches, expected, _chi_squared_p(kupiec), _chi_squared_p(independence), None
+    )
+
+
+# Both are committed literals, not configuration: every alternative would be a trial.
+#
+# ``TARGET_VOL`` is 10% annualised, and it is round because it is round. It is calibrated to
+# nothing in this repository: no result here, on any series, suggests ten rather than eight or
+# fifteen. The choice sets the scale of the P&L and, through ``target / cap``, where the cap binds.
+#
+# ``POSITION_CAP`` is a leverage ceiling of two times notional, so a vanishing variance forecast
+# cannot ask for an unbounded position. It is an absolute position, not a multiple of the target,
+# and it binds wherever the forecast's annualised volatility is below ``target / cap`` -- 5% at
+# these defaults (``test_vol_target_cap_binds_below_a_five_percent_annualised_forecast...``).
+# That is low for an equity index, so the cap is expected to bind rarely on real data (not measured
+# here); it is there for the degenerate forecast, and ``capped_origins`` says how often it fired.
+TARGET_VOL = 0.10
+POSITION_CAP = 2.0
+
+
+@dataclass(frozen=True)
+class VolTargetResult:
+    """The P&L of a volatility-targeted position, and the ex-date count printed beside it.
+
+    ``mean_return`` and ``realized_vol`` are annualised from the horizon; ``sharpe`` is their
+    ratio, with no risk-free rate subtracted (none is available here). ``turnover`` is the mean
+    absolute change of position between consecutive origins. ``realized_vol``, ``sharpe`` and
+    ``turnover`` are ``None`` where they are undefined: with one origin, which has neither a sample
+    standard deviation nor a change of position, and ``sharpe`` also where the P&L is constant.
+    ``capped_origins`` counts origins whose uncapped position exceeded the cap, and
+    ``distribution_sessions`` the ``has_distribution`` sessions the caller passed.
+    """
+
+    mean_return: float
+    realized_vol: float | None
+    sharpe: float | None
+    turnover: float | None
+    capped_origins: int
+    distribution_sessions: int
+
+
+def vol_target(
+    forecasts: Sequence[float],
+    returns: Sequence[float],
+    *,
+    horizon: int,
+    target: float = TARGET_VOL,
+    cap: float = POSITION_CAP,
+    distributions: Sequence[bool],
+) -> VolTargetResult:
+    """The P&L of sizing a long position at each origin to a target annualised volatility.
+
+    ``forecasts[i]`` is the variance forecast of the ``horizon``-session log return from origin
+    ``i`` and ``returns[i]`` is that return, signed (``horizon_returns``). The position is
+
+        min(target / (sqrt(forecast) * sqrt(252 / horizon)), cap)
+
+    -- the target over the forecast's annualised volatility, at most ``cap`` -- and the P&L at the
+    origin is the position times the return. It is long-only because ``target`` and ``cap`` are
+    refused unless positive. ``turnover`` leaves out the first position's build from flat, and the
+    statistics are annualised as if the holdings followed one another (``252 / horizon`` per
+    year). **There is no stride argument:** each P&L is one ``horizon``-session holding, and where
+    the origins are closer than ``horizon`` the holdings overlap, so these are per-holding
+    statistics and not the return of a strategy that compounds.
+
+    **The P&L is wrong on ex-dates, and ``distribution_sessions`` is the printed measure of that.**
+    Close-to-close log returns are computed from raw closes, which fall by the dividend on an
+    ex-date: a long position's P&L is understated across every holding that contains one. Curated
+    bars carry no adjusted close, only ``has_distribution``, and building a total-return series is
+    out of scope here. So the count is a **disclosure, not a correction** -- nothing in the P&L
+    uses it. ``distributions`` is the ``has_distribution`` flag of each session in the window the
+    P&L spans, and the caller supplies it: this function takes no dates and cannot check that the
+    flags cover the window. It is the move ``MONTE_CARLO_ERROR_SOURCE`` made before US-3.9b retired
+    it: a figure that cannot be fixed here is printed with what it is wrong about.
+
+    ``TARGET_VOL`` is calibrated to nothing in this repository (see its comment). A forecast that
+    is not strictly positive and finite is refused rather than turned into an ``inf`` position or
+    a ``nan``, and so is a return that is not finite.
+    """
+    if horizon < 1:
+        raise ValueError(f"the forecast horizon must be at least 1 to annualise it, got {horizon}")
+    if not 0.0 < target < math.inf:
+        raise ValueError(f"target volatility must be positive and finite, got {target}")
+    if not 0.0 < cap < math.inf:
+        raise ValueError(f"position cap must be positive and finite, got {cap}")
+    if len(forecasts) != len(returns):
+        raise ValueError(f"{len(forecasts)} forecasts but {len(returns)} returns")
+    if not forecasts:
+        raise ValueError("vol_target needs at least one origin")
+
+    periods = SESSIONS_PER_YEAR / horizon  # holdings per year
+    scale = math.sqrt(periods)
+    positions: list[float] = []
+    pnl: list[float] = []
+    capped = 0
+    for index, (variance, realized) in enumerate(zip(forecasts, returns, strict=True)):
+        if not 0.0 < variance < math.inf:
+            raise ValueError(
+                f"variance forecast at position {index} must be positive and finite, got {variance}"
+            )
+        if not math.isfinite(realized):
+            raise ValueError(f"return at position {index} must be finite, got {realized}")
+        wanted = target / (math.sqrt(variance) * scale)
+        if wanted > cap:
+            capped += 1
+        positions.append(min(wanted, cap))
+        pnl.append(positions[-1] * realized)
+
+    count = len(pnl)
+    mean_pnl = math.fsum(pnl) / count
+    volatility: float | None = None
+    sharpe: float | None = None
+    turnover: float | None = None
+    if count > 1:
+        # Exactly zero for a constant series, which the arithmetic below would only approach.
+        spread = (
+            0.0
+            if min(pnl) == max(pnl)
+            else math.sqrt(math.fsum((x - mean_pnl) ** 2 for x in pnl) / (count - 1))
+        )
+        volatility = spread * scale
+        if volatility > 0.0:
+            sharpe = mean_pnl * periods / volatility
+        steps = [
+            abs(after - before) for before, after in zip(positions, positions[1:], strict=False)
+        ]
+        turnover = math.fsum(steps) / len(steps)
+    return VolTargetResult(
+        mean_return=mean_pnl * periods,
+        realized_vol=volatility,
+        sharpe=sharpe,
+        turnover=turnover,
+        capped_origins=capped,
+        distribution_sessions=sum(bool(flag) for flag in distributions),
     )

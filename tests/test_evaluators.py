@@ -26,7 +26,9 @@ synthetic one under ``tmp_path``.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
+import inspect
 import math
 from collections.abc import Sequence
 from pathlib import Path
@@ -46,7 +48,18 @@ import volab.walkforward as wf
 from volab.compare import analyse
 from volab.config import Settings, Splits, load_settings
 from volab.errors import HoldoutViolation
-from volab.evaluators import ALPHAS, coverage, decision_series, fz0, horizon_returns, var_es
+from volab.evaluators import (
+    ALPHAS,
+    POSITION_CAP,
+    TARGET_VOL,
+    coverage,
+    decision_series,
+    fz0,
+    horizon_returns,
+    var_es,
+    vol_target,
+)
+from volab.features.build import SESSIONS_PER_YEAR
 from volab.features.targets import build_targets
 from volab.models.base import Cohort
 from volab.panel import as_of_dates
@@ -1059,3 +1072,243 @@ def test_a_coverage_result_is_frozen() -> None:
     result = coverage(SPREAD, alpha=0.01, horizon=1, stride=1)
     with pytest.raises(AttributeError):
         result.breaches = 0  # type: ignore[misc]
+
+
+# ---------------------------------------------------------------------------
+# vol_target -- position, P&L, turnover, and the ex-date count printed beside them
+# ---------------------------------------------------------------------------
+
+NO_FLAGS: list[bool] = []
+
+
+def _annualiser(horizon: int) -> float:
+    return SESSIONS_PER_YEAR / horizon
+
+
+def _position(variance: float, horizon: int, *, target: float = TARGET_VOL) -> float:
+    """The uncapped position, written out: target over the forecast's annualised volatility."""
+    return target / (math.sqrt(variance) * math.sqrt(_annualiser(horizon)))
+
+
+def _mean(values: Sequence[float]) -> float:
+    return sum(values) / len(values)
+
+
+def _sample_std(values: Sequence[float]) -> float:
+    centre = _mean(values)
+    return math.sqrt(sum((v - centre) ** 2 for v in values) / (len(values) - 1))
+
+
+def test_vol_target_position_is_target_over_the_annualised_forecast_volatility() -> None:
+    # sigma_h = 0.02 over five sessions, times sqrt(252 / 5) = 7.0993: 0.1 / 0.14199 = 0.7043.
+    result = vol_target([0.0004], [0.01], horizon=5, distributions=NO_FLAGS)
+    position = 0.7042952122737638
+    assert result.capped_origins == 0
+    # One origin: the P&L is the position times the return, annualised from the horizon.
+    assert result.mean_return == pytest.approx(position * 0.01 * 252 / 5, rel=1e-12)
+    # And a different target moves it in proportion -- the position is linear in `target`.
+    doubled = vol_target([0.0004], [0.01], horizon=5, target=0.2, distributions=NO_FLAGS)
+    assert doubled.mean_return == pytest.approx(2 * result.mean_return, rel=1e-12)
+
+
+def test_vol_target_statistics_are_those_of_the_position_times_return_series() -> None:
+    """P&L, its annualised mean and volatility, the Sharpe ratio and the turnover, by hand."""
+    horizon = 5
+    forecasts = [0.0004, 0.0009, 0.0016, 0.0009]
+    returns = [0.012, -0.031, 0.020, -0.004]
+    positions = [_position(v, horizon) for v in forecasts]
+    pnl = [p * r for p, r in zip(positions, returns, strict=True)]
+
+    result = vol_target(forecasts, returns, horizon=horizon, distributions=NO_FLAGS)
+
+    assert result.mean_return == pytest.approx(_mean(pnl) * 252 / horizon, rel=1e-12)
+    assert result.realized_vol == pytest.approx(
+        _sample_std(pnl) * math.sqrt(252 / horizon), rel=1e-12
+    )
+    assert result.sharpe == pytest.approx(result.mean_return / result.realized_vol, rel=1e-12)
+    # The mean absolute change between consecutive positions: three changes among four origins,
+    # the initial build from flat not among them.
+    changes = [abs(b - a) for a, b in zip(positions, positions[1:], strict=False)]
+    assert len(changes) == 3
+    assert result.turnover == pytest.approx(_mean(changes), rel=1e-12)
+    assert result.capped_origins == 0
+
+
+def _draws_for(count: int, sigma: float, *, seed: int = 7) -> list[float]:
+    return [float(x) for x in np.random.default_rng(seed).normal(0.0, sigma, count)]
+
+
+def test_vol_target_realizes_about_the_target_volatility_when_the_forecast_is_right() -> None:
+    # 2000 draws at the forecast's own sigma: the sample std is within ~4 / sqrt(2n) = 6% of it.
+    horizon, sigma = 5, 0.045
+    result = vol_target(
+        [sigma**2] * 2000, _draws_for(2000, sigma), horizon=horizon, distributions=NO_FLAGS
+    )
+    assert result.capped_origins == 0
+    assert result.realized_vol == pytest.approx(TARGET_VOL, rel=0.06)
+
+
+@pytest.mark.parametrize("scale", [4.0, 0.25])
+def test_vol_target_realized_volatility_falls_with_the_square_root_of_the_variance_forecast(
+    scale: float,
+) -> None:
+    """Both directions, on shared draws: a forecast k times too large runs 1 / sqrt(k) of the vol.
+
+    The position is ``target / sigma`` and the forecasts are constant here, so the P&L series is a
+    constant multiple of the returns and the ratio is exact, not statistical. Over-forecasting
+    under-runs the target (a half at k = 4) and under-forecasting over-runs it (a double at
+    k = 1/4); a position proportional to ``1 / variance`` would give a quarter and a four.
+    """
+    horizon, sigma = 5, 0.045
+    returns = _draws_for(500, sigma)
+    right = vol_target([sigma**2] * 500, returns, horizon=horizon, distributions=NO_FLAGS)
+    wrong = vol_target([sigma**2 * scale] * 500, returns, horizon=horizon, distributions=NO_FLAGS)
+    assert wrong.capped_origins == 0, "the cap is not what is being measured"
+    assert wrong.realized_vol == pytest.approx(right.realized_vol / math.sqrt(scale), rel=1e-12)
+    assert (wrong.realized_vol < right.realized_vol) == (scale > 1)
+    # A margin, not a float-noise tie.
+    assert abs(wrong.realized_vol - right.realized_vol) > 0.3 * right.realized_vol
+
+
+def test_vol_target_cap_binds_on_a_near_zero_variance_forecast() -> None:
+    # Review Focus 1, the vol-target half. No ``cap=`` is passed: the default is what is shown to
+    # apply. The uncapped position here is ~1e5, so a missing ``min`` is unmistakable.
+    result = vol_target([1e-12], [0.01], horizon=5, distributions=NO_FLAGS)
+    assert result.capped_origins == 1
+    assert result.mean_return == pytest.approx(POSITION_CAP * 0.01 * 252 / 5, rel=1e-12)
+
+
+@pytest.mark.parametrize("cap", [1.0, 2.0, 3.0])
+def test_vol_target_cap_sets_the_position_wherever_it_binds(cap: float) -> None:
+    # Every raw position here is ~1e4, so each origin sits at the cap and the P&L is the cap times
+    # the return: the cap is the position, not a bound that is only reported.
+    returns = [0.01, -0.02, 0.03]
+    result = vol_target([1e-12] * 3, returns, horizon=5, cap=cap, distributions=NO_FLAGS)
+    assert result.capped_origins == 3
+    assert result.mean_return == pytest.approx(cap * _mean(returns) * 252 / 5, rel=1e-12)
+    assert result.turnover == 0.0, "three origins at one cap do not trade"
+
+
+def test_vol_target_a_position_exactly_at_the_cap_is_not_counted_as_capped() -> None:
+    # ``capped_origins`` counts origins the cap *changed*; a position equal to it is unchanged.
+    variance, horizon = 4e-4, 5
+    at_the_cap = _position(variance, horizon)
+    on = vol_target([variance], [0.01], horizon=horizon, cap=at_the_cap, distributions=NO_FLAGS)
+    below = vol_target(
+        [variance], [0.01], horizon=horizon, cap=at_the_cap * 0.999, distributions=NO_FLAGS
+    )
+    assert (on.capped_origins, below.capped_origins) == (0, 1)
+
+
+def test_vol_target_cap_that_binds_nowhere_changes_nothing() -> None:
+    # Above every raw position the cap is not in the result at all: two such caps agree with each
+    # other and with the uncapped formula.
+    forecasts, returns = [4e-4, 9e-4, 1.6e-3], [0.01, -0.02, 0.03]
+    low = vol_target(forecasts, returns, horizon=5, cap=100.0, distributions=NO_FLAGS)
+    high = vol_target(forecasts, returns, horizon=5, cap=200.0, distributions=NO_FLAGS)
+    uncapped = [_position(v, 5) * r for v, r in zip(forecasts, returns, strict=True)]
+    assert low == high and low.capped_origins == 0
+    assert low.mean_return == pytest.approx(_mean(uncapped) * 252 / 5, rel=1e-12)
+
+
+def test_vol_target_cap_binds_below_a_five_percent_annualised_forecast_and_not_above() -> None:
+    # The uncapped position is 0.10 / annualised vol, so the default cap of 2.0 binds exactly where
+    # the forecast's annualised volatility is under 5%.
+    horizon = 5
+    for annual_vol, capped in ((0.049, 1), (0.051, 0)):
+        variance = annual_vol**2 / _annualiser(horizon)
+        result = vol_target([variance], [0.01], horizon=horizon, distributions=NO_FLAGS)
+        assert result.capped_origins == capped, annual_vol
+
+
+def test_vol_target_defaults_are_the_module_constants() -> None:
+    defaults = inspect.signature(vol_target).parameters
+    assert defaults["target"].default is TARGET_VOL and defaults["cap"].default is POSITION_CAP
+    assert TARGET_VOL == 0.10 and POSITION_CAP == 2.0
+
+
+@pytest.mark.parametrize("bad", [0.0, -1e-4, float("nan"), float("inf")])
+def test_vol_target_refuses_a_variance_forecast_that_is_not_positive_and_finite(bad: float) -> None:
+    # Review Focus 1. The position divides by sqrt(variance): zero is a division, a negative a nan.
+    # The origin is named so that a long run does not die without a locus.
+    with pytest.raises(ValueError, match="variance forecast at position 1 must be positive and "):
+        vol_target([4e-4, bad], [0.01, 0.01], horizon=5, distributions=NO_FLAGS)
+
+
+def test_vol_target_refuses_forecasts_and_returns_of_different_lengths() -> None:
+    with pytest.raises(ValueError, match=r"3 forecasts but 2 returns"):
+        vol_target([4e-4] * 3, [0.01] * 2, horizon=5, distributions=NO_FLAGS)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_vol_target_refuses_a_return_that_is_not_finite(bad: float) -> None:
+    # A nan return would make every statistic nan without saying whose it was.
+    with pytest.raises(ValueError, match="return at position 0 must be finite"):
+        vol_target([4e-4, 4e-4], [bad, 0.01], horizon=5, distributions=NO_FLAGS)
+
+
+def test_vol_target_refuses_no_origins() -> None:
+    with pytest.raises(ValueError, match="needs at least one origin"):
+        vol_target([], [], horizon=5, distributions=NO_FLAGS)
+
+
+def test_vol_target_refuses_a_horizon_below_one() -> None:
+    with pytest.raises(ValueError, match="horizon must be at least 1 to annualise"):
+        vol_target([4e-4], [0.01], horizon=0, distributions=NO_FLAGS)
+
+
+@pytest.mark.parametrize("target", [0.0, -0.1, float("nan"), float("inf")])
+def test_vol_target_refuses_a_target_that_is_not_positive_and_finite(target: float) -> None:
+    # The dividend-bias note below -- a long position -- holds only because this is refused.
+    with pytest.raises(ValueError, match="target volatility must be positive and finite"):
+        vol_target([4e-4], [0.01], horizon=5, target=target, distributions=NO_FLAGS)
+
+
+@pytest.mark.parametrize("cap", [0.0, -2.0, float("nan"), float("inf")])
+def test_vol_target_refuses_a_cap_that_is_not_positive_and_finite(cap: float) -> None:
+    with pytest.raises(ValueError, match="position cap must be positive and finite"):
+        vol_target([4e-4], [0.01], horizon=5, cap=cap, distributions=NO_FLAGS)
+
+
+def test_vol_target_with_one_origin_withholds_what_needs_two_rather_than_inventing_it() -> None:
+    result = vol_target([4e-4], [0.01], horizon=5, distributions=NO_FLAGS)
+    assert result.mean_return == pytest.approx(0.7042952122737638 * 0.01 * 252 / 5, rel=1e-12)
+    # A sample standard deviation and a change of position each need a second origin.
+    assert result.realized_vol is None and result.sharpe is None and result.turnover is None
+
+
+def test_vol_target_withholds_a_sharpe_ratio_over_a_constant_pnl() -> None:
+    # Identical positions and returns: zero volatility, so the ratio is not a number. These values
+    # are chosen because the mean of three copies of this P&L is *not* the P&L to the last bit
+    # (it is off by 8.7e-19), so a spread computed from deviations alone would be 1e-18, not zero,
+    # and the ratio would be a huge finite number.
+    result = vol_target([9e-4] * 3, [0.013] * 3, horizon=5, distributions=NO_FLAGS)
+    assert result.realized_vol == 0.0 and result.sharpe is None
+    assert result.turnover == 0.0 and result.mean_return > 0
+
+
+def test_vol_target_reports_the_ex_date_count_inside_the_window() -> None:
+    flags = [i in (2, 9, 15) for i in range(20)]
+    result = vol_target([4e-4] * 3, [0.01, -0.02, 0.03], horizon=5, distributions=flags)
+    assert result.distribution_sessions == 3
+    assert vol_target([4e-4], [0.01], horizon=5, distributions=[]).distribution_sessions == 0
+
+
+def test_vol_target_prints_the_ex_date_count_and_does_not_correct_for_it() -> None:
+    """A disclosure, not a correction: the flags move the count and nothing else."""
+    forecasts, returns = [4e-4, 9e-4, 1.6e-3], [0.01, -0.02, 0.03]
+    clean = vol_target(forecasts, returns, horizon=5, distributions=[False] * 12)
+    flagged = vol_target(forecasts, returns, horizon=5, distributions=[True] * 12)
+    assert (clean.distribution_sessions, flagged.distribution_sessions) == (0, 12)
+    assert dataclasses.replace(flagged, distribution_sessions=0) == clean
+
+
+def test_vol_target_cannot_be_called_without_saying_what_the_distribution_flags_are() -> None:
+    with pytest.raises(TypeError, match="distributions"):
+        vol_target([4e-4], [0.01], horizon=5)  # type: ignore[call-arg]
+
+
+def test_a_vol_target_result_is_frozen() -> None:
+    result = vol_target([4e-4], [0.01], horizon=5, distributions=NO_FLAGS)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        result.capped_origins = 5  # type: ignore[misc]
