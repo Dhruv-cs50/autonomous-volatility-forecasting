@@ -769,9 +769,15 @@ Run: `uv run --locked python -m pytest tests/test_recalibrated.py -v -k h22`
 
 - [ ] **Step 3: Make it pass**
 
-If it already passes, plant `value=outer.value` in `src/volab/models/recalibrated.py` — the
-mutation R131 records — confirm the test FAILS, and revert. A test that passes against the
-stripped recalibration is not a witness. **Exclusive `src/` while the plant is in place.**
+If it already passes, plant `value=outer.value` — the mutation R131 records — and confirm the
+test FAILS. A test that passes against the stripped recalibration is not a witness.
+
+**Run the plant in a scratch copy of the repo, not in `src/` here.** Copy the tree to the
+scratchpad, plant there, and `print(volab.__file__)` before running to confirm the copy imports
+its *own* `src`. Disjoint file sets are not enough protection: on 2026-10-28 an architect found
+`recalibrated.py` with the recalibration stripped and the suite three-red while another agent's
+plant-and-revert was live, and both agents' file sets were disjoint (R131). A plant in a shared
+`src/` is visible to every concurrent agent and reads as a genuine regression.
 
 - [ ] **Step 4: Confirm the revert and commit**
 
