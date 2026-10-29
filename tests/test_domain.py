@@ -9,9 +9,11 @@ be expressed wrongly (``GarchModel`` derives it), and is acted on before any fit
 from __future__ import annotations
 
 import dataclasses
+import datetime as dt
 from pathlib import Path
 
 import pytest
+from model_conformance import SYMBOL, Spy, make_toy, run_cohort
 
 from volab.features.targets import HORIZONS
 from volab.models import base
@@ -134,3 +136,56 @@ def test_the_declaration_module_names_no_numeric_library() -> None:
     source = Path(base.__file__).read_text()
     for forbidden in ("numpy", "scipy", "arch"):
         assert f"import {forbidden}" not in source and f"from {forbidden}" not in source
+
+
+# -- evaluate and the driver refuse a cohort at a horizon a member cannot answer -------------------
+
+
+def test_evaluate_refuses_a_cohort_at_a_horizon_a_member_cannot_answer() -> None:
+    """``ValueError`` from ``evaluate`` itself, so the guard does not live only in the CLI, and
+    raised before any fit: no contestant is handed a view."""
+    toy = make_toy(5)
+    narrow = Spy("narrow", domain=Domain(max_horizon=1))
+    wide = Spy("wide")
+    cohort = Cohort("limited", (wide, narrow))
+    with pytest.raises(ValueError, match=r"'narrow'.*h<=1"):
+        run_cohort(toy, cohort)
+    assert wide.views == [] and narrow.views == [], "the refusal came after a fit"
+
+
+def test_evaluate_accepts_the_same_cohort_at_the_horizon_it_can_answer() -> None:
+    toy = make_toy(1)
+    narrow = Spy("narrow", domain=Domain(max_horizon=1))
+    evaluation = run_cohort(toy, Cohort("limited", (Spy("wide"), narrow)))
+    assert evaluation.results and narrow.views
+
+
+def test_the_driver_refuses_before_counting_an_empty_window() -> None:
+    """``run_configuration`` returns early for a window with no scoreable origin and appends
+    counted NaN lines labelled with the cohort. Without its own guard that path would write
+    ``limited`` lines at an illegal horizon, and ``evaluate``'s guard would never be reached."""
+    from model_conformance import make_toy as toy_at
+
+    from volab.sessions import get_calendar
+    from volab.walkforward import run_configuration
+
+    toy = toy_at(5)
+    written: list[object] = []
+    with pytest.raises(ValueError, match="limited"):
+        run_configuration(
+            toy.settings,
+            SYMBOL,
+            toy.horizon,
+            toy.panel,
+            toy.targets,
+            calendar=get_calendar(toy.settings),
+            first=dt.date(2020, 1, 2),
+            last=dt.date(2020, 1, 3),
+            every=toy.stride,
+            minimum_training=toy.minimum_training,
+            cohort=Cohort("limited", (Spy("narrow", domain=Domain(max_horizon=1)),)),
+            persisted=lambda: None,
+            append=lambda trials: written.extend(trials) or len(trials),
+            report=lambda _: None,
+        )
+    assert written == []

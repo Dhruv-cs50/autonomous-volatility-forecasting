@@ -46,11 +46,11 @@ import pytest
 from arch.univariate.base import ARCHModelResult
 from arch.univariate.distribution import SkewStudent
 from arch.utility.exceptions import ConvergenceWarning, DataScaleWarning, StartingValueWarning
-from model_conformance import alone, conformance_suite, make_toy, run_cohort
+from model_conformance import OutsideItsDomain, alone, conformance_suite, make_toy, run_cohort
 
 import volab.models.garch as garch
 from volab.errors import ModelSkip
-from volab.models.base import Forecaster, Model, TrainingView
+from volab.models.base import Cohort, Forecaster, Model, TrainingView
 from volab.models.garch import (
     EGARCH11_SKEWT,
     GARCH11_SKEWT,
@@ -734,9 +734,34 @@ def test_gjr11_conforms_at_a_multistep_horizon() -> None:
 
 
 def test_egarch11_conforms_at_a_horizon_where_the_seed_matters() -> None:
+    """Above h=1, because at h=1 every path is identical and the seed is never exercised. EGARCH
+    does not answer there (R114), so the suite asks the question a run would refuse, through the
+    adapter that says so by name -- and the horizon stays 22: moving it to h=1 would delete the
+    only witness that the seeding and determinism clauses can fail."""
     conformance_suite(
-        _few(EGARCH11_SKEWT), toy=make_toy(22), rebuild=lambda _: _few(EGARCH11_SKEWT)
+        OutsideItsDomain(_few(EGARCH11_SKEWT)),
+        toy=make_toy(22),
+        rebuild=lambda _: OutsideItsDomain(_few(EGARCH11_SKEWT)),
     )
+
+
+def test_the_conformance_suite_refuses_egarch_above_h1_without_the_adapter() -> None:
+    """The red case for the adapter: the same call, unwrapped, reaches ``evaluate`` and is
+    refused. This is what stops ``OutsideItsDomain`` from quietly becoming the default."""
+    with pytest.raises(ValueError, match=r"'egarch11_skewt'.*h<=1"):
+        conformance_suite(
+            _few(EGARCH11_SKEWT), toy=make_toy(22), rebuild=lambda _: _few(EGARCH11_SKEWT)
+        )
+
+
+def test_the_adapter_lifts_only_the_bound() -> None:
+    spec = _few(EGARCH11_SKEWT)
+    lifted = OutsideItsDomain(spec)
+    assert lifted.name == spec.name and lifted.fit_depends_on_horizon is spec.fit_depends_on_horizon
+    assert lifted.domain.max_horizon is None and spec.domain.max_horizon == 1
+    assert lifted.domain.sampling == spec.domain.sampling
+    assert isinstance(lifted, Model)
+    assert Cohort("c", (lifted,)).refusal(66) is None
 
 
 # ---------------------------------------------------------------------------

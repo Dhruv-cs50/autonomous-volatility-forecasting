@@ -888,6 +888,14 @@ def evaluate(
             f"contestants {MODELS}, but this cohort holds {cohort.contestants}: a cohort name is "
             "a claim about which experiment produced a ledger line"
         )
+    # The same class of invariant, and ``ValueError`` for the reason ``Forecaster.forecast``
+    # records: a ``SchemaError`` is filed under "the window was unfittable", and a wiring bug
+    # would pass as a data problem. A contestant is never dropped to make the cohort fit the
+    # horizon -- the set is part of the number -- so a cohort asked a question a member cannot
+    # answer is refused, before any fit (R114, US-3.9).
+    refusal = cohort.refusal(horizon)
+    if refusal is not None:
+        raise ValueError(refusal)
     column = target_column(horizon)
     # Used **only** for the realized value a forecast is scored against, which is future relative
     # to its origin by definition and is bounded by ``dev_end`` through ``scoreable_origins``.
@@ -1148,6 +1156,12 @@ def run_configuration(
     ``test_the_driver_counts_a_configuration_with_nothing_to_score`` and
     ``test_the_driver_reports_a_disagreement_with_the_persisted_table``.
     """
+    # Before the empty-window branch below, which appends counted lines labelled with the cohort
+    # without ever reaching ``evaluate``: an illegal pairing must not be written under that name
+    # just because the window happened to hold no origin.
+    refusal = cohort.refusal(horizon)
+    if refusal is not None:
+        raise ValueError(refusal)
     origins = scoreable_origins(settings, targets, first=first, last=last, every=every)
     if not origins:
         # Counted, not skipped. A configuration that was run and produced nothing is exactly the

@@ -146,7 +146,6 @@ class Spy:
     """
 
     fit_depends_on_horizon = False
-    domain = UNRESTRICTED
 
     def __init__(
         self,
@@ -155,8 +154,10 @@ class Spy:
         value: float = 1e-4,
         skip_on: frozenset[dt.date] = frozenset(),
         fail_on: frozenset[dt.date] = frozenset(),
+        domain: Domain = UNRESTRICTED,
     ) -> None:
         self.name = name
+        self.domain = domain
         self.views: list[TrainingView] = []
         self._value = value
         self._skip_on = skip_on
@@ -185,6 +186,40 @@ class AlwaysSkips:
 
     def fit(self, view: TrainingView) -> Forecaster:
         raise ModelSkip(f"{self.name} declines every origin")
+
+
+@dataclass(frozen=True)
+class OutsideItsDomain:
+    """A contestant with its horizon bound lifted, so the suite can ask a question a *run* refuses.
+
+    The conformance suite legitimately interrogates a contestant beyond what any run would ask --
+    clause 6 already demands a ``ValueError`` from a horizon the fit was not made for, and
+    ``_few()`` builds specs at path counts nothing ships. This wrapper makes that intent visible
+    by name instead of disarming the guard. ``name`` and ``fit`` delegate, so the forecasts are
+    the real contestant's. Only the bound is lifted: ``requires`` and ``sampling`` are the
+    contestant's own, so clause 10 still exercises what it declares.
+
+    **Not applied inside ``alone()``**, which would silently disarm the domain guard for every
+    conformance run. Witness that the suite without it refuses:
+    ``test_the_conformance_suite_refuses_egarch_above_h1_without_the_adapter``.
+    """
+
+    inner: Model
+
+    @property
+    def name(self) -> str:
+        return self.inner.name
+
+    @property
+    def fit_depends_on_horizon(self) -> bool:
+        return self.inner.fit_depends_on_horizon
+
+    @property
+    def domain(self) -> Domain:
+        return dataclasses.replace(self.inner.domain, max_horizon=None)
+
+    def fit(self, view: TrainingView) -> Forecaster:
+        return self.inner.fit(view)
 
 
 def views_of(toy: Toy) -> list[TrainingView]:
