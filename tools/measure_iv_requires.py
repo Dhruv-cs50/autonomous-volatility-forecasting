@@ -9,9 +9,13 @@ horizon-dependent ``Domain.per_horizon`` rests on: of the origins a run requests
 * the horizon-matched column ``har_rv_iv`` actually declares (``iv_var_h1``, ``iv_var_h5``,
   ``iv_var_h22``), taken from ``volab.models.iv.DOMAIN`` and not respelled here.
 
-Each origin lost is lost to **every** contestant in the cohort (``Evaluation.comparable``
-intersects them out), which is why the count matters. The answer the design reasons from is that
-the trade-off exists at h=1 and nowhere else: VIX1D begins 2022-05-13, VIX9D and VIX in 2016.
+A declared column costs origins by three routes (R136): ``coverage_refusal`` refuses the leading
+boundary; ``evaluate``'s null-regressor skip drops an interior null origin for every contestant;
+and a contestant declining on thin training raises ``ModelSkip``, which writes NaN, which
+``Evaluation.comparable`` intersects out. The figures here are the first route only. The answer
+the design reasons from is that the trade-off exists at h=1 and nowhere else: VIX1D begins
+2022-05-13, and VIX9D and VIX are in the store from 2016-07-01 (the series themselves are older;
+2016 is where the curated store begins).
 
 It reads the committed store through ``wf.load_for`` and the CLI's own persisted-table read, both
 of which stop at ``dev_end``, and calls no ``evaluate``, so it **appends nothing to the trial
@@ -19,7 +23,11 @@ ledger**. **It reads the count out of ``coverage_refusal``'s message text** (``"
 requested origins precede it"``), the only place the function reports it, so rewording that message
 breaks this probe: it raises rather than printing a wrong figure. Reword the two together.
 A horizon with no matched column (h=66, which ``har_rv_iv`` does not answer)
-prints ``n/a``. When a figure here disagrees with the spec, that is a finding about the store or
+prints ``n/a``. ``coverage_refusal`` returns ``None`` for no refusal, for a window too thin for the
+HAR floor alone, and for an empty ``required``, so the probe also counts the HAR-floor rows at the
+first origin and prints ``none`` only when that floor is met; otherwise it says nothing was
+measured. The matched declaration is printed as the whole tuple passed to ``coverage_refusal``.
+When a figure here disagrees with the spec, that is a finding about the store or
 the code, to be re-measured and recorded, not a reason to adjust this script until it matches.
 
     uv run --locked python tools/measure_iv_requires.py
@@ -30,6 +38,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 
+import pandas as pd
 from _harness import heading, note
 
 import volab.compare.__main__ as compare_cli
@@ -48,9 +57,31 @@ HORIZON_BLIND = "iv_h1"
 _LOST = re.compile(r"first that qualifies is (\d{4}-\d{2}-\d{2}), and (\d+) of the (\d+) requested")
 
 
-def _lost(reason: str | None, requested: int) -> str:
-    """Origins lost: ``"119 of 251"``, ``"none"`` if not refused, ``"all 251"`` if none qualify."""
+def _floor_rows(stored: pd.DataFrame, targets: pd.DataFrame, origin: dt.date, horizon: int) -> int:
+    """Training rows at ``origin`` with no declared column: the HAR floor alone.
+
+    The same three calls ``coverage_refusal`` makes for its own floor check, so the two agree on
+    what a training row is. It is here to tell "not refused" apart from "could not be measured".
+    """
+    stored_days = list(as_of_dates(stored))
+    built = stored[[day <= origin for day in stored_days]]
+    usable = wf.with_knowable_targets(
+        built, wf.knowable_targets(targets, origin), wf.target_column(horizon)
+    )
+    return wf.training_rows(usable, wf.target_column(horizon))
+
+
+def _lost(reason: str | None, requested: int, floor: int) -> str:
+    """Origins lost: ``"119 of 251"``, ``"all 251"`` if none qualify, or ``"none"``.
+
+    ``"none"`` means the first origin has ``MINIMUM`` HAR-floor rows and was not refused. A ``None``
+    reason with fewer is not that: the window was too thin for anything, and nothing was measured.
+    """
     if reason is None:
+        if floor < MINIMUM:
+            return (
+                f"NOT MEASURED (HAR floor alone has {floor} < {MINIMUM} rows at the first origin)"
+            )
         return "none"
     found = _LOST.search(reason)
     if found is None:
@@ -81,14 +112,15 @@ def main() -> int:
         blind = wf.coverage_refusal(
             stored, targets, (HORIZON_BLIND,), origins, horizon=horizon, minimum_training=MINIMUM
         )
+        floor = _floor_rows(stored, targets, origins[0], horizon)
         matched = DOMAIN.requires_at(horizon) if DOMAIN.answers(horizon) else ()
         print(f"h={horizon:<2} requested {len(origins)}")
-        print(f"      requires=({HORIZON_BLIND!r},): {_lost(blind, len(origins))}")
+        print(f"      requires=({HORIZON_BLIND!r},): {_lost(blind, len(origins), floor)}")
         if matched:
             reason = wf.coverage_refusal(
                 stored, targets, matched, origins, horizon=horizon, minimum_training=MINIMUM
             )
-            print(f"      matched {matched[0]}: {_lost(reason, len(origins))}")
+            print(f"      matched {matched}: {_lost(reason, len(origins), floor)}")
         else:
             print("      matched: n/a (har_rv_iv does not answer this horizon)")
     return 0
