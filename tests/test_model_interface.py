@@ -37,7 +37,7 @@ from model_conformance import (
 import volab.walkforward as wf
 from volab.features.build import build_features
 from volab.features.targets import target_column
-from volab.models.base import Cohort, Forecaster, Model, TrainingView
+from volab.models.base import UNRESTRICTED, Cohort, Forecaster, Model, TrainingView
 from volab.panel import as_of_dates
 from volab.sessions import get_calendar
 from volab.walkforward import (
@@ -640,6 +640,7 @@ def test_the_conformance_suite_can_fail(monkeypatch: pytest.MonkeyPatch) -> None
 
         name = "peeks"
         fit_depends_on_horizon = False
+        domain = UNRESTRICTED
 
         def fit(self, view: TrainingView) -> Forecaster:
             return Answer(1e-4 * view.horizon)
@@ -650,6 +651,7 @@ def test_the_conformance_suite_can_fail(monkeypatch: pytest.MonkeyPatch) -> None
     class Coin:
         name = "coin"
         fit_depends_on_horizon = False
+        domain = UNRESTRICTED
 
         def __init__(self) -> None:
             self.calls = 0
@@ -667,6 +669,7 @@ def test_the_conformance_suite_can_fail(monkeypatch: pytest.MonkeyPatch) -> None
 
         name = "future"
         fit_depends_on_horizon = False
+        domain = UNRESTRICTED
 
         def fit(self, view: TrainingView) -> Forecaster:
             return Answer(float(view.training[view.response].iloc[-1]))
@@ -693,6 +696,7 @@ def test_a_contestant_holding_its_own_target_frame_is_caught_by_clause_7_and_not
 
         name = "captured"
         fit_depends_on_horizon = False
+        domain = UNRESTRICTED
 
         def __init__(self, targets: pd.DataFrame) -> None:
             self.targets = targets
@@ -712,6 +716,7 @@ def test_a_contestant_holding_its_own_target_frame_is_caught_by_clause_7_and_not
     class Reads:
         name = "reads-its-view"
         fit_depends_on_horizon = False
+        domain = UNRESTRICTED
 
         def fit(self, view: TrainingView) -> Forecaster:
             return Answer(float(view.training[view.response].iloc[-1]))
@@ -734,6 +739,7 @@ def test_clause_7_passes_a_contestant_that_copied_the_frame_and_clause_8_fails_i
     class Copied:
         name = "copied"
         fit_depends_on_horizon = False
+        domain = UNRESTRICTED
 
         def __init__(self, targets: pd.DataFrame) -> None:
             self.frame = targets.copy()
@@ -756,6 +762,7 @@ def test_clause_7_passes_a_contestant_that_copied_the_frame_and_clause_8_fails_i
     class Reads:
         name = "reads-its-view"
         fit_depends_on_horizon = False
+        domain = UNRESTRICTED
 
         def fit(self, view: TrainingView) -> Forecaster:
             return Answer(float(view.training[view.response].iloc[-1]))

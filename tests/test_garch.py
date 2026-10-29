@@ -658,6 +658,69 @@ def test_a_missing_final_return_is_an_empty_window_and_a_skip() -> None:
 
 
 # ---------------------------------------------------------------------------
+# The declared domain (US-3.9a). Derived from the specification, never stored.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("method", get_args(Method))
+@pytest.mark.parametrize("o", [0, 1])
+@pytest.mark.parametrize("volatility", ["GARCH", "EGARCH"])
+def test_only_egarch_is_bounded_and_the_bound_follows_the_variance_process(
+    volatility: Any, o: int, method: Any
+) -> None:
+    """Over every legal pairing, built positionally as ``GarchModel`` is everywhere: a bound that
+    were a field would have broken this construction, and one set at a call site could disagree
+    with the specification. Derived, it cannot."""
+    if (volatility, o, method) not in LEGAL:
+        pytest.skip("not a legal pairing")
+    spec = GarchModel("x", volatility, o, method)
+    assert spec.domain.max_horizon == (1 if volatility == "EGARCH" else None)
+
+
+def test_the_shipped_specs_declare_what_r114_established() -> None:
+    assert GARCH11_SKEWT.domain.max_horizon is None
+    assert GJR11_SKEWT.domain.max_horizon is None
+    assert EGARCH11_SKEWT.domain.max_horizon == 1
+    assert [EGARCH11_SKEWT.domain.answers(h) for h in (1, 5, 22, 66)] == [True, False, False, False]
+    for spec in GARCH_MODELS:
+        assert spec.domain.requires == (), f"{spec.name} reads only returns"
+
+
+def test_a_simulated_spec_declares_the_path_count_it_uses_and_an_exact_one_declares_none() -> None:
+    assert EGARCH11_SKEWT.domain.sampling is not None
+    assert EGARCH11_SKEWT.domain.sampling.paths == garch.SIMULATIONS
+    assert dataclasses.replace(EGARCH11_SKEWT, simulations=FEW).domain.sampling is not None
+    assert dataclasses.replace(EGARCH11_SKEWT, simulations=FEW).domain.sampling.paths == FEW
+    assert GJR11_SKEWT.domain.sampling is None
+    assert GARCH11_SKEWT.domain.sampling is None
+    assert dataclasses.replace(GJR11_SKEWT, method="simulation").domain.sampling is not None
+
+
+def test_the_bound_is_derived_from_a_fixed_skew_t_error_law() -> None:
+    """R114's exclusion is a fact about the *error law*, not about the word EGARCH: skew-t has
+    polynomial tails, so the multi-step mean of EGARCH's ``exp(alpha|z| + gamma z)`` diverges. The
+    derivation ``volatility == "EGARCH" => h<=1`` is sound only while the law is fixed, so a
+    future ``dist`` field, or a different literal, has to break a test rather than silently
+    invalidate the bound."""
+    dists = [
+        node.value
+        for call in ast.walk(ast.parse(SOURCE.read_text()))
+        if isinstance(call, ast.Call)
+        for node in call.keywords
+        if node.arg == "dist"
+    ]
+    assert len(dists) == 1 and isinstance(dists[0], ast.Constant) and dists[0].value == "skewt"
+    assert {field.name for field in dataclasses.fields(GarchModel)} == {
+        "name",
+        "volatility",
+        "o",
+        "method",
+        "simulations",
+        "maxiter",
+    }
+
+
+# ---------------------------------------------------------------------------
 # The shared conformance suite (R85, R86). One pass per specification.
 # ---------------------------------------------------------------------------
 

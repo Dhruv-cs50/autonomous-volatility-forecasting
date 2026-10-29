@@ -33,7 +33,15 @@ from volab.config import Settings, load_settings
 from volab.errors import ModelSkip
 from volab.features.build import build_features
 from volab.features.targets import build_targets, target_column
-from volab.models.base import Cohort, Forecast, Forecaster, Model, TrainingView
+from volab.models.base import (
+    UNRESTRICTED,
+    Cohort,
+    Domain,
+    Forecast,
+    Forecaster,
+    Model,
+    TrainingView,
+)
 from volab.panel import as_of_dates, truncate
 from volab.sessions import get_calendar
 from volab.walkforward import (
@@ -138,6 +146,7 @@ class Spy:
     """
 
     fit_depends_on_horizon = False
+    domain = UNRESTRICTED
 
     def __init__(
         self,
@@ -167,9 +176,12 @@ class Spy:
 class AlwaysSkips:
     """Wraps a model's identity but declines every origin, for the clause about accounting."""
 
-    def __init__(self, name: str, *, fit_depends_on_horizon: bool) -> None:
+    def __init__(
+        self, name: str, *, fit_depends_on_horizon: bool, domain: Domain = UNRESTRICTED
+    ) -> None:
         self.name = name
         self.fit_depends_on_horizon = fit_depends_on_horizon
+        self.domain = domain
 
     def fit(self, view: TrainingView) -> Forecaster:
         raise ModelSkip(f"{self.name} declines every origin")
@@ -293,7 +305,9 @@ def clause_4_every_configuration_is_counted(model: Model, toy: Toy) -> None:
 
     # A contestant that declines every origin (R87's empty-cohort case): reported, not guarded.
     lines.clear()
-    decliner = AlwaysSkips(model.name, fit_depends_on_horizon=model.fit_depends_on_horizon)
+    decliner = AlwaysSkips(
+        model.name, fit_depends_on_horizon=model.fit_depends_on_horizon, domain=model.domain
+    )
     declined = drive(alone(decliner))
     assert len(lines) == len(LOSSES)
     assert all(trial.origins == 0 and math.isnan(trial.value) for trial in lines)

@@ -13,6 +13,7 @@ fitting once per origin and forecasting all four horizons without the interface 
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -59,6 +60,76 @@ class Forecast:
     observations: int
 
 
+@dataclass(frozen=True)
+class Measurement:
+    """One Monte-Carlo error, measured once, with exactly what it was measured on.
+
+    ``source`` is compared **by equality** to ``volab.compare.series_source``, i.e.
+    ``f"{symbol} h{horizon}"``. A figure whose source does not match can only withhold a claim,
+    never authorise one (R115), so a mistyped source fails safe.
+    """
+
+    percent: float
+    source: str
+    horizon: int
+    # The path count it was measured at. A figure measured at another count does not apply.
+    paths: int
+
+
+@dataclass(frozen=True)
+class Sampling:
+    """Declared by a contestant whose forecast is a Monte-Carlo estimate rather than a value.
+
+    ``__post_init__`` refuses *this contestant's own* measurements if they disagree on ``source``.
+    The **cross-contestant** rule cannot live here -- a ``Sampling`` sees only one contestant -- so
+    it belongs to whatever first holds a whole cohort's figures (US-3.9b).
+    """
+
+    paths: int
+    measured: tuple[Measurement, ...] = ()
+
+    def __post_init__(self) -> None:
+        sources = sorted({figure.source for figure in self.measured})
+        if len(sources) > 1:
+            raise ValueError(
+                f"a contestant's measurements must all come from one series, got {sources}: the "
+                "comparison record holds one source per record"
+            )
+
+    def error(self, horizon: int) -> float | None:
+        """The measured error in percent at ``horizon`` **for the path count in use**, else None."""
+        for figure in self.measured:
+            if figure.horizon == horizon and figure.paths == self.paths:
+                return figure.percent
+        return None
+
+    @property
+    def source(self) -> str | None:
+        """The one series every measurement was made on; ``None`` when there are none."""
+        return self.measured[0].source if self.measured else None
+
+
+@dataclass(frozen=True)
+class Domain:
+    """What a contestant declares it is able to answer. Read by the harness, never inferred.
+
+    ``max_horizon`` ``None`` means unbounded. It expresses a **prefix** of the configured horizons
+    only; ``answers`` is its single reader, so a non-prefix domain changes one method. ``requires``
+    names **feature columns**, the names ``volab.features.build`` writes, because a contestant
+    sees columns and never the panel.
+    """
+
+    max_horizon: int | None = None
+    requires: tuple[str, ...] = ()
+    sampling: Sampling | None = None
+
+    def answers(self, horizon: int) -> bool:
+        return self.max_horizon is None or horizon <= self.max_horizon
+
+
+UNRESTRICTED = Domain()
+
+
 @runtime_checkable
 class Forecaster(Protocol):
     """A fitted contestant. ``forecast`` raises ``ValueError`` when ``horizon`` is not the view's
@@ -91,6 +162,12 @@ class Model(Protocol):
     @property
     def fit_depends_on_horizon(self) -> bool: ...
 
+    # What the contestant is able to answer (US-3.9). Required, so it cannot be omitted: a
+    # declaration that defaulted would default to the permissive answer, the dangerous direction.
+    # Read-only for the reason given on ``name``.
+    @property
+    def domain(self) -> Domain: ...
+
     def fit(self, view: TrainingView) -> Forecaster: ...
 
 
@@ -104,3 +181,38 @@ class Cohort:
     @property
     def contestants(self) -> tuple[str, ...]:
         return tuple(model.name for model in self.models)
+
+    def refusal(self, horizon: int) -> str | None:
+        """Why this cohort cannot be evaluated at ``horizon``, or ``None`` when it can.
+
+        Dropping the member that cannot answer is not offered: ``Trial.cohort`` is the only record
+        of which contestants a ledger line was scored against, and ``Evaluation.comparable``
+        intersects origins across them, so the same name over a smaller set is a different
+        experiment. One function, so the CLI's guard and ``evaluate``'s cannot word the same
+        refusal differently or disagree about when it fires.
+        """
+        unable = [model for model in self.models if not model.domain.answers(horizon)]
+        if not unable:
+            return None
+        bounds = ", ".join(
+            f"{model.name!r} answers h<={model.domain.max_horizon}" for model in unable
+        )
+        return (
+            f"cohort {self.name!r} cannot be evaluated at h={horizon}: {bounds}. "
+            "Its contestant set is part of the number, so a member is never dropped silently"
+        )
+
+    def horizons(self, configured: Sequence[int]) -> tuple[int, ...]:
+        """Those of ``configured`` this cohort can be evaluated at, in the caller's order.
+
+        The caller supplies the configured set, so this module stays free of a dependency on the
+        horizon configuration.
+        """
+        return tuple(horizon for horizon in configured if self.refusal(horizon) is None)
+
+    @property
+    def requires(self) -> tuple[str, ...]:
+        """Every feature column some member declares it needs, de-duplicated, first seen first."""
+        return tuple(
+            dict.fromkeys(column for model in self.models for column in model.domain.requires)
+        )

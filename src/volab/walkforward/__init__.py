@@ -67,7 +67,7 @@ from volab.errors import ModelSkip, SchemaError
 from volab.features.build import build_features, log_returns
 from volab.features.targets import RETURN_COLUMN, target_column, targets_dataset
 from volab.identity import first_difference
-from volab.models.base import Cohort, Forecast, Forecaster, TrainingView
+from volab.models.base import UNRESTRICTED, Cohort, Domain, Forecast, Forecaster, TrainingView
 from volab.panel import KEYS, as_of_dates, load_curated_panel, truncate
 from volab.paths import Tier
 from volab.sessions import get_calendar, sessions_between
@@ -670,6 +670,7 @@ class _Fitted:
 class _HarLevelsModel:
     name: str = "har_levels"
     fit_depends_on_horizon: bool = True
+    domain: Domain = UNRESTRICTED
 
     def fit(self, view: TrainingView) -> Forecaster:
         value, observations = _har_levels_forecast(view.training, view.row, view.response)
@@ -679,6 +680,7 @@ class _HarLevelsModel:
 class _HarSemilogModel:
     name: str = "har_semilog"
     fit_depends_on_horizon: bool = True
+    domain: Domain = UNRESTRICTED
 
     def fit(self, view: TrainingView) -> Forecaster:
         value, observations = _har_semilog_forecast(view.training, view.row, view.response)
@@ -690,6 +692,7 @@ class _RandomWalkModel:
     # Its fit reads only the origin's own row, but the forecast is that row scaled by the horizon,
     # so it is asked the horizon it was fitted for like the others.
     fit_depends_on_horizon: bool = True
+    domain: Domain = UNRESTRICTED
 
     def fit(self, view: TrainingView) -> Forecaster:
         return _Fitted(_random_walk_forecast(view.row, view.horizon), 0, view.horizon)

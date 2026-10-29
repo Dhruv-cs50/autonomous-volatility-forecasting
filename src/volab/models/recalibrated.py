@@ -80,7 +80,7 @@ import pandas as pd
 
 import volab.walkforward as wf
 from volab.errors import ModelSkip, SchemaError
-from volab.models.base import Forecast, Forecaster, Model, TrainingView
+from volab.models.base import UNRESTRICTED, Domain, Forecast, Forecaster, Model, TrainingView
 from volab.panel import as_of_dates
 
 # The trailing lattice points the regression looks back over, and the fewest usable pairs it will
@@ -247,6 +247,13 @@ class RecalibratedHar:
     @property
     def fit_depends_on_horizon(self) -> bool:
         return True
+
+    # The shipped base is ``har_levels``, which answers every horizon from the HAR regressors the
+    # view itself guarantees. A base with a bound or a requirement of its own would have to be
+    # propagated here; none exists, and ``UNRESTRICTED`` is what the design specifies.
+    @property
+    def domain(self) -> Domain:
+        return UNRESTRICTED
 
     def fit(self, view: TrainingView) -> Forecaster:
         # The base's own fit, on the origin's full knowable window, is the forecast being

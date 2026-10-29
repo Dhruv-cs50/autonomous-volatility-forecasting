@@ -70,7 +70,14 @@ from volab.compare.multiple import (
 from volab.compare.series import LossSeries, loss_series
 from volab.compare.sink import COMPARISON_LEDGER, Comparison, JsonlSink, Sink
 from volab.config import load_settings
-from volab.models.base import Cohort, Forecast, Forecaster, Model, TrainingView
+from volab.models.base import (
+    Cohort,
+    Domain,
+    Forecast,
+    Forecaster,
+    Model,
+    TrainingView,
+)
 from volab.models.garch import EGARCH11_SKEWT, GARCH11_SKEWT, GARCH_MODELS, GJR11_SKEWT, GarchModel
 from volab.walkforward import (
     BASELINE_COHORT,
@@ -1589,6 +1596,10 @@ class _Scaled:
     @property
     def fit_depends_on_horizon(self) -> bool:
         return self.base.fit_depends_on_horizon
+
+    @property
+    def domain(self) -> Domain:
+        return self.base.domain
 
     def fit(self, view: TrainingView) -> Forecaster:
         return _ScaledForecaster(self.base.fit(view), self.factor)

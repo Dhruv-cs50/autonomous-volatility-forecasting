@@ -34,7 +34,14 @@ import volab.models.recalibrated as recalibrated
 import volab.walkforward as wf
 from volab.config import load_settings
 from volab.errors import DatasetNotFound, ModelSkip, SchemaError
-from volab.models.base import Cohort, Forecast, Forecaster, Model, TrainingView
+from volab.models.base import (
+    UNRESTRICTED,
+    Cohort,
+    Forecast,
+    Forecaster,
+    Model,
+    TrainingView,
+)
 from volab.models.recalibrated import (
     CALIBRATION_POINTS,
     MINIMUM_PAIRS,
@@ -148,6 +155,7 @@ class Recording:
     """The baseline HAR, remembering every view it was fitted on, outer and inner alike."""
 
     fit_depends_on_horizon = True
+    domain = UNRESTRICTED
     name = "har_levels"
 
     def __init__(self) -> None:
@@ -304,6 +312,7 @@ class Varying:
 
     name = "varying"
     fit_depends_on_horizon = True
+    domain = UNRESTRICTED
 
     def fit(self, view: TrainingView) -> Forecaster:
         return Fixed(1e-4 * (1 + view.origin.toordinal() % 9))
@@ -373,6 +382,7 @@ class Flaky:
 
     name = "har_levels"
     fit_depends_on_horizon = True
+    domain = UNRESTRICTED
 
     def __init__(self, fail_on: frozenset[dt.date]) -> None:
         self.fail_on = fail_on
@@ -427,6 +437,7 @@ class ConstantBase:
     value: float
     name: str = "constant"
     fit_depends_on_horizon: bool = True
+    domain = UNRESTRICTED
 
     def fit(self, view: TrainingView) -> Forecaster:
         return Fixed(self.value)
@@ -455,6 +466,7 @@ def test_the_recalibrated_forecast_reduces_to_the_base_forecast_when_a_is_zero_a
     class Oracle:
         name = "oracle"
         fit_depends_on_horizon = True
+        domain = UNRESTRICTED
 
         def fit(self, view: TrainingView) -> Forecaster:
             return Fixed(realized[view.origin])
@@ -514,6 +526,7 @@ class InSampleMz:
     targets: pd.DataFrame
     name: str = "har_levels_mz_in_sample"
     fit_depends_on_horizon: bool = True
+    domain = UNRESTRICTED
 
     def fit(self, view: TrainingView) -> Forecaster:
         outer = BASE.fit(view).forecast(view.horizon)
@@ -629,6 +642,7 @@ class ViewRecorder:
 
     name = "view_recorder"
     fit_depends_on_horizon = True
+    domain = UNRESTRICTED
 
     def __init__(self) -> None:
         self.views: list[TrainingView] = []

@@ -92,7 +92,7 @@ from arch.utility.exceptions import ConvergenceWarning, StartingValueWarning
 from scipy.special import gammaln, stdtr
 
 from volab.errors import ModelSkip
-from volab.models.base import Forecast, Forecaster, TrainingView
+from volab.models.base import Domain, Forecast, Forecaster, Sampling, TrainingView
 
 # Daily log returns are order 1e-2; arch wants the series in its 1-to-10 band. Applied to the
 # returns before the fit and squared into the divisor after the sum. A module constant, so the
@@ -393,6 +393,23 @@ class GarchModel:
     @property
     def fit_depends_on_horizon(self) -> bool:
         return False
+
+    @property
+    def domain(self) -> Domain:
+        """What this specification can answer, **derived** from it and never stored (US-3.9).
+
+        A field would be settable wrongly at a call site, and ``tests/test_garch.py`` builds
+        ``GarchModel`` positionally over every legal pairing. The bound is sound only because
+        ``fit`` hard-codes ``dist="skewt"``: R114 is a fact about the error law, and
+        ``test_the_bound_is_derived_from_a_fixed_skew_t_error_law`` breaks if that moves.
+        """
+        return Domain(
+            # R114, from the specification and the error law alone: EGARCH(1,1) with a
+            # polynomial-tailed law and alpha > 0 has no finite multi-step conditional variance,
+            # so only h=1 (which takes no expectation) is credible.
+            max_horizon=1 if self.volatility == "EGARCH" else None,
+            sampling=Sampling(paths=self.simulations) if self.method == "simulation" else None,
+        )
 
     def fit(self, view: TrainingView) -> Forecaster:
         tail = _tail(view.returns)
