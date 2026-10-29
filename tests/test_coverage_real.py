@@ -96,10 +96,10 @@ def first_runnable_origin(horizon: int, origins: list[dt.date]) -> dt.date | Non
     return next((origin for origin in origins if origin >= boundary), None)
 
 
-def refusal(horizon: int, origins: list[dt.date]) -> str | None:
+def refusal(horizon: int, origins: list[dt.date], *, required: str = REQUIRED) -> str | None:
     _, _, targets, stored = real(horizon)
     return wf.coverage_refusal(
-        stored, targets, (REQUIRED,), origins, horizon=horizon, minimum_training=MINIMUM
+        stored, targets, (required,), origins, horizon=horizon, minimum_training=MINIMUM
     )
 
 
@@ -225,3 +225,18 @@ def test_the_designs_measured_figures_still_hold(horizon: int) -> None:
     assert reason is not None
     _, lost, total = named(reason)
     assert (total, lost) == DESIGN_FIGURES[horizon]
+
+
+MATCHED = {1: "iv_var_h1", 5: "iv_var_h5", 22: "iv_var_h22"}
+
+
+@pytest.mark.parametrize("horizon", [1, 5, 22])
+def test_the_horizon_matched_column_refuses_only_at_h1(horizon: int) -> None:
+    """The figure spec section 4 reasons from. Expected to be **re-measured, not edited**, when
+    the store is rebuilt (R133's third category of figure)."""
+    origins = origins_for(horizon)
+    reason = refusal(horizon, origins, required=MATCHED[horizon])
+    if horizon == 1:
+        assert reason is not None and named(reason)[1] == 119
+    else:
+        assert reason is None

@@ -125,7 +125,7 @@ def test_the_recalibrated_har_inherits_its_bases_bound() -> None:
 def test_the_recalibrated_har_inherits_its_bases_required_columns() -> None:
     wrapped = RecalibratedHar(_DeclaringBase(Domain(requires=("iv_h1",))))
     assert wrapped.domain.requires == ("iv_h1",)
-    assert Cohort("c", (wrapped,)).requires == ("iv_h1",)
+    assert Cohort("c", (wrapped,)).requires_at(1) == ("iv_h1",)
 
 
 def test_the_shipped_recalibrated_har_declares_what_its_base_declares() -> None:

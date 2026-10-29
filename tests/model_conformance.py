@@ -569,7 +569,15 @@ def clause_9_the_declared_domain_is_exercised(
 
 
 def clause_10_a_declared_requirement_is_real(model: Model, toy: Toy) -> None:
-    """For each column in ``domain.requires``, nulling it makes the contestant raise ``ModelSkip``.
+    """For each column in ``domain.requires_at(toy.horizon)``, nulling it makes the contestant
+    raise ``ModelSkip``.
+
+    **Only ``toy.horizon`` is checked**: ``requires`` plus the ``per_horizon`` columns declared for
+    that horizon. A column declared only for another horizon is not looked at here; calling the
+    clause with a toy built at that horizon is what checks it (``conformance_suite`` passes the
+    clause its one ``toy``, not ``also_at``). Reading ``requires`` alone would return at the first
+    line for a contestant that declares everything through ``per_horizon``, passing without having
+    looked: ``test_clause_10_checks_a_requirement_declared_only_through_per_horizon``.
 
     Checkable in one direction only: this catches *declared but unused*. A column used and
     undeclared is not detectable, and still drags the origin out of everyone's comparable set --
@@ -581,7 +589,7 @@ def clause_10_a_declared_requirement_is_real(model: Model, toy: Toy) -> None:
     declines everything would "raise ModelSkip" for the wrong reason, so it must answer with the
     column intact first.
     """
-    columns = model.domain.requires
+    columns = model.domain.requires_at(toy.horizon)
     if not columns:
         return
     answered = 0
