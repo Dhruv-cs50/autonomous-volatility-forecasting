@@ -37,6 +37,7 @@ from volab.errors import DatasetNotFound, ModelSkip, SchemaError
 from volab.models.base import (
     UNRESTRICTED,
     Cohort,
+    Domain,
     Forecast,
     Forecaster,
     Model,
@@ -95,6 +96,40 @@ def test_the_shipped_contestant_is_har_levels_recalibrated_with_the_designed_def
     assert RecalibratedHar(SEMILOG).name == "har_semilog_mz"
     with pytest.raises(dataclasses.FrozenInstanceError):
         model.minimum_pairs = 1  # type: ignore[misc]
+
+
+@dataclass(frozen=True)
+class _DeclaringBase:
+    """A base that declares a bound and a requirement, delegating its fit to ``har_levels``."""
+
+    domain: Domain
+    name: str = "declaring_base"
+    fit_depends_on_horizon: bool = True
+
+    def fit(self, view: TrainingView) -> Forecaster:
+        return BASE.fit(view)
+
+
+def test_the_recalibrated_har_inherits_its_bases_bound() -> None:
+    """The recalibration consumes the base's forecast, so it cannot answer a horizon the base
+    cannot. Returning ``UNRESTRICTED`` would launder the bound: a cohort holding it would pass
+    ``Cohort.refusal`` at h=22 and be asked a question its base disclaims."""
+    wrapped = RecalibratedHar(_DeclaringBase(Domain(max_horizon=5)))
+    assert wrapped.domain.max_horizon == 5
+    cohort = Cohort("c", (wrapped,))
+    assert cohort.horizons((1, 5, 22, 66)) == (1, 5)
+    reason = cohort.refusal(22)
+    assert reason is not None and "declaring_base_mz" in reason
+
+
+def test_the_recalibrated_har_inherits_its_bases_required_columns() -> None:
+    wrapped = RecalibratedHar(_DeclaringBase(Domain(requires=("iv_h1",))))
+    assert wrapped.domain.requires == ("iv_h1",)
+    assert Cohort("c", (wrapped,)).requires == ("iv_h1",)
+
+
+def test_the_shipped_recalibrated_har_declares_what_its_base_declares() -> None:
+    assert har_levels_mz().domain == BASE.domain == UNRESTRICTED
 
 
 @pytest.mark.parametrize("horizon", [1, 5])
