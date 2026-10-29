@@ -15,6 +15,29 @@ so DM/MCS/SPA apply without `walkforward.LOSSES` gaining an entry.
 
 **Spec:** `docs/superpowers/specs/2026-10-29-phase3-iv-and-decision-evaluators-design.md`
 
+## Load-bearing assumptions — read these before task 1
+
+Collected here rather than left distributed through the spec. Each is a **choice an agent made**,
+not a requirement anyone supplied, and each would change the work if corrected.
+
+1. **Phase 3's requirement is reconstructed, not quoted (R135).** The framework document defining
+   each phase's exit criterion is **not in this repository**. The scope below comes from the
+   Phase 2 board's own "Not this phase's to fix" section. **Phase 3 may be declared *complete as
+   specified*, never *exited*.** Phase 2 was reopened after its row text was checked against
+   `grep` and found short. If the framework can be committed to `docs/`, this plan should be
+   re-checked against it before task 1 rather than after task 10.
+2. **The h=1 origin cost is accepted, not avoided.** `har_rv_iv` costs 119 of 251 origins at h=1
+   to VIX1D's 2022-05-13 start, and under `Evaluation.comparable` that cost falls on **every**
+   member of `phase3-iv`. Measured, and paid inside the new cohort only; the registered read is
+   untouched. The alternative — deriving h=1 from the 30-day VIX and keeping all 251 origins at
+   the price of a horizon mismatch — was offered and declined.
+3. **The decision layer's three methodological choices are defensible, not unique.** Gaussian
+   quantile map (R138), FZ0 as the scored loss rather than coverage alone (R137), and refusing
+   the coverage tests where `stride < horizon` rather than HAC-correcting them. Each has its
+   rejected alternative recorded with it.
+4. **`TARGET_VOL = 0.10` is calibrated to nothing** in this repository. It is round because it is
+   round, and task 7's docstring must say so.
+
 ## Global Constraints
 
 - Every command runs as `uv run --locked ...`. Never bare `uv run`, never `--frozen`.
@@ -764,7 +787,9 @@ Nothing is done on assertion. At the boundary:
 - [ ] `wc -l data/trials.jsonl data/comparisons.jsonl` reads **414** and **52**, unchanged (R139).
 - [ ] Dispatch `delivery-auditor` against `docs/phase3-sprint-board.md`; fix the board where it
       and git disagree.
-- [ ] Record the phase's rulings from **R142** in `docs/superpowers/phase3-decisions.md`.
+- [ ] Record the phase's rulings from **R150** in `docs/superpowers/phase3-decisions.md` — **not**
+      from R141. R142-R149 are reserved for the Phase 2 completion session; the gap is
+      deliberate and costs nothing, where a second collision costs a renumber (R150).
 - [ ] Open the PR. It will sit `BLOCKED` until `check` is green — that is branch protection
       working. **Do not merge without asking the user.**
 - [ ] The **recorded run** and **carried 3** stay held until the user triggers the holdout reveal.

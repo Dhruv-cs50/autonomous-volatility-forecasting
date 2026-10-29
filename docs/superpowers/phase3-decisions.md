@@ -203,3 +203,59 @@ genuine — P3-02 already makes `Domain` horizon-aware through `per_horizon`, an
 other per-horizon declaration in the same frozen dataclass, so one architect's pass is cheaper
 than two a sprint apart. But no Phase 3 story needs it, and without it the flaw stays exactly as
 latent as it is today.
+
+---
+
+## R150 — the ruling-number allocation, and a standing correction about `main`
+
+**Numbered R150, not R142**, which is the first thing this ruling settles.
+
+### The allocation
+
+The Phase 2 completion session proposed it and it is adopted, because it ends a race rather than
+patching one. Verified before adopting: `6c02348` records **R142** in
+`docs/superpowers/phase2-completion-decisions.md`.
+
+| range | owner |
+|---|---|
+| R135-R141 | Phase 3 (already recorded; R141 is the last) |
+| **R142-R149** | **reserved for the Phase 2 completion session** |
+| **R150 onward** | Phase 3 |
+
+The gap is deliberate. A gap in the sequence costs a reader one sentence; a second collision
+costs a renumber, which is what R141 already had to do. **Do not continue from R141.**
+
+### The standing correction, which outlives both sessions
+
+The Phase 2 session's advice to re-cut this branch from `main` was conditioned on PR #6 having
+merged — a condition the reader had no way to evaluate at the moment of reading, which makes it
+an unconditional instruction, and a destructive one. Re-cutting would have discarded the `Domain`
+machinery this entire design rests on.
+
+**Ruling: never rebase, re-cut or merge onto a branch on another session's report of its state.**
+Run `git log -1 <branch>` and confirm the commits you depend on are present. Verified again here
+while adopting this ruling: `main` is still at `b8d11cd`, "Merge pull request #5", and carries no
+Phase 2 work. PR #6 is `OPEN` and `BLOCKED` with auto-merge armed, so it is expected to land
+without anyone acting — **and must still be verified before anything depends on it.**
+
+This generalises past branches. A report from another agent is evidence to check, not a fact, and
+the three exchanges that produced R141 and R142 found an error in each direction.
+
+### What the Phase 2 session may not be around to answer
+
+It has auto-archive-on-PR-close enabled and is expected to archive shortly after #6 merges.
+Everything load-bearing it holds is in `docs/superpowers/phase2-completion-decisions.md` through
+R142 and on its board. Plan on not being able to ask it.
+
+### One claim in its message that is not confirmed, and is left unasserted
+
+It reports that the user was offered "I'll read it first" and chose not to read the spec. **The
+options actually put to the user from this session were "Write the plan" and "Changes first"**,
+and the reply was "Spec looks right. Write the implementation plan." So what is established is
+that the user approved without requesting changes; whether they read it is **not** established
+here and is not recorded as though it were.
+
+The underlying point stands on its own merits regardless, and is acted on: the spec's
+load-bearing assumptions — above all R135's reconstruction — are now collected at the **top of
+the implementation plan** instead of distributed through a 450-line spec, so the one person who
+can correct them meets them first.
