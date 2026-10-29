@@ -89,6 +89,17 @@ three are costs **the declaration imposes**, the fourth is a contestant's own re
 Caught by the final fix wave's implementer, which noticed this ruling disagreed with the brief I
 had written from it.
 
+**Why the fourth route is classed apart, sharpened.** The last reviewer objected that calling
+`ModelSkip` "not a cost the declaration imposes" is this ruling's own classification, since a
+contestant skipping on its declared column does shrink `comparable` for everyone. True as far as
+it goes, but the classification survives for a stronger reason than taste: **for a *declared*
+column the harness always gets there first.** A null at the origin is caught at `:1011`, which
+checks `(*HAR_REGRESSORS, *cohort.requires_at(horizon))` before any contestant is asked; thin
+training is caught at `:996` by the same count. So route 4 is reachable only for a column a
+contestant reads but did **not** declare, or for a contestant-internal reason such as a singular
+fit — neither of which the declaration causes. That is what makes the fourth row a different
+kind of thing rather than a fourth flavour of the same thing.
+
 This ruling has now been wrong three times in three different ways: `comparable` named as the sole
 route; the correction over-broad in saying `comparable` was not a route at all; and the amended
 table conflating two of the four. Each version was closer, and each error was found by someone

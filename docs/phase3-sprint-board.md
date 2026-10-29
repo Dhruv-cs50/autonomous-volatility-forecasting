@@ -59,6 +59,9 @@ exactly when someone would want to triage it. Raised by task 4's reviewer.
 | P3-02 | Clause 10's docstring cites a witness with two probes as covering "the second and third horizon"; no test covers a third | wording, not behaviour |
 | P3-02 | The 13/12 origin counts and the HAR-floor clearance of origins 60-61 are evidenced only by that round's 553-passed run (the suite is now 1716), not from the diff | would need a dedicated construction test |
 | P3-03 | `test_it_is_named_and_fits_the_target_side` is mostly covered by the conformance suite | redundancy, not a gap |
+| final review | The `Domain` docstring says the thin-training route "counts non-null rows of `requires_at`", omitting that `training_rows` also requires the HAR regressors and the response to be non-null | looseness, not an overclaim |
+| final review | No test reproduces the `multiple.py` proportional-pair crash; a strict-xfail test would pin it | belongs to the session fixing `multiple.py`, and every toy configuration reaching 11+ origins hits it |
+| final review | Whether `phase3-iv` contains an exactly proportional pair on the **real** panel is unverified | the crash is conditional on it; `TOY_COHORT` contains one by construction |
 | P3-08 | `_describe`'s NOT KNOWN branch suppresses a nonzero ex-date count if the raw dividend tier and the curated flags disagree (a stale-curation state). The count is still written to the ledger | an inconsistent-store state, not a code path |
 | P3-08 | The `distribution_flags_known` parameter of `decide` shadows the module function of the same name | harmless |
 | P3-05 | A docstring estimates "a return of about 20" for the sentinel close; `log(1e9/~100)` is about 16. The bound it motivates still holds | an order-of-magnitude aside, not a claim that a test checks something it does not |
