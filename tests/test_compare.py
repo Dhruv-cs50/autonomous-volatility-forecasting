@@ -1439,7 +1439,7 @@ def test_the_phase3_cohort_is_the_multistep_members_plus_the_iv_contestant() -> 
     assert PHASE3_IV.contestants == (*MULTISTEP.contestants, "har_rv_iv")
     assert PHASE3_IV.contestants[0] == "har_levels"  # R87
     assert COHORTS[PHASE3_IV.name] is PHASE3_IV
-    # The registered members are the very instances the registered cohorts hold, not copies.
+    # The registered members are equal, by value, to MULTISTEP's: same specifications, same order.
     assert PHASE3_IV.models[:-1] == MULTISTEP.models
 
 

@@ -1,9 +1,10 @@
-"""The named cohorts. This is the only module that imports both contestant modules.
+"""The named cohorts. The only module in ``volab.compare`` that imports a contestant module.
 
 ``volab.walkforward`` never names a contestant it did not define (R85): it is handed a
 :class:`Cohort`. The analysis modules next door import no model either, so ``import volab.compare``
 cannot pull ``arch`` through a side door. Assembling the roster is this module's whole job, and
-``test_only_cohorts_imports_the_model_modules`` is the witness.
+``test_only_cohorts_imports_the_model_modules`` is the witness (it checks the GARCH and recalibrated
+modules; the implied-variance module is held to the same rule by this docstring, not by that test).
 
 **The shootout** is the three baseline models, the three GARCH specifications (R91) and the
 recalibrated HAR (R96): seven contestants (:data:`MULTISTEP` below drops one for h >= 2).
@@ -22,6 +23,12 @@ and takes no expectation. The refusal is therefore available a priori from the m
 law alone, with no draw and no target -- which is what separates it from a threshold on the
 forecast's size (look-ahead, selecting on the random draw, and unworkable because
 ``Evaluation.comparable`` intersects origins across contestants).
+
+**The Phase 3 cohort** (``phase3-iv``, P3-04) is the multistep cohort's six plus ``har_rv_iv``, the
+HAR with the matched implied variance: seven. It is built **beside** the two above, which are the
+contestant set of the holdout pre-registration (R130) and are never added to; they keep their
+names, members and order. ``har_levels`` is first (R87). ``har_rv_iv`` has no three-month implied
+variance to read, so the cohort answers h = 1, 5 and 22 and is refused at 66.
 
 **The pairing is enforced, and derived (US-3.9).** Each contestant declares a
 :class:`~volab.models.base.Domain`; ``GarchModel`` derives EGARCH's bound (``max_horizon=1``) from
