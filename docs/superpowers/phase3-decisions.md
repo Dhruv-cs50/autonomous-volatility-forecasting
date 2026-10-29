@@ -305,3 +305,33 @@ The underlying point stands on its own merits regardless, and is acted on: the s
 load-bearing assumptions — above all R135's reconstruction — are now collected at the **top of
 the implementation plan** instead of distributed through a 450-line spec, so the one person who
 can correct them meets them first.
+
+---
+
+## R151 — a rule the harness derives beats the same rule written as a list
+
+Found twice in this phase, and once before it, which is what makes it a ruling rather than three
+fixes.
+
+| where | the list | how it failed |
+|---|---|---|
+| `multistep_members` (R131, Phase 2) | a name filter for the horizon-limited contestant | "needed someone to remember it when a second horizon-limited contestant arrived" |
+| `conformance_suite` clause 10 (P3-02) | clause 10 ran on the primary toy only | a contestant declaring at three horizons had one checked and two silently unchecked |
+| `test_only_cohorts_imports_the_model_modules` (P3-04) | `volab.models.garch` and `volab.models.recalibrated`, hardcoded | it did not notice the third contestant module the same task added; a `volab/compare/` module importing `volab.models.iv` passed it |
+
+Each list was correct when written. Each stopped being correct the moment the set it enumerated
+grew, and in every case **the suite stayed green** — a list cannot report its own incompleteness.
+
+**Ruling: where a test or a harness enumerates a set the codebase will extend, derive the set.**
+`volab.models.*` minus `base`, every probed horizon, every configured horizon. Where a floor is
+enough, assert the floor (`>=`) rather than an equality, so a fourth member needs no test edit —
+an equality is a list wearing a set's clothes.
+
+**The witness for a derived rule is a mutation that the listed version passes.** P3-04's is the
+model: planting `from volab.models.iv import har_rv_iv` into `compare/series.py` makes the new
+test fail and the **HEAD** test pass, which demonstrates the hole existed rather than asserting
+it did.
+
+The cost is paid where the derivation has edge cases, and those get pinned: `base` is exempt
+**exactly**, so `volab.models.basement` is still flagged, and there is a parametrised test over
+nine import forms saying so.
