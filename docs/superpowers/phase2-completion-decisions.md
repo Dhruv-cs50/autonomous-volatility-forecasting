@@ -1519,3 +1519,76 @@ report a red tree and could reasonably start debugging someone else's plant.
 **The rule needs a clause: a plant-and-revert needs exclusive `src/`, or it belongs in a scratch
 copy.** The architect handled it correctly — it did not revert what it had not written, and it
 re-checked `git log -1` before each amend so it never amended across another agent's commit.
+
+## R132 — US-3.9a: the trap is closed, and five departures worth keeping
+
+`4fcb307`, `18f05f2`, `d51dfb7`, `04479bb`, `f15da4e`, `a2eb1cb`. **1424 tests**, from 1368. Gates
+green. Verified here rather than relayed: ledgers unchanged at **414 / 52**, `ALLOWED` still
+`{"store.py"}`, `tests/test_import_discipline.py` untouched, and **the registered read still
+compares seven contestants at h=1 and six above** — which was the one thing that could not move.
+
+**The trap, closed.** `SHOOTOUT.horizons((1, 5, 22, 66))` **derives** to `(1,)` and `MULTISTEP`'s
+to all four; `MULTISTEP`'s membership is derived from the declarations rather than filtered by
+name. The refusal reads:
+
+```
+cohort 'phase2-shootout' cannot be evaluated at h=22: 'egarch11_skewt' answers h<=1.
+Its contestant set is part of the number, so a member is never dropped silently
+```
+
+That second sentence is the ruling in the error message, which is where it is most use. R114's
+exclusion is now enforced by the harness rather than remembered by the operator.
+
+### Departures accepted, each because the code knew something the design did not
+
+**Conformance clause 9 is opt-in across horizons** (`clause_9(model, toy, also=())`,
+`conformance_suite(..., also_at=())`). The design had it rebuild the toy at every configured
+horizon, which cannot be done generically: the toy has 146 sessions against a 66-session target
+lag, so **no** contestant answers an origin at h=66 there, and `har_levels_mz` answers nothing on a
+fresh stride-6 toy at any horizon because it needs 40 calibration pairs. Both are
+**indistinguishable from "declares a horizon it cannot answer"** — the first implementation failed
+three recalibrated tests for exactly that reason. So the toy's own horizon is always checked and
+`also_at` supplies toys the caller vouches for. Left uncovered and stated: `har_levels_mz`'s
+unrestricted claim above its toy horizon, and h=66 for everyone.
+
+**The driver had an empty-window path the design missed.** `run_configuration` returns *before*
+`evaluate` when no origin is scoreable, appending counted NaN lines under the cohort's name — so
+the `evaluate` guard alone would never have fired there. The same refusal now sits at the top of
+the driver, with its own witness.
+
+**`Measurement` and `Sampling` shipped in 3.9a** rather than 3.9b, because `GarchModel.domain`
+builds a `Sampling` and the h=1 EGARCH witness reads `domain.sampling`. They have unit tests of
+their own, so **3.9b must not re-add that core** — only W13-W15 remain its.
+
+**The two refusals keep different exit codes, deliberately.** The horizon refusal exits 1 (a CLI
+guard before any work); the coverage refusal reuses `ConfigurationOutcome.refused`, which the CLI
+already turns into exit 2. Two codes, two meanings, and the second was reused rather than invented.
+Unifying them would erase a distinction the CLI already made.
+
+**The thin-skip reason now names the count that fell short**, but only when `cohort.requires` is
+non-empty: "only 1500 rows" against a minimum of 250 contradicts itself when the shortfall is in a
+column. The old wording is asserted unchanged for cohorts requiring nothing.
+
+### Two gaps sent back, both the implementer's own findings
+
+**`RecalibratedHar.domain` returns `UNRESTRICTED` and can launder a base's bound.** It flagged this,
+left it per the design, and named delegation as the safe form. **I am overruling the design**:
+delegation to `self.base.domain` is not merely safer but the only correct answer, because the
+recalibration consumes the base's forecast and therefore cannot answer a horizon the base cannot.
+No base declares a bound today, which is exactly when it is cheap.
+
+**`coverage_refusal` has no real-store witness** — the design's VIX1D figures are exercised only
+against the toy. Sent back with the measured numbers to assert against the mechanism rather than
+pin a count, since pinning today's 119 would pin the data rather than the behaviour (R72, R78, R99).
+
+### Two smaller notes
+
+**The attribution line differs on these six commits** (`Claude Sonnet 5.5`, not the `Claude Opus 5`
+I specified) because that is the model that actually ran. **Left alone**: it is more accurate than
+the line I gave, and rewriting six commits to make it less true is the wrong trade. Mixed lines in
+the log are the honest record of who wrote what.
+
+**The compare CLI's bare-command output changed** and the design's "docs unchanged" note did not
+cover it: it now prints `--horizon not given: running h=1 ... left out: <refusal>` when the default
+narrows a run. That is the point — an operator should see why they got one horizon instead of four
+— but it is a change to what a documented command prints, recorded rather than discovered.
