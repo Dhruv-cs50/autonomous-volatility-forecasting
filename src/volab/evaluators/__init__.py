@@ -235,10 +235,11 @@ class CoverageResult:
     ``refusal`` is a reason when neither p-value could be computed (an overlapping window, or too
     few origins); both are then ``None``. ``christoffersen_withheld`` is a reason when only
     ``christoffersen_p`` is ``None``: the breach sequence leaves the independence statistic zero by
-    construction (no breach at all, every origin breached, a lone breach at either end), so its
-    p-value would be 1.0 whatever the true dependence. That 1.0 would read as "independence not
-    rejected" and is evidence of nothing, so it is withheld with the reason instead. ``kupiec_p`` is
-    informative on those sequences and is reported. The counts are reported either way.
+    construction (no breach at all, every origin breached, a lone breach at the first or last
+    origin, every origin but the first or but the last breached), so its p-value would be 1.0
+    whatever the true dependence. That 1.0 would read as "independence not rejected" and is
+    evidence of nothing, so it is withheld with the reason instead. ``kupiec_p`` is informative on
+    those sequences and is reported. The counts are reported either way.
     """
 
     breaches: int
@@ -304,10 +305,11 @@ def coverage(hits: Sequence[bool], alpha: float, *, horizon: int, stride: int) -
     * **Christoffersen** (1998), independence only: the indicator is a first-order Markov chain
       whose breach probability does not depend on the previous origin's outcome. **On a sequence
       with nothing to compare the p-value is withheld, not reported as 1.0.** With no breach, with
-      every origin breached, or with a lone breach at the first or last origin, one of the two
-      states is never left or never entered after the start, the statistic is zero by construction
-      and its p-value would be one whatever the true dependence -- a number that reads as
-      "independence not rejected" and is evidence of nothing. No breach is the ordinary case at
+      every origin breached, with a lone breach at the first or last origin, or with every origin
+      but the first (or but the last) breached, one of the two states is never left or never
+      entered after the start, the statistic is zero by construction and its p-value would be one
+      whatever the true dependence -- a number that reads as "independence not rejected" and is
+      evidence of nothing. No breach is the ordinary case at
       ``alpha = 0.01`` over a few hundred origins, so this is the path an operator will usually
       see. ``christoffersen_p`` is then ``None`` and ``christoffersen_withheld`` says why;
       Kupiec's p, which is informative at zero breaches, is the one that speaks to that sequence.

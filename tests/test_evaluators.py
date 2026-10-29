@@ -1077,6 +1077,10 @@ def test_a_degenerate_breach_sequence_withholds_christoffersen_with_the_reason(
         _hits(60, [3, 4, 20, 41, 42, 43]),
         _hits(40, [0, 1, 30]),
         _hits(40, [5, 39]),
+        # The shapes nearest the withholding boundary: a leading cluster (no clear -> breach step)
+        # and a trailing one (no breach -> clear step).
+        _hits(40, [0, 1, 2]),
+        _hits(40, [37, 38, 39]),
     ],
 )
 def test_a_breach_sequence_with_transitions_to_compare_still_gets_its_p_value(
@@ -1085,6 +1089,23 @@ def test_a_breach_sequence_with_transitions_to_compare_still_gets_its_p_value(
     result = coverage(hits, alpha=0.01, horizon=1, stride=1)
     assert result.christoffersen_withheld is None
     assert result.christoffersen_p == pytest.approx(_christoffersen_by_the_loop(hits), rel=1e-9)
+
+
+def test_a_p_value_of_exactly_one_that_was_computed_is_not_withheld() -> None:
+    """The over-withholding direction: only a statistic zero *by construction* is withheld.
+
+    ``F F T T F`` has every transition count equal to one, so ``p01 == p11`` and the likelihood
+    ratio is zero (rounding gives -4.4e-16) -- yet nothing is structurally missing: both states are
+    left and entered, and the 1.0 is a computed non-rejection. Withholding on ``p01 == p11`` would
+    swallow it, and none of the other rows has equal estimates.
+    """
+    hits = [False, False, True, True, False]
+    result = coverage(hits, alpha=0.01, horizon=1, stride=1)
+    assert result.christoffersen_withheld is None
+    assert result.christoffersen_p == pytest.approx(1.0, abs=1e-12)
+    assert result.christoffersen_p is not None and _christoffersen_by_the_loop(hits) == (
+        pytest.approx(1.0, abs=1e-12)
+    )
 
 
 def test_a_refused_coverage_result_has_no_independence_reason_of_its_own() -> None:
