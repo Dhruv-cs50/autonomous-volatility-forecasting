@@ -26,6 +26,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from conftest import SyntheticStore
 from test_compare import TOY_COHORT, WINDOW
 from test_evaluators import HAND_ORIGINS, _hand_evaluation
 from test_walkforward_cli import _settings_with_root, _toy_panel_and_targets_by_horizon
@@ -44,7 +45,7 @@ from volab.evaluators import (
 from volab.evaluators.sink import DECISION_LEDGER, Decision, JsonlSink
 from volab.features.build import SESSIONS_PER_YEAR
 from volab.ingest.curate import BARS_DATASET
-from volab.paths import curated_path
+from volab.paths import Tier, curated_path
 from volab.sessions import get_calendar, sessions_between
 from volab.walkforward import LOSSES, TRIAL_LEDGER, Trial, count_trials
 
@@ -79,14 +80,30 @@ RETURNS = [-0.03, 0.01, -0.025, 0.0, -0.1, 0.02, -0.01, 0.0, 0.005, -0.021]
 BREACHES = {("tight", 0.01): 3, ("tight", 0.025): 4, ("wide", 0.01): 1, ("wide", 0.025): 1}
 
 
+def _window(flags: Sequence[bool] = (False,) * 10, affected: int = 0) -> cli.DistributionWindow:
+    return cli.DistributionWindow(flags=list(flags), holdings_affected=affected)
+
+
 def _decisions(
-    distributions: Sequence[bool] = (False,) * 10, count: int = 10, every: int = 5
+    distributions: Sequence[bool] = (False,) * 10,
+    count: int = 10,
+    every: int = 5,
+    *,
+    affected: int = 0,
+    known: bool = True,
 ) -> list[Decision]:
     evaluation = _hand_evaluation(
         {"tight": [TIGHT] * count, "wide": [WIDE] * count}, horizon=5, every=every
     )
     returns = {HAND_ORIGINS[i]: RETURNS[i] for i in range(count)}
-    return cli.decide(evaluation, returns=returns, distributions=distributions, errors=NO_ERRORS)
+    return cli.decide(
+        evaluation,
+        cohort="toy",
+        returns=returns,
+        distributions=_window(distributions, affected),
+        distribution_flags_known=known,
+        errors=NO_ERRORS,
+    )
 
 
 def test_decide_gives_one_decision_per_alpha() -> None:
@@ -132,10 +149,30 @@ def test_the_vol_target_of_each_contestant_is_sized_from_its_own_forecast() -> N
 
 def test_the_distribution_flags_reach_vol_target_and_the_window_size_is_kept() -> None:
     flags = (True, False, True, False, False, False, False, False, False, False)
-    for decision in _decisions(flags):
+    for decision in _decisions(flags, affected=7):
         assert decision.vol_target is not None
         assert {r.distribution_sessions for r in decision.vol_target.values()} == {2}
         assert decision.distribution_window == 10
+        assert decision.distribution_holdings_affected == 7, "passed through, not re-derived"
+
+
+def test_whether_the_flags_could_be_known_is_carried_on_the_decision() -> None:
+    assert all(d.distribution_flags_known for d in _decisions(known=True))
+    assert not any(d.distribution_flags_known for d in _decisions(known=False))
+
+
+def test_decide_refuses_a_cohort_the_evaluation_did_not_run() -> None:
+    """The named cohort is threaded through, so ``decision_series``'s cross-check compares two
+    different things and not the evaluation's label with itself."""
+    with pytest.raises(ValueError, match="'other' was asked for but the evaluation ran cohort"):
+        cli.decide(
+            _hand_evaluation({"tight": [TIGHT], "wide": [WIDE]}),
+            cohort="other",
+            returns={HAND_ORIGINS[0]: RETURNS[0]},
+            distributions=_window(),
+            distribution_flags_known=True,
+            errors=NO_ERRORS,
+        )
 
 
 def test_coverage_is_given_the_evaluations_stride_and_horizon_not_literals() -> None:
@@ -155,8 +192,10 @@ def test_an_empty_evaluation_is_decided_without_calling_vol_target() -> None:
     """``vol_target([], [])`` raises, ``decision_series`` accepts an empty evaluation."""
     decisions = cli.decide(
         _hand_evaluation({"tight": [], "wide": []}),
+        cohort="toy",
         returns={},
-        distributions=[],
+        distributions=_window([]),
+        distribution_flags_known=True,
         errors=NO_ERRORS,
     )
     assert len(decisions) == len(ALPHAS)
@@ -192,54 +231,133 @@ def _bars_panel(sessions: Sequence[dt.date], flagged: Sequence[dt.date]) -> pd.D
     return pd.concat([spy, other], ignore_index=True)
 
 
-def test_the_window_is_the_sessions_the_holdings_span_and_counts_each_ex_date_once() -> None:
+def _sessions() -> tuple[object, list[dt.date]]:
     calendar = get_calendar(load_settings())
-    sessions = sessions_between(calendar, dt.date(2024, 3, 1), dt.date(2024, 3, 29))
+    return calendar, sessions_between(calendar, dt.date(2024, 3, 1), dt.date(2024, 3, 29))
+
+
+def _window_of(
+    panel: pd.DataFrame, calendar: object, origins: Sequence[dt.date], horizon: int
+) -> cli.DistributionWindow:
+    return cli.distribution_window(
+        panel, "SPY", calendar, origins, horizon=horizon, end=dt.date(2024, 12, 31)
+    )
+
+
+def test_the_window_is_the_sessions_the_holdings_span_and_counts_each_ex_date_once() -> None:
+    calendar, sessions = _sessions()
     origins = [sessions[0], sessions[5]]
     # Holdings of 3 sessions: (S0, S3] and (S5, S8]. S0 is the origin itself, S4 falls between the
     # holdings, S9 is after the last: three ex-dates that no holding contains.
     flagged = [sessions[0], sessions[2], sessions[4], sessions[7], sessions[9]]
-    flags = cli.distribution_window(
-        _bars_panel(sessions, flagged),
-        "SPY",
-        calendar,
-        origins,
-        horizon=3,
-        end=dt.date(2024, 12, 31),
-    )
-    assert flags.count(True) == 2, "S2 and S7 are the ex-dates a holding contains"
-    assert len(flags) == 6, "S1-S3 and S6-S8"
+    window = _window_of(_bars_panel(sessions, flagged), calendar, origins, 3)
+    assert window.flags.count(True) == 2, "S2 and S7 are the ex-dates a holding contains"
+    assert len(window.flags) == 6, "S1-S3 and S6-S8"
+    assert window.holdings_affected == 2, "one holding holds each"
 
 
-def test_overlapping_holdings_count_a_session_once() -> None:
-    calendar = get_calendar(load_settings())
-    sessions = sessions_between(calendar, dt.date(2024, 3, 1), dt.date(2024, 3, 29))
-    # Horizon 5 from S0 and S2 overlap on S3-S5; the ex-date on S4 sits in both holdings.
-    flags = cli.distribution_window(
-        _bars_panel(sessions, [sessions[4]]),
-        "SPY",
-        calendar,
-        [sessions[0], sessions[2]],
-        horizon=5,
-        end=dt.date(2024, 12, 31),
+def test_an_ex_date_in_overlapping_holdings_is_one_session_and_several_affected_holdings() -> None:
+    """The reason the second count exists. Horizon 5 from S0, S2 and S4 overlap on S4-S5, and the
+    ex-date on S4 sits inside the first two holdings but not the third (it is that holding's
+    origin): one session, two affected holdings of three."""
+    calendar, sessions = _sessions()
+    window = _window_of(
+        _bars_panel(sessions, [sessions[4]]), calendar, [sessions[0], sessions[2], sessions[4]], 5
     )
-    assert flags.count(True) == 1 and len(flags) == 7
+    assert window.flags.count(True) == 1 and len(window.flags) == 9
+    assert window.holdings_affected == 2
+
+
+def test_without_overlap_the_session_count_and_the_affected_holdings_agree() -> None:
+    """Stride equal to the horizon, as at h=1 and h=5 under the default stride: no holding shares a
+    session, so each ex-date is in exactly one holding and, one to a holding, the counts match."""
+    calendar, sessions = _sessions()
+    window = _window_of(
+        _bars_panel(sessions, [sessions[2], sessions[7]]),
+        calendar,
+        [sessions[0], sessions[3], sessions[6]],
+        3,
+    )
+    assert window.flags.count(True) == window.holdings_affected == 2
+
+
+def test_two_ex_dates_in_one_holding_are_one_affected_holding() -> None:
+    calendar, sessions = _sessions()
+    window = _window_of(
+        _bars_panel(sessions, [sessions[1], sessions[2]]), calendar, [sessions[0], sessions[3]], 3
+    )
+    assert window.flags.count(True) == 2 and window.holdings_affected == 1
+
+
+def test_a_holding_with_no_ex_date_is_not_affected() -> None:
+    calendar, sessions = _sessions()
+    window = _window_of(_bars_panel(sessions, []), calendar, [sessions[0], sessions[3]], 3)
+    assert window.flags.count(True) == 0 and window.holdings_affected == 0
+    assert len(window.flags) == 6, "the sessions looked at are still stated"
 
 
 def test_the_window_is_empty_with_no_origins() -> None:
-    calendar = get_calendar(load_settings())
-    sessions = sessions_between(calendar, dt.date(2024, 3, 1), dt.date(2024, 3, 29))
-    assert (
+    calendar, sessions = _sessions()
+    window = _window_of(_bars_panel(sessions, [sessions[3]]), calendar, [], 3)
+    assert window.flags == [] and window.holdings_affected == 0
+
+
+def test_an_origin_that_is_not_a_session_is_refused() -> None:
+    calendar, sessions = _sessions()
+    saturday = dt.date(2024, 3, 2)
+    with pytest.raises(ValueError, match="origin 2024-03-02 is not a session"):
+        _window_of(_bars_panel(sessions, []), calendar, [saturday], 3)
+
+
+def test_a_holding_that_runs_past_the_seal_is_refused_and_not_shortened() -> None:
+    """A clamp would quietly shorten the window the disclosure is read against."""
+    calendar, sessions = _sessions()
+    with pytest.raises(ValueError, match="the holding from 2024-03-28 runs past 2024-03-29"):
         cli.distribution_window(
-            _bars_panel(sessions, [sessions[3]]),
+            _bars_panel(sessions, []),
             "SPY",
             calendar,
-            [],
+            [dt.date(2024, 3, 28)],
             horizon=3,
-            end=dt.date(2024, 12, 31),
+            end=dt.date(2024, 3, 29),
         )
-        == []
-    )
+
+
+def test_a_session_in_a_holding_with_no_bar_is_refused_and_not_read_as_no_ex_date() -> None:
+    calendar, sessions = _sessions()
+    panel = _bars_panel(sessions, [])
+    panel = panel[~((panel["symbol"] == "SPY") & (panel["as_of"] == sessions[2]))]
+    with pytest.raises(ValueError, match="session 2024-03-05 in the holding from 2024-03-01"):
+        _window_of(panel, calendar, [sessions[0]], 3)
+
+
+# -- whether the flags could be known at all ----------------------------------------------------
+
+
+def _store(settings: Settings) -> SyntheticStore:
+    return SyntheticStore(root=settings.storage_root, settings=settings)
+
+
+def test_the_flags_are_known_only_where_the_dividend_source_holds_the_symbol(
+    tmp_path: Path,
+) -> None:
+    """SPY and IWM have no dividend source, so their flags are False by absence and a count of
+    zero is not a finding. QQQ has one. This reads the raw tier the way the curation does."""
+    settings = _settings_with_root(load_settings(), tmp_path)
+    assert cli.distribution_flags_known(settings, "SPY") is False
+    store = _store(settings)
+    store.write("nasdaq_dividends", "QQQ", [dt.date(2024, 2, 20)], tier=Tier.RAW)
+    assert cli.distribution_flags_known(settings, "QQQ") is True
+    assert cli.distribution_flags_known(settings, "SPY") is False, "per symbol"
+
+
+def test_a_dividend_row_after_dev_end_does_not_make_the_flags_known(tmp_path: Path) -> None:
+    """The read stops at ``dev_end``: what the source holds after it is not evidence about the
+    window. (It reads as unknown, which errs the safe way.)"""
+    settings = _settings_with_root(load_settings(), tmp_path)
+    after = settings.splits.dev_end + dt.timedelta(days=30)
+    _store(settings).write("nasdaq_dividends", "QQQ", [after], tier=Tier.RAW)
+    assert cli.distribution_flags_known(settings, "QQQ") is False
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +393,18 @@ def test_a_decision_line_carries_the_brief_s_fields(tmp_path: Path) -> None:
     assert set(line["coverage"]) == {"tight", "wide"}
     assert set(line["vol_target"]) == {"tight", "wide"}
     assert line["coverage"]["tight"]["breaches"] == BREACHES[("tight", ALPHAS[0])]
+
+
+@pytest.mark.parametrize("known", [True, False])
+def test_a_decision_line_states_whether_its_ex_date_count_could_be_known(
+    tmp_path: Path, known: bool
+) -> None:
+    """A count of zero with no source behind it must not read as "no ex-dates occurred"."""
+    (decision, *_) = _decisions(affected=4, known=known)
+    line = _written(tmp_path, decision)
+    assert line["distribution_flags_known"] is known
+    assert line["distribution_holdings_affected"] == 4
+    assert line["distribution_window"] == 10
 
 
 def test_the_sink_appends_and_never_rewrites(tmp_path: Path) -> None:
@@ -353,8 +483,10 @@ def test_a_non_finite_vol_target_statistic_is_written_as_null_too(tmp_path: Path
 def test_a_run_with_one_origin_has_null_statistics_end_to_end() -> None:
     (decision, *_) = cli.decide(
         _hand_evaluation({"tight": [TIGHT], "wide": [WIDE]}),
+        cohort="toy",
         returns={HAND_ORIGINS[0]: RETURNS[0]},
-        distributions=[False],
+        distributions=_window([False]),
+        distribution_flags_known=True,
         errors=NO_ERRORS,
     )
     assert decision.vol_target is not None
@@ -413,8 +545,10 @@ def test_a_refused_coverage_result_is_written_with_its_refusal_and_null_p_values
 def test_an_empty_decision_is_written_with_a_reason_and_not_a_bare_null(tmp_path: Path) -> None:
     (decision, *_) = cli.decide(
         _hand_evaluation({"tight": [], "wide": []}),
+        cohort="toy",
         returns={},
-        distributions=[],
+        distributions=_window([]),
+        distribution_flags_known=True,
         errors=NO_ERRORS,
     )
     line = _written(tmp_path, decision)
@@ -475,6 +609,10 @@ class _Run:
             cli, "load_for", lambda _s, _sym, horizon, **k: (self.panel, self.targets[horizon])
         )
         monkeypatch.setattr(cli, "COHORTS", {TOY.name: TOY})
+
+    def write_dividends(self, symbol: str, *days: dt.date) -> None:
+        """Give ``symbol`` a dividend source in the raw tier, so its flags can be known."""
+        _store(self.settings).write("nasdaq_dividends", symbol, days, tier=Tier.RAW)
 
     def main(self, *argv: str) -> int:
         return int(cli.main(["run", "--cohort", TOY.name, *argv]))
@@ -625,19 +763,20 @@ def test_the_entry_point_refuses_a_to_past_dev_end_and_has_no_unlock_flag(
 # -- the numbers a real run produces --------------------------------------------------------------
 
 
-def _window_ex_dates(run: _Run, origins: Sequence[dt.date], horizon: int) -> tuple[int, int]:
-    """``(flagged, sessions)`` among the sessions the holdings ``(t, t + horizon]`` contain,
-    derived without ``distribution_window`` from the bars the test wrote."""
+def _window_ex_dates(run: _Run, origins: Sequence[dt.date], horizon: int) -> tuple[int, int, int]:
+    """``(flagged, sessions, affected)`` over the holdings ``(t, t + horizon]``, derived without
+    ``distribution_window`` from the bars the test wrote."""
     calendar = get_calendar(run.settings)
     sessions = sessions_between(calendar, origins[0], run.settings.splits.dev_end)
     flags = {
         pd.Timestamp(r["as_of"]).date(): bool(r["has_distribution"])
         for _, r in run.panel[run.panel["symbol"] == "SPY"].iterrows()
     }
-    covered = {
-        sessions[i + k] for t in origins for i in [sessions.index(t)] for k in range(1, horizon + 1)
-    }
-    return sum(flags.get(day, False) for day in covered), len(covered)
+    holdings = [{sessions[sessions.index(t) + k] for k in range(1, horizon + 1)} for t in origins]
+    covered = set().union(*holdings)
+    flagged = sum(flags[day] for day in covered)
+    affected = sum(any(flags[day] for day in holding) for holding in holdings)
+    return flagged, len(covered), affected
 
 
 def test_the_ex_date_count_beside_a_vol_target_is_the_stores_flag_over_the_holdings(
@@ -651,15 +790,48 @@ def test_the_ex_date_count_beside_a_vol_target_is_the_stores_flag_over_the_holdi
     flagged_overall = int(run.panel[run.panel["symbol"] == "SPY"]["has_distribution"].sum())
     for line in lines:
         origins = _used_origins(run, line["horizon"])
-        flagged, covered = _window_ex_dates(run, origins, line["horizon"])
+        flagged, covered, affected = _window_ex_dates(run, origins, line["horizon"])
         assert flagged > 0, "the window must contain an ex-date or this witnesses nothing"
         assert flagged < flagged_overall, "and the file must hold ex-dates outside it"
+        assert 0 < affected < len(origins), "some holdings are affected and some are not"
         assert line["distribution_window"] == covered
+        assert line["distribution_holdings_affected"] == affected
         counts = {r["distribution_sessions"] for r in line["vol_target"].values()}
         assert counts == {flagged}
+        # At h=5 and stride 5 the holdings do not overlap, and the toy flags are one to a holding.
+        assert affected == flagged
 
 
-def _used_origins(run: _Run, horizon: int) -> list[dt.date]:
+def test_overlapping_holdings_are_counted_once_each_in_a_real_run(run: _Run, capsys) -> None:
+    """At h=5 and stride 3 each holding shares sessions with the next: the two counts can differ,
+    and the line must carry the affected holdings, which is the larger measure of the damage."""
+    assert run.main("--symbol", "SPY", "--horizon", "5", "--every", "3", *WINDOW) == 0
+    capsys.readouterr()
+    for line in run.lines(DECISION_LEDGER):
+        origins = _used_origins(run, line["horizon"], every=3)
+        flagged, _, affected = _window_ex_dates(run, origins, line["horizon"])
+        assert line["distribution_holdings_affected"] == affected
+        assert affected > flagged, "overlap must make the holdings count the larger"
+
+
+def test_a_symbol_with_no_dividend_source_is_recorded_as_unknown_not_as_none(
+    run: _Run, capsys
+) -> None:
+    assert run.main("--symbol", "SPY", "--horizon", "5", *WINDOW) == 0
+    printed = capsys.readouterr().out
+    assert {line["distribution_flags_known"] for line in run.lines(DECISION_LEDGER)} == {False}
+    assert "NOT KNOWN" in printed
+
+
+def test_a_symbol_with_a_dividend_source_is_recorded_as_known(run: _Run, capsys) -> None:
+    run.write_dividends("SPY", dt.date(2024, 3, 15))
+    assert run.main("--symbol", "SPY", "--horizon", "5", *WINDOW) == 0
+    printed = capsys.readouterr().out
+    assert {line["distribution_flags_known"] for line in run.lines(DECISION_LEDGER)} == {True}
+    assert "NOT KNOWN" not in printed
+
+
+def _used_origins(run: _Run, horizon: int, every: int = 5) -> list[dt.date]:
     """The origins of the decision series, i.e. the comparable QLIKE origins of the run."""
     import volab.walkforward as wf
     from volab.walkforward import evaluate
@@ -670,7 +842,7 @@ def _used_origins(run: _Run, horizon: int) -> list[dt.date]:
         run.targets[horizon],
         first=dt.date(2024, 3, 1),
         last=dt.date(2024, 6, 28),
-        every=5,
+        every=every,
     )
     evaluation = evaluate(
         run.panel,
@@ -680,7 +852,7 @@ def _used_origins(run: _Run, horizon: int) -> list[dt.date]:
         horizon=horizon,
         calendar=calendar,
         minimum_training=20,
-        every=5,
+        every=every,
         audit=wf.RunAudit(),
         cohort=TOY,
     )
@@ -688,7 +860,10 @@ def _used_origins(run: _Run, horizon: int) -> list[dt.date]:
     from volab.evaluators import horizon_returns
 
     returns = horizon_returns(run.settings, "SPY", sorted(usable), horizon=horizon)
-    return sorted(usable & returns.keys())
+    # The invariant ``decision_series`` relies on, as a witness and not a defensive intersection:
+    # a target needs the closes at ``t`` and ``t + h``, so every comparable origin has a return.
+    assert usable <= returns.keys()
+    return sorted(usable)
 
 
 def test_a_run_writes_strict_json_with_the_p_values_and_their_reasons(run: _Run, capsys) -> None:
@@ -704,7 +879,9 @@ def test_a_run_writes_strict_json_with_the_p_values_and_their_reasons(run: _Run,
     assert withheld, "the toy run must reach a withheld Christoffersen p or this witnesses nothing"
     assert all(isinstance(result["christoffersen_withheld"], str) for result in withheld)
     # Where the p-value is there, no reason is.
-    present = [r for line in lines for r in line["coverage"].values() if r["christoffersen_p"]]
+    present = [
+        r for line in lines for r in line["coverage"].values() if r["christoffersen_p"] is not None
+    ]
     assert all(r["christoffersen_withheld"] is None for r in present)
 
 
@@ -742,6 +919,33 @@ def test_a_configuration_with_nothing_to_score_is_decided_without_raising(
         assert line["origins"] == 0 and line["vol_target"] is None
         assert "no comparable origin" in line["vol_target_refusal"]
     assert len(run.lines(TRIAL_LEDGER)) == len(LOSSES) * len(TOY.models), "still counted"
+
+
+# -- the restated feature-table read -----------------------------------------------------------
+
+
+def test_persisted_returns_the_stored_table_in_order_and_stops_at_dev_end(tmp_path: Path) -> None:
+    """``_persisted`` is restated from ``volab.compare.__main__`` and stubbed in every run above,
+    so it is tested here against a real store. Its ``sort_values`` is a no-op on ``load_panel``'s
+    output, which is already ordered, so no test here can witness it; the bound at ``dev_end`` is
+    what this pins."""
+    settings = _settings_with_root(load_settings(), tmp_path)
+    store = _store(settings)
+    dev_end = settings.splits.dev_end
+    days = [dev_end - dt.timedelta(days=3), dev_end - dt.timedelta(days=1)]
+    sealed = dev_end + dt.timedelta(days=10)
+    store.write(cli.FEATURE_SET, "SPY", [days[1], days[0], sealed], tier=Tier.FEATURES)
+    frame = cli._persisted(settings, "SPY")
+    assert frame is not None
+    assert [d.date() for d in pd.to_datetime(frame["as_of"])] == days, "nothing sealed"
+    assert list(frame.index) == [0, 1]
+
+
+def test_persisted_is_none_where_the_store_holds_no_table(tmp_path: Path) -> None:
+    settings = _settings_with_root(load_settings(), tmp_path)
+    assert cli._persisted(settings, "SPY") is None
+    _store(settings).write(cli.FEATURE_SET, "QQQ", [dt.date(2024, 3, 1)], tier=Tier.FEATURES)
+    assert cli._persisted(settings, "SPY") is None, "per symbol"
 
 
 # -- the refusal ----------------------------------------------------------------------------------

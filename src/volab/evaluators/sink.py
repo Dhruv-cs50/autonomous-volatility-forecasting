@@ -12,7 +12,7 @@ one trial writer, and nothing in this module can put a decision on the trial led
 result per contestant. The vol-target result does not depend on ``alpha``, so it repeats across a
 configuration's lines; that is a duplicate of one measurement, not two measurements.
 
-Three serialisation contracts, each witnessed in ``tests/test_evaluators_cli.py``:
+Four serialisation contracts, each witnessed in ``tests/test_evaluators_cli.py``:
 
 * **A withheld Christoffersen p-value travels with its reason.** Where the independence statistic
   is zero by construction ``christoffersen_p`` is ``None`` and ``christoffersen_withheld`` says
@@ -23,6 +23,11 @@ Three serialisation contracts, each witnessed in ``tests/test_evaluators_cli.py`
   with no risk. ``json.dumps`` would also emit a bare ``NaN`` for a non-finite float, which no
   strict parser reads back, so those become ``null`` too, and the dump runs with
   ``allow_nan=False`` so one that escaped this module fails here and not in a reader.
+* **An ex-date count says what it is a count of, and whether it could be non-zero.**
+  ``distribution_flags_known`` is ``false`` where the symbol has no dividend source, so a zero is
+  not read as "no ex-dates occurred"; ``distribution_holdings_affected`` counts holdings, because
+  one ex-date sits in several overlapping holdings and the session count alone understates how
+  much of the P&L is wrong.
 * **An empty origin set is stated, not implied.** ``vol_target`` is ``null`` with
   ``vol_target_refusal`` carrying why, because the function that sizes the position refuses an
   empty series and a bare ``null`` would be read as a missing measurement.
@@ -106,6 +111,14 @@ class Decision:
     # How many sessions the ``has_distribution`` flags were read over, so a count of zero is
     # printed beside the size of what was looked at.
     distribution_window: int
+    # How many of the ``origins`` holdings contain an ex-date. The session count above counts an
+    # ex-date once however many overlapping holdings it sits in; this is the measure of how much
+    # of the P&L is biased, and the two differ by up to the overlap factor (about 4-5x at h=22
+    # and stride 5).
+    distribution_holdings_affected: int
+    # Whether the flags could have been anything but ``False``: ``False`` where the symbol has no
+    # dividend source, in which case a count of zero is "we had no way to know", not "none".
+    distribution_flags_known: bool
 
     def record(self) -> dict[str, object]:
         return {
@@ -123,6 +136,8 @@ class Decision:
             else {name: _vol_target(result) for name, result in self.vol_target.items()},
             "vol_target_refusal": self.vol_target_refusal,
             "distribution_window": self.distribution_window,
+            "distribution_holdings_affected": self.distribution_holdings_affected,
+            "distribution_flags_known": self.distribution_flags_known,
         }
 
 

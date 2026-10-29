@@ -38,6 +38,7 @@ import datetime as dt
 import sys
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 
@@ -98,6 +99,43 @@ def _persisted(settings: Settings, symbol: str) -> pd.DataFrame | None:
     return frame.sort_values("as_of").reset_index(drop=True)
 
 
+# The raw tier's name for the dividend source, as ``volab.ingest.curate`` reads it.
+DIVIDENDS_SOURCE = "nasdaq_dividends"
+
+
+@dataclass(frozen=True)
+class DistributionWindow:
+    """The ``has_distribution`` evidence for a set of holdings."""
+
+    # The flag of every session in the union of the holdings, each session once.
+    flags: list[bool]
+    # How many holdings contain at least one flagged session.
+    holdings_affected: int
+
+
+def distribution_flags_known(settings: Settings, symbol: str) -> bool:
+    """Whether ``has_distribution`` could have been ``True`` for ``symbol`` at all.
+
+    The flag is derived from the dividend source (``volab.ingest.curate``), and the vendor serves
+    distributions for QQQ alone: SPY's and IWM's are ``False`` by absence, which a panel cannot be
+    told apart from "no ex-date occurred". So the question is put to the source: does it hold a
+    row for ``symbol`` up to ``dev_end``? If not, a count of zero is a count of nothing recorded,
+    and the decision says so (``distribution_flags_known: false``). A source whose only rows fall
+    after ``dev_end`` reads as unknown too, which errs the safe way.
+    """
+    try:
+        load_panel(
+            DIVIDENDS_SOURCE,
+            end=settings.splits.dev_end,
+            symbols=[symbol],
+            tier=Tier.RAW,
+            settings=settings,
+        )
+    except DatasetNotFound:
+        return False
+    return True
+
+
 def distribution_window(
     panel: pd.DataFrame,
     symbol: str,
@@ -106,27 +144,37 @@ def distribution_window(
     *,
     horizon: int,
     end: dt.date,
-) -> list[bool]:
-    """The store's ``has_distribution`` flag of every session the holdings of ``origins`` contain.
+) -> DistributionWindow:
+    """The store's ``has_distribution`` flags over the holdings of ``origins``.
 
     This is what ``vol_target``'s ``distributions`` argument is supplied from (spec 7.4): the flag
     is read from the curated bars already in ``panel`` -- which ``load_for`` read to ``dev_end`` --
     and not invented, so the ex-date count printed beside the P&L is a fact about the store.
 
-    **The window is the union of ``(t, t + horizon]`` over the origins ``t``.** A holding opened at
-    the close of ``t`` earns the return to the close ``horizon`` sessions on, so an ex-date on
-    ``t`` itself fell before the holding began and one between two holdings (when the stride
-    exceeds the horizon) falls in none. A session in several overlapping holdings is one session,
-    counted once. A session in the window with no bar has no flag to read and is ``False``; the
-    returned length is the number of sessions looked at, so a count of zero can be read against it.
+    **A holding is ``(t, t + horizon]``.** A position opened at the close of ``t`` earns the return
+    to the close ``horizon`` sessions on, so an ex-date on ``t`` itself fell before the holding
+    began and one between two holdings (when the stride exceeds the horizon) falls in none.
 
-    **Zero is not "no ex-dates".** The flag is only as good as the dividend source behind it, and
-    the vendor serves distributions for QQQ alone: SPY's and IWM's are uniformly ``False`` by
-    absence (``volab.ingest.curate._distribution_dates``). A count of zero for those is a count
-    of nothing recorded, and this function cannot tell the two apart.
+    **Two counts, because they answer different questions.** ``flags`` covers the union of the
+    holdings with each session once: how many ex-dates there were. ``holdings_affected`` counts
+    the holdings that contain one: how much of the P&L is wrong. With overlapping holdings an
+    ex-date sits in several -- an isolated one in about four or five at h=22 and stride 5 -- so
+    the session count understates the biased share of the P&L by that factor; without overlap
+    (stride >= horizon) each ex-date is in one holding. The length of ``flags`` is the number of
+    sessions looked at.
+
+    **Zero is not "no ex-dates"** where ``distribution_flags_known`` is false; this function
+    cannot tell, and does not try.
+
+    Refuses an origin that is not a session on or before ``end``, a holding that runs past ``end``
+    (shortening it would shrink the window the count is read against), and a session in a holding
+    that has no bar in ``panel`` (no flag to read is not a flag of ``False``). None of the three is
+    reachable from ``_run``: its origins come from targets, which need a close at ``t`` and at
+    ``t + horizon`` and a bar on every session between, all at or before ``dev_end``. They guard a
+    caller that did not get its origins that way, and are tested directly.
     """
     if not origins:
-        return []
+        return DistributionWindow([], 0)
     bars = panel[panel["symbol"] == symbol]
     flagged: dict[dt.date, bool] = {}
     for day, flag in zip(as_of_dates(bars), bars["has_distribution"], strict=True):
@@ -134,19 +182,35 @@ def distribution_window(
     sessions = sessions_between(calendar, min(origins), end)
     position = {day: index for index, day in enumerate(sessions)}
     covered: set[int] = set()
+    affected = 0
     for origin in origins:
         start = position.get(origin)
         if start is None:
             raise ValueError(f"origin {origin} is not a session on or before {end}")
-        covered.update(range(start + 1, min(start + horizon, len(sessions) - 1) + 1))
-    return [flagged.get(sessions[index], False) for index in sorted(covered)]
+        if start + horizon >= len(sessions):
+            raise ValueError(
+                f"the holding from {origin} runs past {end}: {horizon} sessions on is not "
+                "a session this read may see"
+            )
+        holding = range(start + 1, start + horizon + 1)
+        for index in holding:
+            if sessions[index] not in flagged:
+                raise ValueError(
+                    f"session {sessions[index]} in the holding from {origin} has no bar for "
+                    f"{symbol} in the panel, so its has_distribution flag cannot be read"
+                )
+        covered.update(holding)
+        affected += any(flagged[sessions[index]] for index in holding)
+    return DistributionWindow([flagged[sessions[index]] for index in sorted(covered)], affected)
 
 
 def decide(
     evaluation: Evaluation,
     *,
+    cohort: str,
     returns: Mapping[dt.date, float],
-    distributions: Sequence[bool],
+    distributions: DistributionWindow,
+    distribution_flags_known: bool,
     errors: MonteCarlo,
 ) -> list[Decision]:
     """One :class:`Decision` per tail level for a finished evaluation.
@@ -159,7 +223,10 @@ def decide(
 
     ``vol_target([], [])`` raises where ``decision_series`` accepts an empty evaluation, so an
     empty origin set is guarded here and recorded as a refusal with its reason.
-    ``distributions`` is passed through (:func:`distribution_window`) and its length is kept.
+    ``distributions`` is passed through (:func:`distribution_window`): its flags go to
+    ``vol_target``, and its session count, affected-holdings count and ``distribution_flags_known``
+    are kept on the decision. ``cohort`` is the name the caller **ran**, not read back from the
+    evaluation, so ``decision_series`` compares two different things.
     """
     forecasts = {
         name: {origin: forecast for origin, _, forecast in evaluation.scored(name)}
@@ -167,7 +234,7 @@ def decide(
     }
     decisions: list[Decision] = []
     for alpha in ALPHAS:
-        series = decision_series(evaluation, alpha=alpha, cohort=evaluation.cohort, returns=returns)
+        series = decision_series(evaluation, alpha=alpha, cohort=cohort, returns=returns)
         fz0 = analyse(series, monte_carlo_error=errors.percent, monte_carlo_source=errors.source)
         covered: dict[str, CoverageResult] = {}
         for name in evaluation.contestants:
@@ -188,7 +255,7 @@ def decide(
                     [forecasts[name][origin] for origin in series.origins],
                     [returns[origin] for origin in series.origins],
                     horizon=evaluation.horizon,
-                    distributions=distributions,
+                    distributions=distributions.flags,
                 )
                 for name in evaluation.contestants
             }
@@ -196,7 +263,7 @@ def decide(
             Decision(
                 symbol=evaluation.symbol,
                 horizon=evaluation.horizon,
-                cohort=evaluation.cohort,
+                cohort=cohort,
                 alpha=alpha,
                 stride=evaluation.every,
                 origins=series.n,
@@ -205,7 +272,9 @@ def decide(
                 coverage=covered,
                 vol_target=sized,
                 vol_target_refusal=refusal,
-                distribution_window=len(distributions),
+                distribution_window=len(distributions.flags),
+                distribution_holdings_affected=distributions.holdings_affected,
+                distribution_flags_known=distribution_flags_known,
             )
         )
     return decisions
@@ -278,8 +347,19 @@ def _describe(decision: Decision) -> list[str]:
         lines.append(
             f"    {name:14s} vol-target mean {_shown(target.mean_return)}, "
             f"vol {_shown(target.realized_vol)}, sharpe {_shown(target.sharpe)}, "
-            f"turnover {_shown(target.turnover)}, capped at {target.capped_origins} origin(s); "
-            f"{target.distribution_sessions} ex-date session(s) of {decision.distribution_window}"
+            f"turnover {_shown(target.turnover)}, capped at {target.capped_origins} origin(s)"
+        )
+    if decision.distribution_flags_known:
+        lines.append(
+            f"    ex-dates: {decision.vol_target[decision.contestants[0]].distribution_sessions} "
+            f"session(s) of {decision.distribution_window}; "
+            f"{decision.distribution_holdings_affected} of {decision.origins} holding(s) affected "
+            "(close-to-close P&L is wrong on those)"
+        )
+    else:
+        lines.append(
+            "    ex-dates: NOT KNOWN -- no dividend source for this symbol, so a count of 0 "
+            f"({decision.distribution_window} session(s) looked at) is not evidence of none"
         )
     return lines
 
@@ -308,6 +388,8 @@ def _run(settings: Settings, arguments: argparse.Namespace, sink: JsonlSink) -> 
     failures = 0
     print(f"cohort {cohort.name}: {', '.join(cohort.contestants)}")
 
+    # Once per symbol, before any work on it: whether a count of zero ex-dates could mean anything.
+    known = {symbol: distribution_flags_known(settings, symbol) for symbol in arguments.symbols}
     for symbol in arguments.symbols:
         for horizon in arguments.horizons:
             print(f"{symbol} h{horizon}:")
@@ -353,7 +435,7 @@ def _run(settings: Settings, arguments: argparse.Namespace, sink: JsonlSink) -> 
             # The signed return is a scoring read, taken after the forecasts exist and to dev_end.
             origins = [result.origin for result in evaluation.results]
             returns = horizon_returns(settings, symbol, origins, horizon=horizon) if origins else {}
-            flags = distribution_window(
+            window = distribution_window(
                 panel,
                 symbol,
                 calendar,
@@ -361,7 +443,14 @@ def _run(settings: Settings, arguments: argparse.Namespace, sink: JsonlSink) -> 
                 horizon=horizon,
                 end=settings.splits.dev_end,
             )
-            decisions = decide(evaluation, returns=returns, distributions=flags, errors=errors)
+            decisions = decide(
+                evaluation,
+                cohort=cohort.name,
+                returns=returns,
+                distributions=window,
+                distribution_flags_known=known[symbol],
+                errors=errors,
+            )
             decisions_written += sink.append_decisions(
                 decisions, at=started_at, sha=sha, dirty=dirty
             )
