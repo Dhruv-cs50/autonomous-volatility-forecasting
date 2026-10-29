@@ -34,6 +34,16 @@ share a numbering scheme.
 | P3-10 | `tools/measure_iv_requires.py` | `tools/` (new) | reproduces the design's section 4 table from the committed store | todo |
 | P3-11 | **Optional.** Make `Sampling` horizon-aware (R134's latent flaw) | `src/volab/models/base.py`, `src/volab/compare/`, `tests/` | one source **per horizon**, or the horizon dropped from `series_source`; a contestant measured at h=22 and h=66 on one series is accepted | **not scheduled — user's call.** No Phase 3 story needs it; `har_rv_iv` is OLS and declares no `Sampling` |
 
+## Blocks the recorded run
+
+Found by P3-08 and **not** deferred: these must be settled before Phase 3's recorded run, which
+is itself held until the user triggers the holdout reveal (R139).
+
+| finding | why it blocks |
+|---|---|
+| **`superior_predictive_ability` crashes on near-identical non-benchmark series.** `src/volab/compare/multiple.py` pre-checks only the benchmark's pairs, then `block_length` re-checks **all** pairs and raises `ValueError`. Reproduced on the toy cohort at stride 2 with two near-identical FZ0 series. Pre-existing Phase 2 code, surfaced by Phase 3's losses | **a real run would die *after* trials were appended**, leaving `trials.jsonl` carrying lines for a run that produced no comparison. Needs its own story |
+| **Zero ex-dates is not "no ex-dates".** SPY's and IWM's `has_distribution` flags are uniformly `False` because the vendor serves distributions for QQQ only | spec 7.4's dividend disclosure reads as "no ex-dates in the window" when it means "no distribution data for this symbol" — a hollow disclosure is worse than none, because it looks discharged |
+
 ## Deferred findings, carried to the final whole-branch review
 
 **Tracked here, not only in the SDD ledger.** That ledger lives under `.superpowers/`, which is
