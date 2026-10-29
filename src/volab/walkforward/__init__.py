@@ -963,7 +963,7 @@ def evaluate(
             )
         # A declared column the table does not have is wiring, not data: every origin would be
         # equally broken, so the run aborts instead of skipping each origin with a reason.
-        absent = [name for name in cohort.requires if name not in table.columns]
+        absent = [name for name in cohort.requires_at(horizon) if name not in table.columns]
         if absent:
             raise ValueError(
                 f"cohort {cohort.name!r} declares required column(s) {absent} that the feature "
@@ -993,13 +993,13 @@ def evaluate(
         }
         usable["target_as_of"] = [completed[day] for day in as_of_dates(usable)]
 
-        counted = training_rows(usable, column, cohort.requires)
+        counted = training_rows(usable, column, cohort.requires_at(horizon))
         if counted < minimum_training:
             why = f"only {len(usable)} knowable training row(s)"
-            if cohort.requires:
+            if cohort.requires_at(horizon):
                 # The count that fell short is not ``len(usable)``: "only 1500 rows" against a
                 # minimum of 250 would contradict itself when the shortfall is in a column.
-                why += f", {counted} of them non-null in {list(cohort.requires)}"
+                why += f", {counted} of them non-null in {list(cohort.requires_at(horizon))}"
             skipped.append((origin, why))
             continue
         # An origin whose own regressors are null has no forecast, and that is skipped rather
@@ -1008,7 +1008,7 @@ def evaluate(
         # never partially filled. Scoring it as a NaN would quietly shrink the denominator of
         # every loss while the origin still appeared to have been evaluated.
         null_regressors = [
-            name for name in (*HAR_REGRESSORS, *cohort.requires) if pd.isna(row[name])
+            name for name in (*HAR_REGRESSORS, *cohort.requires_at(horizon)) if pd.isna(row[name])
         ]
         if null_regressors:
             skipped.append((origin, f"null regressor(s) at the origin: {null_regressors}"))
@@ -1304,7 +1304,7 @@ def run_configuration(
     # output is unchanged, and the stored table is read once for this and the comparison below.
     stored: pd.DataFrame | None = None
     loaded = False
-    if cohort.requires:
+    if cohort.requires_at(horizon):
         stored, loaded = persisted(), True
         if stored is None:
             # Nothing to check is not a pass, and not a refusal on no evidence either: it falls
@@ -1314,7 +1314,7 @@ def run_configuration(
             reason = coverage_refusal(
                 stored,
                 targets,
-                cohort.requires,
+                cohort.requires_at(horizon),
                 origins,
                 horizon=horizon,
                 minimum_training=minimum_training,

@@ -17,12 +17,30 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
-from model_conformance import SYMBOL, Spy, Toy, make_toy, run_cohort
+from model_conformance import (
+    SYMBOL,
+    Answer,
+    Spy,
+    Toy,
+    clause_10_a_declared_requirement_is_real,
+    make_toy,
+    run_cohort,
+)
 
+from volab.errors import ModelSkip
 from volab.features.build import build_features
 from volab.features.targets import HORIZONS
 from volab.models import base
-from volab.models.base import UNRESTRICTED, Cohort, Domain, Measurement, Model, Sampling
+from volab.models.base import (
+    UNRESTRICTED,
+    Cohort,
+    Domain,
+    Forecaster,
+    Measurement,
+    Model,
+    Sampling,
+    TrainingView,
+)
 from volab.sessions import get_calendar
 from volab.walkforward import (
     ConfigurationOutcome,
@@ -120,8 +138,164 @@ def test_the_required_columns_are_de_duplicated_in_first_seen_order() -> None:
     cohort = _cohort(
         Domain(requires=("iv_h1", "vvix")), UNRESTRICTED, Domain(requires=("vvix", "baa10y"))
     )
-    assert cohort.requires == ("iv_h1", "vvix", "baa10y")
-    assert _cohort(UNRESTRICTED).requires == ()
+    assert cohort.requires_at(1) == ("iv_h1", "vvix", "baa10y")
+    assert _cohort(UNRESTRICTED).requires_at(1) == ()
+
+
+def test_requires_at_returns_the_unconditional_columns_and_this_horizons_own() -> None:
+    domain = Domain(requires=("vvix",), per_horizon=((1, "iv_var_h1"), (5, "iv_var_h5")))
+    assert domain.requires_at(1) == ("vvix", "iv_var_h1")
+    assert domain.requires_at(5) == ("vvix", "iv_var_h5")
+    assert domain.requires_at(22) == ("vvix",)
+
+
+def test_a_column_declared_for_a_horizon_the_contestant_refuses_is_rejected() -> None:
+    with pytest.raises(ValueError, match="does not answer"):
+        Domain(max_horizon=5, per_horizon=((22, "iv_var_h22"),))
+
+
+def test_the_rejection_names_the_column_and_the_bound() -> None:
+    with pytest.raises(ValueError, match=r"'iv_var_h22'.*h<=5"):
+        Domain(max_horizon=5, per_horizon=((22, "iv_var_h22"),))
+
+
+def test_a_domain_with_per_horizon_columns_is_still_hashable_and_compares_by_value() -> None:
+    one = Domain(per_horizon=((1, "iv_var_h1"),))
+    assert one == Domain(per_horizon=((1, "iv_var_h1"),))
+    assert one != Domain(per_horizon=((5, "iv_var_h5"),))
+    assert hash(one) == hash(Domain(per_horizon=((1, "iv_var_h1"),)))
+
+
+def test_a_cohort_deduplicates_the_same_column_declared_by_two_members() -> None:
+    # Review Focus 5.
+    declaring = (
+        Spy("first", domain=Domain(per_horizon=((1, "iv_var_h1"),))),
+        Spy("second", domain=Domain(per_horizon=((1, "iv_var_h1"),))),
+    )
+    assert Cohort("two", declaring).requires_at(1) == ("iv_var_h1",)
+
+
+def test_a_cohort_reads_each_members_columns_at_the_horizon_asked_for() -> None:
+    cohort = _cohort(
+        Domain(requires=("vvix",), per_horizon=((1, "iv_var_h1"), (5, "iv_var_h5"))),
+        Domain(per_horizon=((5, "iv_var_h5"), (22, "iv_var_h22"))),
+    )
+    assert cohort.requires_at(1) == ("vvix", "iv_var_h1")
+    assert cohort.requires_at(5) == ("vvix", "iv_var_h5")
+    assert cohort.requires_at(22) == ("vvix", "iv_var_h22")
+
+
+def test_the_cohort_has_no_horizon_blind_requires_accessor() -> None:
+    assert not hasattr(Cohort("c", ()), "requires")
+
+
+class _NeedsIvVar:
+    """Declares ``iv_var_h1`` for h=1 **only through** ``per_horizon``, so ``requires`` is empty;
+    ``checks`` decides whether it keeps the promise."""
+
+    fit_depends_on_horizon = False
+    domain = Domain(per_horizon=((1, "iv_var_h1"),))
+
+    def __init__(self, *, checks: bool) -> None:
+        self.name = "needs_iv_var"
+        self._checks = checks
+
+    def fit(self, view: TrainingView) -> Forecaster:
+        if self._checks and pd.isna(view.row["iv_var_h1"]):
+            raise ModelSkip("iv_var_h1 is null at the origin")
+        return Answer(1e-4)
+
+
+def test_clause_10_checks_a_requirement_declared_only_through_per_horizon() -> None:
+    """``requires`` is empty here, so a clause reading it would return at its first line and report
+    a pass for a declaration it never looked at -- the failure R79, R82 and R129 each record."""
+    toy = make_toy(1)
+    assert _NeedsIvVar.domain.requires == ()
+    with pytest.raises(AssertionError, match=r"declares it requires 'iv_var_h1'"):
+        clause_10_a_declared_requirement_is_real(_NeedsIvVar(checks=False), toy)
+    clause_10_a_declared_requirement_is_real(_NeedsIvVar(checks=True), toy)
+
+
+def test_clause_10_reads_the_declaration_at_each_probes_horizon_and_no_other() -> None:
+    """A column declared for h=5 is not the h=1 probe's to check, and it is not silently dropped
+    either: with no probe at h=5 the clause refuses, and with one it bites."""
+
+    class IgnoresH5(_NeedsIvVar):
+        domain = Domain(per_horizon=((5, "iv_var_h5"),))
+
+    with pytest.raises(AssertionError, match=r"no probe is built at h=5"):
+        clause_10_a_declared_requirement_is_real(IgnoresH5(checks=False), make_toy(1))
+    with pytest.raises(AssertionError, match=r"declares it requires 'iv_var_h5' but answered"):
+        clause_10_a_declared_requirement_is_real(IgnoresH5(checks=False), make_toy(5))
+
+
+class _NeedsIvVarAtTwoHorizons:
+    """Declares ``iv_var_h1`` at h=1 and ``iv_var_h5`` at h=5, plus ``requires`` at every horizon;
+    honours the declaration only at the horizons in ``honours``."""
+
+    fit_depends_on_horizon = False
+
+    def __init__(
+        self,
+        *,
+        honours: frozenset[int],
+        max_horizon: int | None = None,
+        requires: tuple[str, ...] = (),
+    ) -> None:
+        self.name = "needs_iv_var_twice"
+        declared = ((1, "iv_var_h1"), (5, "iv_var_h5"))
+        self.domain = Domain(
+            max_horizon=max_horizon,
+            requires=requires,
+            per_horizon=tuple(
+                pair for pair in declared if max_horizon is None or pair[0] <= max_horizon
+            ),
+        )
+        self._honours = honours
+
+    def fit(self, view: TrainingView) -> Forecaster:
+        if view.horizon in self._honours:
+            for column in self.domain.requires_at(view.horizon):
+                if pd.isna(view.row[column]):
+                    raise ModelSkip(f"{column} is null at the origin")
+        return Answer(1e-4)
+
+
+def test_clause_10_checks_every_probed_horizon() -> None:
+    """Honoured at h=1, ignored at h=5. The h=1 toy alone cannot see it, and must not pretend to:
+    a declaration at a horizon no probe is built at is refused, not passed with nothing checked."""
+    liar = _NeedsIvVarAtTwoHorizons(honours=frozenset({1}))
+    with pytest.raises(AssertionError, match=r"no probe is built at h=5.*probed: \[1\]"):
+        clause_10_a_declared_requirement_is_real(liar, make_toy(1))
+    with pytest.raises(AssertionError, match=r"declares it requires 'iv_var_h5' but answered"):
+        clause_10_a_declared_requirement_is_real(liar, make_toy(1), [make_toy(5)])
+    honest = _NeedsIvVarAtTwoHorizons(honours=frozenset({1, 5}))
+    clause_10_a_declared_requirement_is_real(honest, make_toy(1), [make_toy(5)])
+
+
+def test_the_suite_passes_its_also_at_toys_to_clause_10() -> None:
+    """Wired into ``conformance_suite``, not merely defined: without the h=5 toy the suite refuses
+    the declaration, and with it the h=5 plant fails the whole suite."""
+    from model_conformance import conformance_suite
+
+    def liar() -> _NeedsIvVarAtTwoHorizons:
+        return _NeedsIvVarAtTwoHorizons(honours=frozenset({1}))
+
+    with pytest.raises(AssertionError, match=r"no probe is built at h=5"):
+        conformance_suite(liar(), toy=make_toy(1), rebuild=lambda _: liar())
+    with pytest.raises(AssertionError, match=r"declares it requires 'iv_var_h5' but answered"):
+        conformance_suite(liar(), toy=make_toy(1), rebuild=lambda _: liar(), also_at=[make_toy(5)])
+    honest = _NeedsIvVarAtTwoHorizons(honours=frozenset({1, 5}))
+    conformance_suite(honest, toy=make_toy(1), rebuild=lambda _: honest, also_at=[make_toy(5)])
+
+
+def test_clause_10_skips_a_probe_the_contestant_does_not_answer() -> None:
+    """Bounded at h=1 and given the h=5 toy: skipped, as clause 9 skips it, and not failed for a
+    column the contestant does not honour at a horizon it cannot be asked about."""
+    # ``requires=("vvix",)`` is what makes this discriminate: without it nothing is read at h=5
+    # either way, and the test passes with the ``answers()`` skip deleted.
+    bounded = _NeedsIvVarAtTwoHorizons(honours=frozenset({1}), max_horizon=1, requires=("vvix",))
+    clause_10_a_declared_requirement_is_real(bounded, make_toy(1), [make_toy(5)])
 
 
 # -- Sampling and Measurement: shipped with the declaration, read by US-3.9b ---------------------
@@ -386,6 +560,122 @@ def test_an_interior_gap_in_a_required_column_skips_the_origin_for_everyone_with
     assert gap in skipped and REQUIRED in skipped[gap]
     assert {t.model: t.origins for t in clean.lines} == {"plain": 13, "needs_iv": 13}
     assert {t.model: t.origins for t in gappy.lines} == {"plain": 12, "needs_iv": 12}
+
+
+def test_a_null_in_a_required_column_at_one_origin_skips_it_for_every_contestant() -> None:
+    """The same accident as above, declared through ``per_horizon`` and read at h=1: one interior
+    VIX1D session missing nulls ``iv_var_h1`` there, both members lose that origin and the skip
+    reason names the column."""
+    base = make_toy(1)
+    sessions = _sessions(base)
+    gap = sessions[100]
+    declaring = Spy("needs_iv_var", domain=Domain(per_horizon=((1, "iv_var_h1"),)))
+    toy = _without_vix1d_on(base, gap)
+    driven = _drive(
+        toy,
+        Cohort("iv", (Spy("plain"), declaring)),
+        first=sessions[98],
+        last=sessions[110],
+    )
+    assert not driven.outcome.refused
+    evaluation = driven.outcome.evaluation
+    assert evaluation is not None
+    assert gap not in {r.origin for r in evaluation.results}
+    assert any("iv_var_h1" in reason for origin, reason in evaluation.skipped if origin == gap)
+    assert {t.model: t.origins for t in driven.lines} == {"plain": 12, "needs_iv_var": 12}
+
+
+# -- The horizon reaches every reader of ``requires_at``: pinned at h=5, not h=1 ---------------
+#
+# Every other test that declares through ``per_horizon`` runs at h=1, where replacing the harness's
+# ``horizon`` with the literal 1 changes nothing. These run at h=5 with a declarer whose column is
+# read at one horizon only: ``at_h1`` reads iv_var_h1 at h=1 and therefore nothing here, and
+# ``at_h5`` is declared for h=5. Both directions, because a wrong horizon fails silently by
+# changing which origins every contestant is scored on.
+
+
+def _reads_iv_var_h1_only_at(horizon: int) -> Spy:
+    return Spy(f"at_h{horizon}", domain=Domain(per_horizon=((horizon, "iv_var_h1"),)))
+
+
+def test_a_column_declared_for_another_horizon_does_not_cost_this_horizon_its_origin() -> None:
+    """The gap origin is scored when the column is declared for h=1 and the run is at h=5, and
+    skipped, naming the column, when it is declared for h=5."""
+    base = make_toy(5)
+    sessions = _sessions(base)
+    gap = sessions[100]
+    toy = _without_vix1d_on(base, gap)
+    window = {"first": sessions[98], "last": sessions[110]}
+
+    elsewhere = _drive(toy, Cohort("iv", (Spy("plain"), _reads_iv_var_h1_only_at(1))), **window)
+    assert elsewhere.outcome.evaluation is not None
+    assert gap in {r.origin for r in elsewhere.outcome.evaluation.results}
+    assert dict(elsewhere.outcome.evaluation.skipped).get(gap) is None
+    assert {t.model: t.origins for t in elsewhere.lines} == {"plain": 13, "at_h1": 13}
+
+    here = _drive(toy, Cohort("iv", (Spy("plain"), _reads_iv_var_h1_only_at(5))), **window)
+    assert here.outcome.evaluation is not None
+    assert gap not in {r.origin for r in here.outcome.evaluation.results}
+    assert "iv_var_h1" in dict(here.outcome.evaluation.skipped)[gap]
+    assert {t.model: t.origins for t in here.lines} == {"plain": 12, "at_h5": 12}
+
+
+def test_the_coverage_refusal_reads_the_columns_of_the_horizon_being_run() -> None:
+    """VIX1D begins mid-window, as in the red case above, at h=5: refused when the column is
+    declared for h=5, and not when it is declared only for h=1."""
+    toy = _without_vix1d_before(make_toy(5), _sessions(make_toy(5))[100])
+    sessions = _sessions(toy)
+    window = {"first": sessions[60], "last": sessions[-1]}
+
+    elsewhere = _drive(toy, Cohort("iv", (_reads_iv_var_h1_only_at(1),)), **window)
+    assert not elsewhere.outcome.refused and elsewhere.outcome.written > 0
+    assert "coverage" not in "\n".join(elsewhere.reports), (
+        "nothing is required, so nothing is checked"
+    )
+
+    here = _drive(toy, Cohort("iv", (_reads_iv_var_h1_only_at(5),)), **window)
+    assert here.outcome.refused and here.outcome.written == 0
+    assert "REFUSED" in "\n".join(here.reports) and "iv_var_h1" in "\n".join(here.reports)
+
+
+def test_the_thin_training_skip_counts_the_columns_of_the_horizon_being_run() -> None:
+    """The same shape through ``evaluate`` alone, no driver: the early origins are scored when the
+    column is declared for h=1 and skipped on its thin history when declared for h=5."""
+    base = make_toy(5)
+    sessions = _sessions(base)
+    toy = _without_vix1d_before(base, sessions[100])
+    origins = [sessions[60], sessions[61]]
+
+    def run(horizon: int) -> list[tuple[dt.date, str]]:
+        return list(
+            evaluate(
+                toy.panel,
+                toy.targets,
+                origins,
+                symbol=SYMBOL,
+                horizon=5,
+                calendar=get_calendar(toy.settings),
+                minimum_training=MINIMUM,
+                every=1,
+                cohort=Cohort("iv", (_reads_iv_var_h1_only_at(horizon),)),
+            ).skipped
+        )
+
+    assert run(1) == []
+    assert all("non-null in ['iv_var_h1']" in why for _, why in run(5))
+    assert len(run(5)) == 2
+
+
+def test_a_column_the_table_lacks_is_a_wiring_error_only_at_the_horizon_that_declares_it() -> None:
+    """Checked before any fit, per horizon: a typo for h=1 is not a defect of an h=5 run."""
+
+    def typo(horizon: int) -> Spy:
+        return Spy("typo", domain=Domain(per_horizon=((horizon, "iv_var_h2"),)))
+
+    toy = make_toy(5)
+    assert run_cohort(toy, Cohort("c", (typo(1),))).results
+    with pytest.raises(ValueError, match="iv_var_h2"):
+        run_cohort(toy, Cohort("c", (typo(5),)))
 
 
 def test_coverage_is_reported_as_not_checked_when_the_store_holds_no_built_table() -> None:

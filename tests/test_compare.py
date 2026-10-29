@@ -43,6 +43,7 @@ from volab.compare import MC_ERROR_CEILING_PERCENT, analyse, describe, multiple,
 from volab.compare.cohorts import (
     COHORTS,
     MULTISTEP,
+    PHASE3_IV,
     SHOOTOUT,
     MonteCarlo,
     answering,
@@ -1391,7 +1392,11 @@ def test_the_shootout_cohort_is_the_seven_contestants_and_begins_with_har_levels
     assert len(set(SHOOTOUT.contestants)) == 7
     assert all(isinstance(model, Model) for model in SHOOTOUT.models)
     assert SHOOTOUT.name != BASELINE_COHORT_NAME, "the baseline name is the recorded run's alone"
-    assert {SHOOTOUT.name: SHOOTOUT, MULTISTEP.name: MULTISTEP} == COHORTS
+    assert {
+        SHOOTOUT.name: SHOOTOUT,
+        MULTISTEP.name: MULTISTEP,
+        PHASE3_IV.name: PHASE3_IV,
+    } == COHORTS
     for cohort in COHORTS.values():
         # ``training_rows`` is the first contestant's ``observations`` (R87).
         assert cohort.models[0].name == "har_levels", cohort.name
@@ -1429,6 +1434,37 @@ def test_the_cohort_horizons_are_derived_from_the_declarations() -> None:
     assert all(MULTISTEP.refusal(h) is None for h in HORIZONS)
 
 
+def test_the_phase3_cohort_is_the_multistep_members_plus_the_iv_contestant() -> None:
+    assert PHASE3_IV.name == "phase3-iv"
+    assert PHASE3_IV.contestants == (*MULTISTEP.contestants, "har_rv_iv")
+    assert PHASE3_IV.contestants[0] == "har_levels"  # R87
+    assert COHORTS[PHASE3_IV.name] is PHASE3_IV
+    # The registered members are equal, by value, to MULTISTEP's: same specifications, same order.
+    assert PHASE3_IV.models[:-1] == MULTISTEP.models
+
+
+def test_it_answers_h1_h5_and_h22_and_not_h66() -> None:
+    assert PHASE3_IV.horizons(HORIZONS) == (1, 5, 22)
+    reason = PHASE3_IV.refusal(66)
+    assert reason is not None
+    # The refusal names this contestant and its own bound, not merely the cohort.
+    assert "'har_rv_iv' answers h<=22" in reason
+    assert "'phase3-iv'" in reason
+    assert PHASE3_IV.refusal(22) is None
+
+
+def test_it_requires_only_the_matched_column_at_each_horizon() -> None:
+    assert PHASE3_IV.requires_at(1) == ("iv_var_h1",)
+    assert PHASE3_IV.requires_at(5) == ("iv_var_h5",)
+    assert PHASE3_IV.requires_at(22) == ("iv_var_h22",)
+
+
+def test_the_iv_contestant_did_not_reach_the_registered_cohorts() -> None:
+    # Task 1's fence already pins SHOOTOUT and MULTISTEP against the pre-registration; do not
+    # restate that assertion here. This is this task's own claim.
+    assert "har_rv_iv" not in SHOOTOUT.contestants + MULTISTEP.contestants
+
+
 def test_the_shootout_refusal_names_egarch_and_its_bound() -> None:
     reason = SHOOTOUT.refusal(22)
     assert reason is not None
@@ -1451,8 +1487,9 @@ def test_a_second_horizon_limited_contestant_stays_out_of_the_multistep_cohort()
 
 
 def test_answering_names_the_registered_cohorts_that_can_answer_a_horizon() -> None:
-    assert answering(22) == (MULTISTEP.name,)
-    assert answering(1) == (SHOOTOUT.name, MULTISTEP.name)
+    assert answering(22) == (MULTISTEP.name, PHASE3_IV.name)
+    assert answering(1) == (SHOOTOUT.name, MULTISTEP.name, PHASE3_IV.name)
+    assert answering(66) == (MULTISTEP.name,)
     wide = Cohort("wide", BASELINE_COHORT.models)
     assert answering(22, {"narrow": TOY_LIMITED, "wide": wide}) == ("wide",)
     assert answering(22, {"narrow": TOY_LIMITED}) == ()
@@ -1474,9 +1511,30 @@ def _imports(module: Path) -> set[str]:
     return found
 
 
+def _contestant_modules(names: set[str]) -> set[str]:
+    """Every ``volab.models.<x>`` among ``names`` that is not ``volab.models.base``.
+
+    ``base`` carries the protocol and the ``Cohort`` type, no contestant, and every module that
+    handles a cohort imports it. Anything else under ``volab.models`` is a contestant module, and
+    that is derived from the dotted path, not listed, so a contestant module that does not exist
+    yet is covered by this rule on the day it is created. ``_imports`` records a ``from`` import
+    both as the module and as ``module.name``, so ``from volab.models import iv`` is seen too.
+    """
+    base = "volab.models.base"
+    return {
+        name
+        for name in names
+        if name.startswith("volab.models.") and name != base and not name.startswith(base + ".")
+    }
+
+
 def test_only_cohorts_imports_the_model_modules() -> None:
     """``import volab.compare`` must not pull ``arch``'s GARCH through a side door: the analysis
-    modules know nothing of any contestant, and ``cohorts`` is the one place that names them."""
+    modules know nothing of any contestant, and ``cohorts`` is the one place that names them.
+
+    The rule is derived (any ``volab.models.*`` but ``base``), not a list of the contestant modules
+    there happen to be. For ``cohorts.py`` it is a floor, not an equality: it must import at least
+    the three there are today, and a fourth contestant module does not force this test to change."""
     modules = sorted(COMPARE_SRC.glob("*.py"))
     assert {m.name for m in modules} >= {
         "__init__.py",
@@ -1488,13 +1546,41 @@ def test_only_cohorts_imports_the_model_modules() -> None:
         "sink.py",
     }
     for module in modules:
-        names = _imports(module)
-        garch = "volab.models.garch" in names
-        recalibrated = "volab.models.recalibrated" in names
+        contestants = _contestant_modules(_imports(module))
         if module.name == "cohorts.py":
-            assert garch and recalibrated, "cohorts.py is where the shootout is assembled"
+            assert {
+                "volab.models.garch",
+                "volab.models.iv",
+                "volab.models.recalibrated",
+            } <= contestants, "cohorts.py is where the cohorts are assembled"
         else:
-            assert not garch and not recalibrated, f"{module.name} imports a contestant module"
+            assert not contestants, f"{module.name} imports a contestant module: {contestants}"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("from volab.models.iv import har_rv_iv", {"volab.models.iv"}),
+        ("import volab.models.garch", {"volab.models.garch"}),
+        ("from volab.models import recalibrated", {"volab.models.recalibrated"}),
+        ("from volab.models.future import thing", {"volab.models.future"}),
+        # ``base`` is exempt exactly, not as a prefix: a sibling that merely starts with it is not.
+        ("from volab.models.base import Cohort, Model", set()),
+        ("from volab.models import base", set()),
+        ("import volab.models.base", set()),
+        ("from volab.models.basement import thing", {"volab.models.basement"}),
+        ("from volab.walkforward import Trial", set()),
+    ],
+)
+def test_the_contestant_module_rule_sees_every_import_form_and_exempts_only_base(
+    tmp_path: Path, source: str, expected: set[str]
+) -> None:
+    module = tmp_path / "probe.py"
+    module.write_text(source + "\n", encoding="utf-8")
+    found = _contestant_modules(_imports(module))
+    # The ``from volab.models.X import name`` form also records ``volab.models.X.name``; the
+    # module is what is asserted, so strip to the module level before comparing.
+    assert {name for name in found if name.count(".") == 2} == expected
 
 
 def test_no_monte_carlo_figure_is_invented_for_the_shipped_contestants() -> None:
