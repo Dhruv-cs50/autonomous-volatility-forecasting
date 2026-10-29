@@ -577,12 +577,13 @@ def clause_10_a_declared_requirement_is_real(
     ``toy`` and each of ``also`` is a probe, as in clause 9. At a probe the columns are
     ``domain.requires_at(probe.horizon)``: ``requires`` plus the ``per_horizon`` columns declared
     for that horizon. A probe whose horizon the contestant does not answer is skipped, and so is a
-    probe at which it reads no column. A column declared only for a horizon none of the probes is
-    built at is **not** checked: the caller vouches for the horizons by passing the toys, and
-    ``conformance_suite`` passes ``also_at``. Reading ``requires`` alone would return at the first
-    line for a contestant that declares everything through ``per_horizon``, passing without having
-    looked: ``test_clause_10_checks_a_requirement_declared_only_through_per_horizon``. Checking
-    only the first probe would do the same for the second and third horizon:
+    probe at which it reads no column. **A ``per_horizon`` column for a horizon none of the probes
+    is built at is refused**, not skipped: the caller vouches for the horizons by passing the toys
+    (``conformance_suite`` passes ``also_at``), and a declaration left unprobed would pass with
+    nothing checked. Reading ``requires`` alone would return at the first line for a contestant
+    that declares everything through ``per_horizon``, passing without having looked:
+    ``test_clause_10_checks_a_requirement_declared_only_through_per_horizon``. Checking only the
+    first probe, or dropping an unprobed horizon, would do the same for the second and third:
     ``test_clause_10_checks_every_probed_horizon``.
 
     Checkable in one direction only: this catches *declared but unused*. A column used and
@@ -595,17 +596,22 @@ def clause_10_a_declared_requirement_is_real(
     declines everything would "raise ModelSkip" for the wrong reason, so it must answer with the
     column intact first.
     """
-    reading = [
-        (probe, columns)
-        for probe in (toy, *also)
-        if model.domain.answers(probe.horizon)
-        if (columns := model.domain.requires_at(probe.horizon))
-    ]
-    exercised: list[int] = []
-    for probe, columns in reading:
-        _a_declared_requirement_is_real_at(model, probe, columns)
-        exercised.append(probe.horizon)
-    assert len(exercised) == len(reading), "a probe that reads a column was not exercised"
+    probed = sorted({probe.horizon for probe in (toy, *also)})
+    # ``Domain`` refuses a ``per_horizon`` column above its own bound, so every declared horizon is
+    # one the contestant answers. It cannot know which horizons are configured, so this is the one
+    # place a declaration at a horizon nobody probes can be refused.
+    unprobed = sorted({at for at, _ in model.domain.per_horizon} - set(probed))
+    names = ", ".join(f"h={at}" for at in unprobed)
+    assert not unprobed, (
+        f"{model.name} declares a column for {names} but no probe is built at {names} "
+        f"(probed: {probed}); pass a toy at each such horizon as also_at, or the declaration is "
+        "passed with nothing checked"
+    )
+    for probe in (toy, *also):
+        if not model.domain.answers(probe.horizon):
+            continue
+        if columns := model.domain.requires_at(probe.horizon):
+            _a_declared_requirement_is_real_at(model, probe, columns)
 
 
 def _a_declared_requirement_is_real_at(model: Model, probe: Toy, columns: Sequence[str]) -> None:

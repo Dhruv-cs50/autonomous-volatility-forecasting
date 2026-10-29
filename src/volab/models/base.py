@@ -121,11 +121,15 @@ class Domain:
 
     ``requires`` is read at **every** horizon; ``per_horizon`` pairs a horizon with a column read
     only there, for a contestant whose input differs by horizon (the implied-variance model reads
-    ``iv_var_h1`` at h=1 and ``iv_var_h5`` at h=5). The distinction is quantitative, not tidy:
-    ``Evaluation.comparable`` intersects origins across every contestant, so a column declared at
-    a horizon where it is not read removes that column's missing origins from everyone's loss.
+    ``iv_var_h1`` at h=1 and ``iv_var_h5`` at h=5). The distinction is quantitative, not tidy: a
+    column declared at a horizon where it is not read costs **every** contestant its origins, by
+    two routes in ``volab.walkforward``. ``evaluate`` drops an origin for the whole cohort, before
+    any fit, when a declared column is null at it; and ``coverage_refusal`` refuses a window that
+    begins before the column has enough history. (``Evaluation.comparable`` is not the route: it
+    intersects origins where each forecast is loss-defined and never reads ``requires``.)
     A tuple of pairs rather than a mapping, so ``Domain`` stays frozen and hashable and ``==``
-    keeps value semantics. ``requires_at`` is the single reader of both.
+    keeps value semantics. ``requires_at`` is the single reader of both for the harness;
+    ``__post_init__`` also reads ``per_horizon``, to refuse a column for a horizon not answered.
     """
 
     max_horizon: int | None = None
