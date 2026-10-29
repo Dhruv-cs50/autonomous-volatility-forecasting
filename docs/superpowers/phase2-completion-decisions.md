@@ -1702,3 +1702,57 @@ test. But the implementer did not confirm that W16 and the registered-read test 
 independently, and said so rather than implying full coverage. Recorded because the first attempt at
 that plant failed at import and therefore proved nothing, which is the kind of thing a sweep can
 silently miscount.
+
+## R142 — three things the Phase 3 session caught, two of them mine
+
+Phase 3 verified all four claims this session sent it rather than relaying them. Three held. The
+corrections are recorded here because two were errors of mine and the third is a coordination
+hazard this session created.
+
+### The ruling-number collision, which was mine
+
+Both sessions were told to continue the numbered sequence "from R133", and both reached for
+**R134**. This session's landed first (`8e3b65b`), so it keeps the number and Phase 3 renumbered its
+six rulings to **R135-R140**, with **R141** recording the correction. One commit message there
+still reads R134-R139 and cannot be rewritten; the log carries the correction instead.
+
+**A single append-only numbered sequence cannot be shared by two concurrently-writing sessions on
+convention alone.** "Continue from R133" is a race, not an instruction. Either a session reserves a
+block before writing — this one now owns **R142 onward** — or it numbers in its own namespace. The
+next session briefed on this repository gets the reservation, not the convention.
+
+### "Re-cut from `main`" was dangerous advice, correctly refused
+
+I told Phase 3 it "may prefer to rebase or re-cut your branch from `main`" once PR #6 landed.
+`main` is at `b8d11cd` — *"Merge pull request #5"* — and does **not** carry Phase 2 completion,
+because #6 is still open. **Re-cutting would have discarded the entire `Domain` machinery that
+Phase 3's design is built on.**
+
+My sentence conditioned it on the merge having happened. The condition was invisible to the reader,
+who had no way to check #6's state at the moment they read it — and **a conditional instruction
+whose condition the reader cannot evaluate is an unconditional one.** The session checked `main`
+itself and declined. Had it been more obliging it would have thrown away a day's work on my
+phrasing.
+
+### The `Sampling` flaw is real; my framing of it was not
+
+R134's finding holds, and I re-verified it here: `__post_init__` permits one `source` per contestant
+while `series_source` is `f"{symbol} h{horizon}"`, so one contestant cannot hold measurements at
+h=22 and h=66 on one series.
+
+But I told Phase 3 it "will bite your IV contestant **specifically**", and that is wrong. Under
+their design the IV map is **OLS — deterministic, declaring no `Sampling`, with nothing to
+measure**, so it cannot reach the constraint at all. The flaw bites a *simulated* contestant, which
+theirs is not.
+
+They boarded it as an optional story rather than absorbing it, and gave the right reason:
+**taking on a sealed-path contract change on another session's framing would be R129's lesson run
+in the generous direction.** R129 was about claiming a witness that did not exist; this is the same
+discipline pointed the other way — not accepting another seat's account of what your work needs.
+The coupling they identified is real (`Domain` is becoming horizon-aware in their P3-02, and
+`Sampling` is the other per-horizon declaration in the same frozen dataclass, so one architect's
+pass is cheaper than two) — but real coupling is a reason to schedule it, not to assume it.
+
+**What this session got right by comparison:** it verified every subagent claim before recording it.
+What it got wrong: it did not apply the same standard to the claims it *sent*, and a brief is the
+one artifact whose errors another session cannot catch by reading the code.
