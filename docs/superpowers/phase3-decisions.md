@@ -74,11 +74,26 @@ so a contestant declining on thin training **is** intersected out of every conte
 `comparable` — which is precisely the path that docstring describes. There are **three** routes by
 which a declared column costs origins, and conflating them is what produced both errors:
 
-| route | mechanism | who pays |
-|---|---|---|
-| leading boundary | `coverage_refusal` refuses the whole configuration | nobody runs |
-| interior null at an origin | `evaluate`'s null-regressor skip, `walkforward/__init__.py:1010` | every contestant, before any fit |
-| thin training at an origin | contestant raises `ModelSkip` -> NaN -> `Evaluation.comparable` | every contestant, after the fit is attempted |
+| route | mechanism | reads the declaration? | who pays |
+|---|---|---|---|
+| leading boundary | `coverage_refusal` refuses the whole configuration | **yes** | nobody runs |
+| thin training at an origin | `evaluate`'s row count, `walkforward/__init__.py:996` — `training_rows(usable, column, cohort.requires_at(horizon))`, then `continue` | **yes** | every contestant, before any fit |
+| interior null at an origin | `evaluate`'s null-regressor skip, `walkforward/__init__.py:1010` | **yes** | every contestant, before any fit |
+| a contestant declining | the contestant raises `ModelSkip` -> NaN -> `Evaluation.scored` drops it -> `Evaluation.comparable` intersects it out | **no** | every contestant, after the fit is attempted |
+
+**Corrected a third time, at sprint close.** The table above had three rows and conflated the last
+two: it attributed "thin training" to the contestant's `ModelSkip`, when `evaluate` has its own
+thin-training skip at `:996` that reads `requires_at` and drops the origin for the whole cohort
+before any contestant is asked. Those are different mechanisms with different causes — the first
+three are costs **the declaration imposes**, the fourth is a contestant's own refusal and is not.
+Caught by the final fix wave's implementer, which noticed this ruling disagreed with the brief I
+had written from it.
+
+This ruling has now been wrong three times in three different ways: `comparable` named as the sole
+route; the correction over-broad in saying `comparable` was not a route at all; and the amended
+table conflating two of the four. Each version was closer, and each error was found by someone
+reading the code rather than the ruling. That is the argument for the table being here in a form
+precise enough to be checked, rather than as prose.
 
 The original `Domain` docstring was wrong because it attributed the **declared-column** cost to
 `comparable` alone, and the measured 119/120/123 figures come from the first route, not the third.
