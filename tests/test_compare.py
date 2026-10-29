@@ -43,6 +43,7 @@ from volab.compare import MC_ERROR_CEILING_PERCENT, analyse, describe, multiple,
 from volab.compare.cohorts import (
     COHORTS,
     MULTISTEP,
+    PHASE3_IV,
     SHOOTOUT,
     MonteCarlo,
     answering,
@@ -1391,7 +1392,11 @@ def test_the_shootout_cohort_is_the_seven_contestants_and_begins_with_har_levels
     assert len(set(SHOOTOUT.contestants)) == 7
     assert all(isinstance(model, Model) for model in SHOOTOUT.models)
     assert SHOOTOUT.name != BASELINE_COHORT_NAME, "the baseline name is the recorded run's alone"
-    assert {SHOOTOUT.name: SHOOTOUT, MULTISTEP.name: MULTISTEP} == COHORTS
+    assert {
+        SHOOTOUT.name: SHOOTOUT,
+        MULTISTEP.name: MULTISTEP,
+        PHASE3_IV.name: PHASE3_IV,
+    } == COHORTS
     for cohort in COHORTS.values():
         # ``training_rows`` is the first contestant's ``observations`` (R87).
         assert cohort.models[0].name == "har_levels", cohort.name
@@ -1429,6 +1434,37 @@ def test_the_cohort_horizons_are_derived_from_the_declarations() -> None:
     assert all(MULTISTEP.refusal(h) is None for h in HORIZONS)
 
 
+def test_the_phase3_cohort_is_the_multistep_members_plus_the_iv_contestant() -> None:
+    assert PHASE3_IV.name == "phase3-iv"
+    assert PHASE3_IV.contestants == (*MULTISTEP.contestants, "har_rv_iv")
+    assert PHASE3_IV.contestants[0] == "har_levels"  # R87
+    assert COHORTS[PHASE3_IV.name] is PHASE3_IV
+    # The registered members are the very instances the registered cohorts hold, not copies.
+    assert PHASE3_IV.models[:-1] == MULTISTEP.models
+
+
+def test_it_answers_h1_h5_and_h22_and_not_h66() -> None:
+    assert PHASE3_IV.horizons(HORIZONS) == (1, 5, 22)
+    reason = PHASE3_IV.refusal(66)
+    assert reason is not None
+    # The refusal names this contestant and its own bound, not merely the cohort.
+    assert "'har_rv_iv' answers h<=22" in reason
+    assert "'phase3-iv'" in reason
+    assert PHASE3_IV.refusal(22) is None
+
+
+def test_it_requires_only_the_matched_column_at_each_horizon() -> None:
+    assert PHASE3_IV.requires_at(1) == ("iv_var_h1",)
+    assert PHASE3_IV.requires_at(5) == ("iv_var_h5",)
+    assert PHASE3_IV.requires_at(22) == ("iv_var_h22",)
+
+
+def test_the_iv_contestant_did_not_reach_the_registered_cohorts() -> None:
+    # Task 1's fence already pins SHOOTOUT and MULTISTEP against the pre-registration; do not
+    # restate that assertion here. This is this task's own claim.
+    assert "har_rv_iv" not in SHOOTOUT.contestants + MULTISTEP.contestants
+
+
 def test_the_shootout_refusal_names_egarch_and_its_bound() -> None:
     reason = SHOOTOUT.refusal(22)
     assert reason is not None
@@ -1451,8 +1487,9 @@ def test_a_second_horizon_limited_contestant_stays_out_of_the_multistep_cohort()
 
 
 def test_answering_names_the_registered_cohorts_that_can_answer_a_horizon() -> None:
-    assert answering(22) == (MULTISTEP.name,)
-    assert answering(1) == (SHOOTOUT.name, MULTISTEP.name)
+    assert answering(22) == (MULTISTEP.name, PHASE3_IV.name)
+    assert answering(1) == (SHOOTOUT.name, MULTISTEP.name, PHASE3_IV.name)
+    assert answering(66) == (MULTISTEP.name,)
     wide = Cohort("wide", BASELINE_COHORT.models)
     assert answering(22, {"narrow": TOY_LIMITED, "wide": wide}) == ("wide",)
     assert answering(22, {"narrow": TOY_LIMITED}) == ()

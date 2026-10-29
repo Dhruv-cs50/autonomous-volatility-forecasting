@@ -72,6 +72,7 @@ from volab.compare import NO_MEASUREMENT
 from volab.features.targets import HORIZONS
 from volab.models.base import Cohort, Model
 from volab.models.garch import GARCH_MODELS
+from volab.models.iv import har_rv_iv
 from volab.models.recalibrated import har_levels_mz
 from volab.walkforward import BASELINE_COHORT
 
@@ -96,10 +97,23 @@ def multistep_members(models: tuple[Model, ...]) -> tuple[Model, ...]:
 
 MULTISTEP = Cohort("phase2-shootout-multistep", multistep_members(SHOOTOUT.models))
 
+# Phase 3's cohort (P3-04): the multistep members plus the HAR with implied variance, built beside
+# the two registered cohorts above and leaving both untouched. Those two are the contestant set of
+# the holdout pre-registration (R130, section 5), which forbids adding a Phase 3 contestant to that
+# window after the fact; ``tests/test_preregistration_fence.py`` pins them. ``har_levels`` stays
+# first (R87). ``har_rv_iv`` answers h <= 22 (``IV_SERIES`` has no three-month entry), so
+# ``PHASE3_IV.horizons(HORIZONS)`` is ``(1, 5, 22)`` and the cohort is refused at h=66 rather than
+# narrowed. It declares no ``Sampling``, so ``monte_carlo_error`` has nothing to collect for it.
+PHASE3_IV = Cohort("phase3-iv", (*multistep_members(SHOOTOUT.models), har_rv_iv()))
+
 # Resolved by name from the command line. The baseline is deliberately absent: its run is the
 # walk-forward CLI's, and a second path to producing lines under that name is a second way for the
 # recorded run to be confused with something else.
-COHORTS: dict[str, Cohort] = {SHOOTOUT.name: SHOOTOUT, MULTISTEP.name: MULTISTEP}
+COHORTS: dict[str, Cohort] = {
+    SHOOTOUT.name: SHOOTOUT,
+    MULTISTEP.name: MULTISTEP,
+    PHASE3_IV.name: PHASE3_IV,
+}
 
 
 def answering(horizon: int, registry: Mapping[str, Cohort] | None = None) -> tuple[str, ...]:
