@@ -34,6 +34,22 @@ share a numbering scheme.
 | P3-10 | `tools/measure_iv_requires.py` | `tools/` (new) | reproduces the design's section 4 table from the committed store | todo |
 | P3-11 | **Optional.** Make `Sampling` horizon-aware (R134's latent flaw) | `src/volab/models/base.py`, `src/volab/compare/`, `tests/` | one source **per horizon**, or the horizon dropped from `series_source`; a contestant measured at h=22 and h=66 on one series is accepted | **not scheduled — user's call.** No Phase 3 story needs it; `har_rv_iv` is OLS and declares no `Sampling` |
 
+## Deferred findings, carried to the final whole-branch review
+
+**Tracked here, not only in the SDD ledger.** That ledger lives under `.superpowers/`, which is
+gitignored and is deleted when the plan finishes, so a finding recorded only there disappears
+exactly when someone would want to triage it. Raised by task 4's reviewer.
+
+| from | finding | why deferred |
+|---|---|---|
+| P3-01 | The fence's h>=2 side is derived, not parsed: only the "minus" clause is read, so a document amendment adding a contestant to h>=2 only would not be caught | the h=1 set plus the one removal fully determines the h>=2 set as the document is worded today |
+| P3-01 | The pre-registration's own prose counts ("Seven at h=1; six at ...", line 45) and its section 4 trial-count table are tied to the code by no test | out of that task's scope |
+| P3-02 | `_NeedsIvVar` and its two witnesses (`tests/test_domain.py:198-224`) are subsumed by `test_clause_10_checks_every_probed_horizon` | consolidation only; costs a docstring edit elsewhere |
+| P3-02 | Clause 10's docstring cites a witness with two probes as covering "the second and third horizon"; no test covers a third | wording, not behaviour |
+| P3-02 | The 13/12 origin counts and the HAR-floor clearance of origins 60-61 are evidenced only by the 553-passed run, not from the diff | would need a dedicated construction test |
+| P3-03 | `test_it_is_named_and_fits_the_target_side` is mostly covered by the conformance suite | redundancy, not a gap |
+| P3-04 | `test_every_named_cohort_begins_with_har_levels` (`tests/test_model_interface.py:141`) iterates a one-element tuple despite its name; its docstring says a later story should extend it and none did | **protection is real** at `tests/test_compare.py:1400-1402`, which loops `COHORTS.values()` including `phase3-iv`; the defect is the name and a stale instruction |
+
 ## Held, not forgotten
 
 | item | why it is held | releases on |
