@@ -1,9 +1,21 @@
 """The horizon-matched implied-variance HAR (P3-03).
 
 The contestant is a HAR with one extra regressor, the implied variance whose maturity matches the
-horizon. What these tests are about is the three ways that can go wrong quietly: the wrong
-horizon's column being read, the column being rescaled when it is already on the target's scale,
-and a null column being fitted around instead of refused.
+horizon. These tests guard what can go wrong quietly:
+
+* the wrong horizon's column being read (the planted-structure and only-the-matched-column tests);
+* the column being transformed between the training frame and the origin's row -- one-sided or
+  non-linear. A *consistent* rescale cannot be caught through the forecast, because OLS with an
+  intercept is scale-equivariant, so what is pinned is identity: the column reaching ``fit_ols``
+  equal to the view's, and the forecast equal to an independent fit on the untouched view;
+* a null, thin or degenerate column being fitted around, or filed as the whole cohort's
+  ``SchemaError``, instead of refused as this contestant's own ``ModelSkip``: null at the origin,
+  too few usable training rows (counted the way ``fit_ols`` drops them), and a singular system
+  caused by the column alone -- while a window the HAR regressors cannot fit stays a
+  ``SchemaError``;
+* the declaration (matched column at h=1, 5 and 22, refusing h=66), the horizon contract
+  (``ValueError`` for a foreign horizon or a view without the column), the import discipline, and
+  the shared conformance suite run at all three horizons.
 """
 
 from __future__ import annotations
