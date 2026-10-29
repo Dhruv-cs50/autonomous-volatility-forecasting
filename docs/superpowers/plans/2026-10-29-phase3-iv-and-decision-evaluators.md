@@ -737,6 +737,11 @@ git commit -m "Add vol-target P&L, turnover and the ex-date count beside it (P3-
 
 - `coverage(...)` takes `stride` and `horizon` from the caller — pass `evaluation.every` and
   `evaluation.horizon`, not literals.
+- `CoverageResult` has a sixth field, `christoffersen_withheld: str | None`. Where the
+  independence statistic is zero **by construction** — six sequence shapes, not just the
+  two obvious ones — `christoffersen_p` is `None`, this field carries why, and `refusal`
+  stays `None` because the run was fine. **Serialise it beside the p-value**: a `None`
+  p-value with no reason is indistinguishable from an absent measurement.
 - `VolTargetResult`'s `realized_vol`, `sharpe` and `turnover` are `float | None`: a single origin
   or a constant P&L leaves them undefined. **The sink must serialise `None`**, not coerce to 0.0.
 - `vol_target([], [])` raises while `decision_series` accepts an empty evaluation, so the driver
