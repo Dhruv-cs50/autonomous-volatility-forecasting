@@ -218,6 +218,19 @@ A new file. No existing module is edited to add it.
 it as `(iv/100)**2 * (horizon/252)` — so no rescaling happens in the contestant and none should be
 added. `fit_depends_on_horizon` is `True`.
 
+**Where the actual hazard is, corrected 2026-10-29.** An earlier draft of this section, and the
+brief built from it, said a silent rescale "would be a correctness bug with no symptom except
+wrong numbers". **That is false, and task 3's review demonstrated it empirically.** OLS with an
+intercept is scale-equivariant: scale a regressor by `c` and its coefficient scales by `1/c`,
+leaving the fitted value unchanged. Measured by the reviewer at scalings of 2, 100 and 252/5, the
+forecast agreed to 1e-15.
+
+So a *consistent* rescale is undetectable in the forecast and harmless. The hazard is a
+**one-sided or non-linear** transformation — the training frame transformed and the origin row
+not, or the reverse — and that is what the witness must pin: the column entering `fit_ols`
+**identical** to `view.training[...]`, not a numeric consequence that does not follow from it.
+The test originally written for this asserted the consequence, and so witnessed nothing.
+
 **Domain:**
 
 ```python
