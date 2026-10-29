@@ -18,4 +18,16 @@ jobs:
       - run: uv run --locked ruff check .
       - run: uv run --locked ruff format --check .
       - run: uv run --locked mypy src
-      - run: uv run --locked pytest -q
+      # Rebuild the store from the committed vendor payloads before the suite runs. ``data/**`` is
+      # gitignored because it is derivable, so without these three the real-data tiers -- the
+      # persisted-table byte comparison, the walk-forward's per-origin comparison and the sampled
+      # real sweep -- skip silently, and a green CI run would mean less than it looks. ``build-raw``
+      # replays the committed archive and touches no network. Measured at 68.7s.
+      - run: uv run --locked python -m volab.ingest build-raw
+      - run: uv run --locked python -m volab.ingest curate
+      - run: uv run --locked python -m volab.features build
+      # ``-rfEs`` rather than ``-q`` alone: a skipped real-data test is the failure mode these
+      # three steps exist to prevent, so it has to be visible in the log rather than folded into
+      # a count. ``f`` and ``E`` are passed because ``-r`` *replaces* pytest's default summary
+      # selection rather than adding to it.
+      - run: uv run --locked pytest -q -rfEs

@@ -29,8 +29,12 @@ handed over at ``cutoff`` only if no key carries several vintages, because the s
 latest vintage at or before ``end`` while a slice would drop a revised row instead of falling
 back to its earlier one. Measured on the real curated store: no multi-vintage key exists
 (``dup(symbol, ts)`` is 0 in all three datasets), and the slice is byte-identical to
-``load_panel(end=cutoff)`` at three cutoffs in each. ``tests/test_panel.py`` pins both, so the
-day curated starts carrying revisions the claim fails instead of quietly becoming false.
+``load_panel(end=cutoff)`` at three cutoffs in each. Both are pinned by
+``test_the_truncated_panel_is_what_the_store_would_have_handed_over``, in
+``tests/test_truncation_equivalence.py``, so the day curated starts carrying revisions the claim
+fails instead of quietly becoming false; ``tools/measure_vintages.py`` prints the measurement
+itself. An earlier version of this docstring cited a ``tests/test_panel.py`` that has never
+existed -- the same defect the Phase 1 spec had, where five named tests were never written.
 """
 
 from __future__ import annotations

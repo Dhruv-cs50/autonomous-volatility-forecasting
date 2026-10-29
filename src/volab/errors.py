@@ -83,3 +83,16 @@ class ParseRefused(VolabError):
     ``except ValueError`` stops catching this, which is the point. The exception that the
     parser actually raised is chained as ``__cause__``.
     """
+
+
+class ModelSkip(VolabError):
+    """Raised by a contestant that cannot answer at one origin, though the window is fine (R87).
+
+    Contrast ``SchemaError``, which says the *window* is unfittable and skips the origin for every
+    contestant. ``ModelSkip`` is one model's own refusal -- a GARCH fit that did not converge, a
+    fit window shorter than the model's minimum -- so the harness records ``(origin, model,
+    reason)`` against that contestant, writes a NaN for it, and leaves the origin in place for
+    everyone else. Filing it as a ``SchemaError`` would delete the origin from the HARs too and
+    pass a model problem off as a data problem. Witness:
+    ``test_a_model_skip_is_recorded_against_the_model_and_leaves_the_origin``.
+    """

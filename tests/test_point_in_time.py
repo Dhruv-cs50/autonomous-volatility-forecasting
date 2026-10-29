@@ -389,7 +389,9 @@ def _moved(left: pd.Series, right: pd.Series) -> pd.Series:
 
 
 # The perturbations. One per group of values the engine reads, and
-# ``test_the_perturbations_cover_every_symbol_and_every_payload_column`` proves the list is whole.
+# ``test_the_perturbations_cover_every_symbol_and_column_pair_the_engine_is_handed`` proves the
+# list is whole. (The name here was stale until R129's audit; a citation nobody checks is the
+# same defect as a witness that does not exist.)
 
 PERTURBATIONS: tuple[str, ...] = (
     "returns_sign_and_scale",

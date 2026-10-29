@@ -28,6 +28,12 @@ still.
 - **R4** The realized-measure functions take and return `pd.Series`, importing no numpy. numpy is
   only a transitive dependency of pandas and absent from `pyproject.toml`; declaring it would
   touch `uv.lock` against the no-new-dependencies constraint, and pandas does everything needed.
+  **Narrowed in place by R82** (`phase2-completion-decisions.md`): the constraint that justified
+  this was Phase 1's, and Phase 2 completion lifted it deliberately to admit `arch` for the GARCH
+  family and the model confidence set. The ban still holds **here**, where it was aimed — nothing
+  in `features/`, `panel.py`, `store.py` or the walk-forward solver imports numpy, because that
+  path is the point-in-time guarantee. numpy and scipy are confined to the model zoo and the
+  comparison layer.
 - **R5** The duplicated `test_load_panel_at_dev_end_hides_unrealised_targets` belongs to the
   point-in-time suite, per spec §11, not to the targets task.
 - **R6** Session arithmetic also exposes a memoised `get_calendar(settings)`; four tasks need a

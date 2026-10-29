@@ -30,6 +30,7 @@ import datetime as dt
 import sys
 import time
 from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 
 import pandas as pd
@@ -37,23 +38,18 @@ import pandas as pd
 from volab.config import Settings, load_settings
 from volab.errors import DatasetNotFound
 from volab.features.targets import HORIZONS
-from volab.identity import first_difference
-from volab.panel import as_of_dates
 from volab.paths import Tier
 from volab.sessions import get_calendar, sessions_between
 from volab.store import load_panel
 from volab.walkforward import (
+    BASELINE_COHORT,
     LOSSES,
     MODELS,
-    Evaluation,
-    RunAudit,
-    Trial,
     append_trials,
     count_trials,
-    evaluate,
     git_state,
     load_for,
-    scoreable_origins,
+    run_configuration,
 )
 
 FEATURE_SET = "har_daily"
@@ -78,48 +74,6 @@ def _persisted(settings: Settings, symbol: str) -> pd.DataFrame | None:
     except DatasetNotFound:
         return None
     return frame.sort_values("as_of").reset_index(drop=True)
-
-
-def _compare_against_persisted(
-    built: pd.DataFrame, stored: pd.DataFrame | None
-) -> tuple[int, str | None]:
-    """Byte-compare the per-origin rows against the persisted table, on the origins built.
-
-    Returns the number of origins compared and the first disagreement, if any. The comparison
-    normalises the store's two documented round-trip asymmetries and nothing else: ``as_of``
-    (written as ``date``, read back as ``datetime64[us]``) and ``has_distribution`` (written as
-    nullable ``boolean``, read back as ``bool`` because no null ever reached disk). The second
-    cast runs the narrow way, ``bool`` up to ``boolean``, so a null appearing in a fresh build is
-    still a difference rather than being normalised away.
-    """
-    if stored is None or built.empty:
-        return 0, None
-    wanted = set(as_of_dates(built))
-    rows = stored[[day in wanted for day in as_of_dates(stored)]].reset_index(drop=True)
-    if len(rows) != len(built):
-        return len(built), f"the store holds {len(rows)} of the {len(built)} origins built"
-
-    left = built.assign(
-        as_of=list(as_of_dates(built)),
-        has_distribution=built["has_distribution"].astype("boolean"),
-    )
-    right = rows[list(built.columns)].assign(
-        as_of=list(as_of_dates(rows)),
-        has_distribution=rows["has_distribution"].astype("boolean"),
-    )
-    return len(built), first_difference(left, right)
-
-
-def _flush(trials: Sequence[Trial], settings: Settings, sha: str, dirty: bool | None) -> None:
-    """Last-resort append on the refusal path, so a refusal cannot erase counted trials."""
-    if trials:
-        append_trials(
-            trials,
-            root=settings.storage_root.parent,
-            at=dt.datetime.now(dt.UTC),
-            sha=sha,
-            dirty=dirty,
-        )
 
 
 def _run(settings: Settings, arguments: argparse.Namespace) -> int:
@@ -149,7 +103,6 @@ def _run(settings: Settings, arguments: argparse.Namespace) -> int:
     # Stamped at the start, with the sha, so every line of one run shares one timestamp and that
     # timestamp is when the numbers were produced rather than when they were written.
     started_at = dt.datetime.now(dt.UTC)
-    everything: list[Trial] = []
     written = 0
     failures = 0
 
@@ -157,98 +110,42 @@ def _run(settings: Settings, arguments: argparse.Namespace) -> int:
         for horizon in arguments.horizons:
             print(f"{symbol} h{horizon}:")
             panel, targets = load_for(settings, symbol, horizon, report=print)
-            origins = scoreable_origins(
-                settings, targets, first=sessions[0], last=sessions[-1], every=arguments.every
-            )
-            if not origins:
-                # Counted, not skipped. A configuration that was run and produced nothing is
-                # exactly the result selective reporting omits.
-                print("  no origin in the window has a target completed at or before dev_end")
-                empty = Evaluation(
-                    symbol=symbol,
-                    horizon=horizon,
-                    results=(),
-                    features=pd.DataFrame(),
-                    skipped=(),
-                    requested=0,
-                    every=arguments.every,
-                )
-                written += append_trials(
-                    empty.trials(),
+            outcome = run_configuration(
+                settings,
+                symbol,
+                horizon,
+                panel,
+                targets,
+                calendar=calendar,
+                first=sessions[0],
+                last=sessions[-1],
+                every=arguments.every,
+                minimum_training=arguments.minimum_training,
+                cohort=BASELINE_COHORT,
+                # Resolved from this module's globals here, inside the run, so the CLI tests that
+                # replace ``_persisted`` by attribute still reach it.
+                persisted=partial(_persisted, settings, symbol),
+                # Appended per configuration (R74), under the run's one timestamp and the sha and
+                # dirty flag captured above (R70).
+                append=lambda trials: append_trials(
+                    trials,
                     root=settings.storage_root.parent,
                     at=started_at,
                     sha=sha,
                     dirty=dirty,
-                )
-                continue
-            print(f"  {len(origins)} origin(s) from {origins[0]} to {origins[-1]}")
-
-            audit = RunAudit()
-            evaluation = evaluate(
-                panel,
-                targets,
-                origins,
-                symbol=symbol,
-                horizon=horizon,
-                calendar=calendar,
-                minimum_training=arguments.minimum_training,
-                every=arguments.every,
-                audit=audit,
+                ),
             )
-            violations = audit.violations()
-            if violations:
-                # Fail loudly. Reading past a cutoff is the one defect this whole module exists to
-                # prevent, and reporting it as a warning would be the posture this project
-                # refuses. Trials already produced are flushed first, below, so a refusal cannot
-                # erase numbers that were printed.
-                kind, at, last = violations[0]
-                print(f"  REFUSED: {len(violations)} call(s) read past their cutoff")
-                print(f"           first: {kind} at={at} max as_of={last}")
-                _flush(everything, settings, sha, dirty)
+            written += outcome.written
+            if outcome.refused:
+                # Nothing to flush, and that is the fix rather than an omission. R74 made every
+                # configuration append as it finished, so by the time a later one refuses, the
+                # earlier trials are already on the ledger -- and the flush that used to run here
+                # appended them a *second* time, under ``datetime.now`` rather than this run's one
+                # timestamp, so the duplicates were not even grouped with their own run. The
+                # ledger's whole job is to say how many candidates were considered, and it was
+                # over-counting them on exactly the path R74 was written to protect.
                 return 2
-            print(
-                f"  {len(audit.calls)} build(s) and {len(audit.training)} training set(s), "
-                "every one stopping at its own origin"
-            )
-
-            compared, difference = _compare_against_persisted(
-                evaluation.features, _persisted(settings, symbol)
-            )
-            if compared == 0:
-                # Nothing to compare is not agreement. Printing "0 of 0 identical" and exiting 0
-                # would be a check that passes by checking nothing, which is this project's
-                # named anti-goal; it happens whenever the store holds no persisted table, so it
-                # is a reachable state and not a defensive branch.
-                print("  truncation equivalence: NOT COMPARED, the store holds no built table")
-            elif difference is None:
-                print(f"  truncation equivalence: {compared} of {compared} origins identical")
-            else:
-                failures += 1
-                print(f"  truncation equivalence: DISAGREES at {compared} origins: {difference}")
-
-            if evaluation.skipped:
-                print(
-                    f"  {len(evaluation.skipped)} origin(s) skipped, first: "
-                    f"{evaluation.skipped[0][0]} {evaluation.skipped[0][1]}"
-                )
-            trials = evaluation.trials()
-            for trial in trials:
-                print(
-                    f"  {trial.model:12s} {trial.loss:5s} {trial.value:+.6g} "
-                    f"over {trial.origins} origin(s), {trial.dropped} dropped"
-                )
-            # Appended **now**, per configuration, not once at the end. A run that printed
-            # SPY's results and then tripped the refusal branch on QQQ, raised, or was
-            # interrupted used to reach no ledger at all -- a number seen but not counted, which
-            # is the forking-paths hole this ledger exists to close.
-            written += append_trials(
-                trials,
-                root=settings.storage_root.parent,
-                at=started_at,
-                sha=sha,
-                dirty=dirty,
-            )
-            everything.extend(trials)
+            failures += outcome.disagrees
 
     after = count_trials(settings.storage_root.parent)
     print(f"trials: {written} appended, ledger now {after} line(s), was {before}")

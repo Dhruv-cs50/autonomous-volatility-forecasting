@@ -64,7 +64,8 @@ HORIZON = 1
 
 
 # ---------------------------------------------------------------------------
-# Linear algebra. numpy is absent from pyproject.toml, so the solve is ours and is tested.
+# Linear algebra. numpy is declared since R82 but banned on this path, so the solve is ours
+# and is tested. test_the_point_in_time_path_imports_no_numpy_or_scipy is the witness.
 # ---------------------------------------------------------------------------
 
 
