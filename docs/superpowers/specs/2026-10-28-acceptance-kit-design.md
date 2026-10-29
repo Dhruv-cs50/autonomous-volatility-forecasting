@@ -211,6 +211,13 @@ be advisory. This is a repository settings change and belongs to the user.
   gate's machinery.
 - Whether the CI workflow calls the one runner or keeps its current step list and adds to it. The
   runner is the point; CI having its own copy of the order would be a second source of truth.
+- **CI currently runs twice per push and that must be fixed before this kit lands.**
+  `.github/workflows/ci.yml` declares both `on: push` (unfiltered) and `on: pull_request`, so a
+  push to a PR branch fires both and produces **two check runs both named `check`** — observed on
+  `ea050b2`. Harmless at today's ~4 minutes and actively expensive at the ~10 the kit will cost,
+  since it doubles it. The fix is to filter `push` to `main` alone, which leaves PR branches covered
+  by the `pull_request` trigger. Not changed here only because the workflow was mid-merge; it is
+  the first thing the kit's CI story should do.
 
 ## Open questions for the user
 
