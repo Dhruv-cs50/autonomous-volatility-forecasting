@@ -6,11 +6,15 @@ variance the options market implies for the same ``h`` sessions: ``iv_var_h1`` f
 market's own forecast adds anything to a HAR, so it is in the shootout to be tested and not to
 make up the numbers.
 
-**The column is not rescaled.** ``volab.features.build`` writes ``iv_var_h{h}`` as
-``(iv / 100) ** 2 * (h / 252)``, which is already the target's scale -- annualised percent turned
-into the variance accrued over ``h`` sessions. The regression finds its own coefficient on it;
-nothing here converts units. Witness:
-``test_the_forecast_is_the_ols_on_the_har_regressors_plus_the_matched_column``.
+**The column enters the regression untransformed.** ``volab.features.build`` writes
+``iv_var_h{h}`` as ``(iv / 100) ** 2 * (h / 252)``, which is already the target's scale --
+annualised percent turned into the variance accrued over ``h`` sessions -- so nothing here converts
+units, and the training frame and the origin's row carry the same values. What is pinned is that
+identity.
+A *consistent* rescale would not move the forecast at all (OLS with an intercept is
+scale-equivariant: the coefficient absorbs the factor), so no forecast value could witness its
+absence; a one-sided or non-linear transform would move it. Witness:
+``test_the_matched_column_reaches_the_regression_untransformed_on_both_sides``.
 
 **It cannot answer h=66.** ``IV_SERIES`` has no three-month entry, so the domain says
 ``max_horizon=22``; a cohort holding this contestant is refused at h=66 by ``Cohort.refusal``
@@ -94,8 +98,8 @@ class HarRvIv:
         if pd.isna(view.row[column]):
             raise ModelSkip(f"{self.name}: {column} is null at the origin {view.origin}")
         regressors = (*wf.HAR_REGRESSORS, column)
-        # The rows ``fit_ols`` will actually use, counted the way it drops them.
-        carried = len(view.training[[*regressors, view.response]].dropna())
+        # The rows ``fit_ols`` will actually use, by the harness's own definition of enough rows.
+        carried = wf.training_rows(view.training, view.response, (column,))
         if carried < view.minimum_training:
             raise ModelSkip(
                 f"{self.name}: {carried} training row(s) at {view.origin} carry {column} together "
@@ -109,6 +113,8 @@ class HarRvIv:
             # refusal: a ``SchemaError`` out of ``fit`` skips the origin for the whole cohort (R87).
             # It is this column's fault only if the HAR regressors alone still fit the window; if
             # they do not, the window is unfittable for everyone and the error is left to say so.
+            # That refit sees every training row, not only those carrying ``column``, so a system
+            # singular on the carrying subset alone is also counted as the column's.
             try:
                 wf.fit_ols(view.training, wf.HAR_REGRESSORS, view.response)
             except SchemaError:
