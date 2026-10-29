@@ -1,7 +1,7 @@
 """What a VIX1D-requiring contestant costs every other contestant, per horizon (P3-10).
 
-Reproduces the table in section 4 of the contestant-capability design
-(``docs/superpowers/specs/2026-10-28-contestant-capability-design.md``) that the
+Reproduces the table in section 4 of the Phase 3 design
+(``docs/superpowers/specs/2026-10-29-phase3-iv-and-decision-evaluators-design.md``) that the
 horizon-dependent ``Domain.per_horizon`` rests on: of the origins a run requests, how many
 ``wf.coverage_refusal`` says precede the first one a declaration can be fitted at, under
 
@@ -15,9 +15,12 @@ the trade-off exists at h=1 and nowhere else: VIX1D begins 2022-05-13, VIX9D and
 
 It reads the committed store through ``wf.load_for`` and the CLI's own persisted-table read, both
 of which stop at ``dev_end``, and calls no ``evaluate``, so it **appends nothing to the trial
-ledger**. A horizon with no matched column (h=66, which ``har_rv_iv`` does not answer) prints
-``n/a``. When a figure here disagrees with the spec, that is a finding about the store or the
-code, to be re-measured and recorded, not a reason to adjust this script until it matches.
+ledger**. **It reads the count out of ``coverage_refusal``'s message text** (``"... and N of the M
+requested origins precede it"``), the only place the function reports it, so rewording that message
+breaks this probe: it raises rather than printing a wrong figure. Reword the two together.
+A horizon with no matched column (h=66, which ``har_rv_iv`` does not answer)
+prints ``n/a``. When a figure here disagrees with the spec, that is a finding about the store or
+the code, to be re-measured and recorded, not a reason to adjust this script until it matches.
 
     uv run --locked python tools/measure_iv_requires.py
 """
