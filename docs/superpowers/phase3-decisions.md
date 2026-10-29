@@ -264,9 +264,11 @@ machinery this entire design rests on.
 
 **Ruling: never rebase, re-cut or merge onto a branch on another session's report of its state.**
 Run `git log -1 <branch>` and confirm the commits you depend on are present. Verified again here
-while adopting this ruling: `main` is still at `b8d11cd`, "Merge pull request #5", and carries no
-Phase 2 work. PR #6 is `OPEN` and `BLOCKED` with auto-merge armed, so it is expected to land
-without anyone acting — **and must still be verified before anything depends on it.**
+while adopting this ruling: `main` was still at `b8d11cd`, "Merge pull request #5", and carried no
+Phase 2 work at the time of this ruling. **Updated at sprint close:** PR #6 has since merged as
+`3e76790`, which is this branch's merge-base. Verified with `gh pr view 6` and
+`git log -1 origin/main`, per this ruling's own instruction — and the stale sentence was caught
+by the delivery audit, not by me, which is the point the ruling was making.
 
 This generalises past branches. A report from another agent is evidence to check, not a fact, and
 the three exchanges that produced R141 and R142 found an error in each direction.

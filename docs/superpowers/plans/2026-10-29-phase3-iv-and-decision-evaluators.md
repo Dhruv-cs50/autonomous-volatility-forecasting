@@ -816,7 +816,16 @@ git commit -m "Write decisions to their own ledger, leaving the trial count alon
 
 ---
 
-### Task 9: A witness for `har_levels_mz` at h >= 22 (P3-09, carried 2)
+### Task 9: A witness for `har_levels_mz` at h >= 22 (P3-09, carried 2) — WITHDRAWN
+
+> **Withdrawn at sprint close; do not implement.** Its premise was stale. R129's flag was already
+> discharged by `b04f079` (US-3.14), an ancestor of this branch, whose `tests/test_recalibrated.py:750`
+> asserts `abs(recalibrated_value - base) > 1e-3 * base` at every origin answered — exactly what
+> this task's step 1 specifies. The Phase 2 board's carried-items text predates US-3.14 and was
+> taken on trust when this plan was written. The toy cannot witness the shipped contestant at
+> h=22 in any case: `make_toy(22)` yields 0 calibration pairs and `late_toy(22)` yields 2-3
+> against the shipped 40-pair floor, so only a lowered floor answers anything, which would
+> witness a different contestant. The text below is left intact as the record of what was asked.
 
 **Files:**
 - Test: `tests/test_recalibrated.py` (extend)

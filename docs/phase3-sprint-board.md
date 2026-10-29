@@ -43,7 +43,6 @@ is itself held until the user triggers the holdout reveal (R139).
 |---|---|
 | **`superior_predictive_ability` crashes on proportional non-benchmark series, with certainty.** `src/volab/compare/multiple.py:295-298` pre-checks only the benchmark's pairs; `block_length` then re-checks **all** pairs and raises `ValueError`. Mechanism: under a Gaussian (VaR, ES) map `var/es` is constant, so an off-breach FZ0 value is `const + log(sigma)` and a **proportional** pair's differential is exactly constant — which is what `same_losses` (`dm.py:130-140`) tests for. So any proportional pair trips it at any alpha with no breach, i.e. usually at alpha=1%. Pre-existing Phase 2 code; Phase 3's losses are its first caller | **a real run dies *after* trials were appended**, leaving `trials.jsonl` carrying lines for a run that produced no comparison. **Nothing pins it** — the P3-08 implementer moved a test from stride 2 to stride 4 to get around it, so the suite is green and the defect is invisible. Its own session is proposed |
 | **Zero ex-dates is not "no ex-dates".** SPY's and IWM's `has_distribution` flags are uniformly `False` because the vendor serves distributions for QQQ only | spec 7.4's dividend disclosure reads as "no ex-dates in the window" when it means "no distribution data for this symbol" — a hollow disclosure is worse than none, because it looks discharged |
-
 | **The first real evaluator run moves `data/trials.jsonl` off 414**, which is a reported number, and the only guard is that `--cohort` is required | R139 holds the recorded run until the user triggers the reveal; until then no one may run the CLI against the real store |
 
 ## Deferred findings, carried to the final whole-branch review
@@ -58,7 +57,7 @@ exactly when someone would want to triage it. Raised by task 4's reviewer.
 | P3-01 | The pre-registration's own prose counts ("Seven at h=1; six at ...", line 45) and its section 4 trial-count table are tied to the code by no test | out of that task's scope |
 | P3-02 | `_NeedsIvVar` and its two witnesses (`tests/test_domain.py:198-224`) are subsumed by `test_clause_10_checks_every_probed_horizon` | consolidation only; costs a docstring edit elsewhere |
 | P3-02 | Clause 10's docstring cites a witness with two probes as covering "the second and third horizon"; no test covers a third | wording, not behaviour |
-| P3-02 | The 13/12 origin counts and the HAR-floor clearance of origins 60-61 are evidenced only by the 553-passed run, not from the diff | would need a dedicated construction test |
+| P3-02 | The 13/12 origin counts and the HAR-floor clearance of origins 60-61 are evidenced only by that round's 553-passed run (the suite is now 1716), not from the diff | would need a dedicated construction test |
 | P3-03 | `test_it_is_named_and_fits_the_target_side` is mostly covered by the conformance suite | redundancy, not a gap |
 | P3-08 | `_describe`'s NOT KNOWN branch suppresses a nonzero ex-date count if the raw dividend tier and the curated flags disagree (a stale-curation state). The count is still written to the ledger | an inconsistent-store state, not a code path |
 | P3-08 | The `distribution_flags_known` parameter of `decide` shadows the module function of the same name | harmless |
@@ -80,9 +79,10 @@ exactly when someone would want to triage it. Raised by task 4's reviewer.
 `todo` was stale; this was confirmed with the Phase 2 session, not inferred. `models/base.py` and
 `compare/cohorts.py` are free, and **no Phase 3 story is blocked on another session**.
 
-**`main` does not yet carry Phase 2 completion.** It is at `b8d11cd`; PR #6 is open and
-`BLOCKED`. Re-cutting this branch from `main` would lose everything the design is built on, so
-this branch stays based on `phase-2-completion-groundwork` and merges forward once #6 lands.
+**`main` carries Phase 2 completion.** *(Updated at sprint close; this paragraph previously said
+#6 was open and `main` was at `b8d11cd`, and the delivery audit caught it stale — the same failure
+that produced the withdrawn P3-09.)* PR #6 **merged** as `3e76790`, which is this branch's
+merge-base, so Phase 3 sits on top of it and is **0 commits behind**.
 
 **Branch protection is live on `main`**: a pull request is required, the `check` status must
 pass, strict mode means this branch must be current with `main` before merging, and force pushes
