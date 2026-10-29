@@ -1361,3 +1361,55 @@ written as live. All corrected.
 do** (R79, R82, and now the parent-package edge), and the first time it caught live source
 contradicting this very file. The pattern is narrower than "I don't test enough": in all three the
 test existed and passed, and the *docstring* described a stronger test than the code performed.
+
+## R130 — the holdout pre-registration is REGISTERED
+
+On the user's instruction, 2026-10-28. This ruling exists because the registered document **cannot
+record its own identity**: a file cannot carry the hash of itself and a commit cannot name its own
+sha. Earlier in this project an amend invalidated a sha that had just been written into the board,
+which is the same mistake one layer down. So the identity lives here, in the commit *after* the one
+it describes.
+
+| | |
+|---|---|
+| registering commit | **`65617eea2e1c95b8cf0b90555810bf64944c9153`** |
+| file | `docs/holdout-preregistration.md` |
+| git blob | `4b5c04e38280cbff591d353b1ccf8a91cb3d517b` |
+| `sha256` of content | **`c0a095ab3a00711fd435eded709bde4dcdf9f1ab87ab016e92dc7c5cd7323779`** |
+| size | 11,380 bytes, 193 lines |
+| tree at registration | **clean** — `git status --short` empty before and after |
+| `data/trials.jsonl` | **414 lines** |
+| `data/comparisons.jsonl` | **52 records** |
+
+Both hashes are recorded because either can verify the document and they fail differently: the
+blob sha is what `git rev-parse HEAD:docs/holdout-preregistration.md` returns and ties the content
+to *this repository's* history, while the `sha256` survives being copied out of git entirely. The
+reveal compares the file it reads against these and refuses on a mismatch.
+
+**Registered while the window was still open, and that is the whole of its force.** `holdout_end`
+is **2026-10-30**, two sessions after this commit. So every commitment in the document — the
+contestant sets, the losses, the `n_eff` refusals, the champion rule, the definition of failure —
+was fixed before the window it describes had finished, let alone been read. A pre-registration
+filed after the fact binds only on the author's word that nobody looked; this one binds on a
+timestamp that precedes the data.
+
+**What backs the claim that nothing has been read.** `load_panel` is the only read path and
+requires an explicit `end`; `allow_holdout` has never been set in this repository and
+`VOLAB_HOLDOUT_UNLOCK` has never been read; an autouse fixture fails any unmarked test that
+reaches past `dev_end`; and every recorded run's last origin is on or before 2025-12-24, visible in
+the ledger's own `last_origin` field. The seal is a mechanism, not an assurance.
+
+**What is now fixed and cannot be revisited without a new registration:** seven contestants at
+h=1 and six above it (R114), QLIKE and MSE on the variance scale, DM with the Harvey correction
+only where `n_eff >= 20`, MCS only where `n_eff >= 2/alpha`, **no significance of any kind at h=22
+or h=66**, no confidence set at all at h=66, and the champion defined as the lowest-QLIKE member
+of the 10% set at h=1 on SPY — with **no champion** a permitted outcome if that set is refused for
+thinness. Success explicitly does not require beating HAR; what would make the run a failure is a
+trial that reached no ledger line, a leakage test that could not be shown failing, or a figure with
+no command that reproduces it.
+
+**What remains, and it is the user's to trigger:** the reveal. It cannot run before `holdout_end`
+plus each horizon's tail — h=66 needs about three further months of sessions before its last
+origin completes — it takes a second trial count and records both plus the delta against the 414
+above, and it happens deliberately and once. Changing anything in the registered document means a
+new registration and a new look, **both counted**.
