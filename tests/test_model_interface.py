@@ -630,7 +630,10 @@ def test_the_driver_reports_a_disagreement_with_the_persisted_table() -> None:
 
 @pytest.mark.parametrize("model", BASELINE_COHORT.models, ids=lambda model: model.name)
 def test_every_baseline_model_passes_the_conformance_suite(model: Model) -> None:
-    conformance_suite(model, toy=make_toy(1), rebuild=lambda _: model)
+    # Unrestricted, so clause 9 is asked at every horizon the toy supports and not at h=1 alone.
+    conformance_suite(
+        model, toy=make_toy(1), rebuild=lambda _: model, also_at=[make_toy(5), make_toy(22)]
+    )
 
 
 def test_the_conformance_suite_can_fail(monkeypatch: pytest.MonkeyPatch) -> None:

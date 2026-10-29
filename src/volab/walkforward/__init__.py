@@ -993,8 +993,14 @@ def evaluate(
         }
         usable["target_as_of"] = [completed[day] for day in as_of_dates(usable)]
 
-        if training_rows(usable, column, cohort.requires) < minimum_training:
-            skipped.append((origin, f"only {len(usable)} knowable training row(s)"))
+        counted = training_rows(usable, column, cohort.requires)
+        if counted < minimum_training:
+            why = f"only {len(usable)} knowable training row(s)"
+            if cohort.requires:
+                # The count that fell short is not ``len(usable)``: "only 1500 rows" against a
+                # minimum of 250 would contradict itself when the shortfall is in a column.
+                why += f", {counted} of them non-null in {list(cohort.requires)}"
+            skipped.append((origin, why))
             continue
         # An origin whose own regressors are null has no forecast, and that is skipped rather
         # than scored as NaN. The case is real, not hypothetical: a session within 22 of a

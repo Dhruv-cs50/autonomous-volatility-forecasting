@@ -281,6 +281,13 @@ def _drive(
     return _Driven(outcome, lines, reports)
 
 
+def _named_origin(text: str) -> dt.date:
+    """The origin the refusal says qualifies, read from its own sentence and not searched for."""
+    found = re.search(r"first that qualifies is (\d{4}-\d{2}-\d{2})", text)
+    assert found is not None, text
+    return dt.date.fromisoformat(found.group(1))
+
+
 def _needs() -> Spy:
     return Spy("needs_iv", domain=Domain(requires=(REQUIRED,)))
 
@@ -324,7 +331,7 @@ def test_a_contestant_whose_required_column_starts_mid_window_refuses_the_run() 
     text = "\n".join(driven.reports)
     assert "REFUSED" in text and REQUIRED in text
     qualifying = _first_origin_evaluate_stops_skipping(toy, _sessions(toy)[60], _sessions(toy)[-1])
-    assert str(qualifying) in text
+    assert _named_origin(text) == qualifying
     assert re.search(r"\b\d+ of the \d+ requested origins precede it", text), text
     assert "--from" in text and "cohort of its own" in text, "both remedies are named"
 
@@ -353,7 +360,7 @@ def test_the_coverage_refusal_agrees_with_the_origin_evaluate_stops_skipping() -
 
     expected = _first_origin_evaluate_stops_skipping(toy, start, last, minimum)
     assert expected >= sessions[96 + 22], "the lag moved the boundary 22 sessions past the start"
-    assert str(expected) in "\n".join(driven.reports)
+    assert _named_origin("\n".join(driven.reports)) == expected
 
     # Moving --from to the named origin is accepted, so the remedy the message gives works.
     accepted = _drive(toy, Cohort("iv", (_needs(),)), first=expected, last=last, minimum=minimum)
@@ -456,4 +463,44 @@ def test_coverage_refusal_of_nothing_required_is_none() -> None:
             _stored(toy), toy.targets, (), [_sessions(toy)[60]], horizon=5, minimum_training=MINIMUM
         )
         is None
+    )
+
+
+def test_a_thin_skip_with_a_required_column_says_which_count_fell_short() -> None:
+    """The per-origin fallback the NOT CHECKED path relies on must not contradict itself: "only
+    1500 rows" against a minimum of 250 reads as a lie when the shortfall is in a column."""
+    base = make_toy(5)
+    sessions = _sessions(base)
+    toy = _without_vix1d_before(base, sessions[100])
+    origins = [sessions[60], sessions[61]]
+    evaluation = evaluate(
+        toy.panel,
+        toy.targets,
+        origins,
+        symbol=SYMBOL,
+        horizon=5,
+        calendar=get_calendar(toy.settings),
+        minimum_training=MINIMUM,
+        every=1,
+        cohort=Cohort("iv", (_needs(),)),
+    )
+    reasons = [why for _, why in evaluation.skipped]
+    assert len(reasons) == 2
+    assert all(
+        re.search(r"only \d+ knowable training row\(s\), 0 of them non-null in \['iv_h1'\]", r)
+        for r in reasons
+    ), reasons
+    plain = evaluate(
+        toy.panel,
+        toy.targets,
+        [sessions[24]],
+        symbol=SYMBOL,
+        horizon=5,
+        calendar=get_calendar(toy.settings),
+        minimum_training=MINIMUM,
+        every=1,
+        cohort=Cohort("plain", (Spy("plain"),)),
+    )
+    assert all("non-null in" not in why for _, why in plain.skipped), (
+        "existing wording is unchanged"
     )
