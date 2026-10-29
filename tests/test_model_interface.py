@@ -29,15 +29,18 @@ from model_conformance import (
     clause_6_horizon_contract,
     clause_7_unknowable_targets_are_out_of_reach,
     clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets,
+    clause_9_the_declared_domain_is_exercised,
+    clause_10_a_declared_requirement_is_real,
     conformance_suite,
     make_toy,
     run_cohort,
 )
 
 import volab.walkforward as wf
+from volab.errors import ModelSkip
 from volab.features.build import build_features
 from volab.features.targets import target_column
-from volab.models.base import UNRESTRICTED, Cohort, Forecaster, Model, TrainingView
+from volab.models.base import UNRESTRICTED, Cohort, Domain, Forecaster, Model, TrainingView
 from volab.panel import as_of_dates
 from volab.sessions import get_calendar
 from volab.walkforward import (
@@ -780,3 +783,109 @@ def test_the_conformance_suite_requires_a_rebuild_factory() -> None:
     """R105: the factory is mandatory; an optional one is skipped by the contestant needing it."""
     with pytest.raises(TypeError, match="rebuild"):
         conformance_suite(BASELINE_COHORT.models[0], toy=make_toy(1))  # type: ignore[call-arg]
+
+
+# ---------------------------------------------------------------------------
+# Clauses 9 and 10 (US-3.9): the declaration is exercised, and a declared requirement is real.
+# ---------------------------------------------------------------------------
+
+
+class _DeclinesAbove:
+    """Answers up to ``limit`` and declines every origin above it, whatever it declares."""
+
+    fit_depends_on_horizon = False
+
+    def __init__(self, domain: Domain, limit: int = 5) -> None:
+        self.name = "declines_above"
+        self.domain = domain
+        self._limit = limit
+
+    def fit(self, view: TrainingView) -> Forecaster:
+        if view.horizon > self._limit:
+            raise ModelSkip(f"cannot answer h={view.horizon}")
+        return Answer(1e-4)
+
+
+def test_a_declared_domain_the_contestant_does_not_honour_is_caught_by_clause_9() -> None:
+    """The failure mode a bound cannot have: a declaration that is vacuously wide. Unbounded, on
+    a contestant that in fact declines above h=5, is caught -- and the same contestant declaring
+    the bound it really has is not."""
+    toy = make_toy(1)
+    far = [make_toy(22)]
+    with pytest.raises(AssertionError, match=r"declares it answers h=22"):
+        clause_9_the_declared_domain_is_exercised(_DeclinesAbove(UNRESTRICTED), toy, far)
+    clause_9_the_declared_domain_is_exercised(_DeclinesAbove(Domain(max_horizon=5)), toy, far)
+
+
+def test_clause_9_asks_only_the_horizons_the_contestant_declares() -> None:
+    """A bounded contestant is not asked what it disclaims; the toy's own horizon always is."""
+    probe = Spy("probe", domain=Domain(max_horizon=5))
+    clause_9_the_declared_domain_is_exercised(probe, make_toy(1), [make_toy(5), make_toy(22)])
+    assert {view.horizon for view in probe.views} == {1, 5}
+
+
+def test_clause_9_checks_nothing_if_no_declared_horizon_was_a_toy_horizon() -> None:
+    with pytest.raises(AssertionError, match="was one the toy was built at"):
+        clause_9_the_declared_domain_is_exercised(
+            Spy("probe", domain=Domain(max_horizon=0)), make_toy(1)
+        )
+
+
+class _NeedsIv:
+    """Declares that it requires ``iv_h1``; ``checks`` decides whether it keeps the promise."""
+
+    fit_depends_on_horizon = False
+    domain = Domain(requires=("iv_h1",))
+
+    def __init__(self, *, checks: bool) -> None:
+        self.name = "needs_iv"
+        self._checks = checks
+
+    def fit(self, view: TrainingView) -> Forecaster:
+        if self._checks and pd.isna(view.row["iv_h1"]):
+            raise ModelSkip("iv_h1 is null at the origin")
+        return Answer(1e-4)
+
+
+def test_a_contestant_that_ignores_its_declared_requirement_is_caught() -> None:
+    toy = make_toy(1)
+    with pytest.raises(AssertionError, match=r"declares it requires 'iv_h1'"):
+        clause_10_a_declared_requirement_is_real(_NeedsIv(checks=False), toy)
+    clause_10_a_declared_requirement_is_real(_NeedsIv(checks=True), toy)
+
+
+def test_clause_10_cannot_be_passed_by_a_contestant_that_declines_everything() -> None:
+    """A contestant that always skips would 'raise ModelSkip' with the column nulled and pass for
+    the wrong reason, so the clause requires it to answer with the column intact."""
+    with pytest.raises(AssertionError, match="answered no view"):
+        clause_10_a_declared_requirement_is_real(
+            AlwaysSkips("sulks", fit_depends_on_horizon=False, domain=Domain(requires=("iv_h1",))),
+            make_toy(1),
+        )
+
+
+def test_a_requirement_the_view_does_not_carry_is_a_wiring_error_not_a_pass() -> None:
+    absent = _NeedsIv(checks=True)
+    absent.domain = Domain(requires=("iv_h2",))  # type: ignore[misc]
+    with pytest.raises(AssertionError, match="iv_h2"):
+        clause_10_a_declared_requirement_is_real(absent, make_toy(1))
+
+
+def test_clause_10_passes_vacuously_for_a_contestant_that_declares_no_requirement() -> None:
+    """On purpose, as R111 shipped the mandatory rebuild factory passing vacuously: no shipped
+    contestant declares a requirement, so there is nothing for it to exercise today."""
+    clause_10_a_declared_requirement_is_real(Spy("plain"), make_toy(1))
+
+
+def test_the_suite_runs_both_new_clauses() -> None:
+    """Wired into ``conformance_suite``, not merely defined: each plant fails the whole suite."""
+    toy = make_toy(1)
+    with pytest.raises(AssertionError, match="declares it requires"):
+        conformance_suite(_NeedsIv(checks=False), toy=toy, rebuild=lambda _: _NeedsIv(checks=False))
+    with pytest.raises(AssertionError, match="declares it answers"):
+        conformance_suite(
+            _DeclinesAbove(UNRESTRICTED),
+            toy=toy,
+            rebuild=lambda _: _DeclinesAbove(UNRESTRICTED),
+            also_at=[make_toy(22)],
+        )

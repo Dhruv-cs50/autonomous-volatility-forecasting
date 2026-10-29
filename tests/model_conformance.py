@@ -23,7 +23,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import pandas as pd
@@ -532,7 +532,94 @@ def clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets(
     assert checked >= 2, f"only {checked} origin(s) were actually compared"
 
 
-def conformance_suite(model: Model, *, toy: Toy, rebuild: Callable[[pd.DataFrame], Model]) -> None:
+def clause_9_the_declared_domain_is_exercised(
+    model: Model, toy: Toy, also: Sequence[Toy] = ()
+) -> None:
+    """At each horizon the contestant declares it can answer, it answers an origin of the toy.
+
+    ``toy`` is the toy at its own horizon; ``also`` are toys at other horizons the caller vouches
+    the contestant can be run on. Catches a declaration that is vacuously wide -- "unbounded" on a
+    contestant that in fact breaks above h=5 -- which is the failure mode a bound cannot have.
+    The converse is unenforceable and no clause pretends otherwise: ``max_horizon`` cannot be
+    checked against behaviour (EGARCH at h=22 answers a finite, ordinary-looking 1.7e12), which is
+    why R114 demanded an a-priori refusal. This clause binds what a contestant claims *to* answer.
+
+    **A departure from the design, which had the clause rebuild ``make_toy(h)`` for every
+    configured horizon itself.** Measured: that cannot be done generically. The toy cannot be
+    answered at h=66 by anyone (66 sessions of target lag on 146), and a contestant whose
+    answerability depends on the toy's *shape* -- the recalibrated HAR needs 40 calibration pairs,
+    which only ``late_toy`` at stride 1 reaches -- answers nothing on a freshly built stride-6
+    toy at any horizon, which is indistinguishable from "declares a horizon it cannot answer".
+    The caller, who built the toy for the contestant, is the one who knows which horizons it
+    supports, so a sweep is opt-in through ``also`` and the toy's own horizon is always checked.
+    A horizon the contestant does not declare is skipped, and at least one must be exercised.
+    """
+    exercised: list[int] = []
+    for probe in (toy, *also):
+        if not model.domain.answers(probe.horizon):
+            continue
+        evaluation = run_cohort(probe, alone(model))
+        answered = [r for r in evaluation.results if math.isfinite(r.forecasts[model.name])]
+        assert answered, (
+            f"{model.name} declares it answers h={probe.horizon} but answered none of the "
+            f"{len(evaluation.results)} scored origin(s) of the toy there"
+        )
+        exercised.append(probe.horizon)
+    assert exercised, f"no horizon {model.name} declares was one the toy was built at"
+
+
+def clause_10_a_declared_requirement_is_real(model: Model, toy: Toy) -> None:
+    """For each column in ``domain.requires``, nulling it makes the contestant raise ``ModelSkip``.
+
+    Checkable in one direction only: this catches *declared but unused*. A column used and
+    undeclared is not detectable, and still drags the origin out of everyone's comparable set --
+    exactly today's behaviour, so nothing is worse and the harness does not over-claim.
+
+    **It passes vacuously for every shipped contestant**, none of which declares a requirement, as
+    R111 shipped the mandatory rebuild factory passing vacuously on purpose. Witness that it bites:
+    ``test_a_contestant_that_ignores_its_declared_requirement_is_caught``. A contestant that
+    declines everything would "raise ModelSkip" for the wrong reason, so it must answer with the
+    column intact first.
+    """
+    columns = model.domain.requires
+    if not columns:
+        return
+    answered = 0
+    for view in views_of(toy)[:4]:
+        for column in columns:
+            assert column in view.training.columns and column in view.row.index, (
+                f"{model.name} declares it requires {column!r}, which the view does not carry "
+                f"(columns: {list(view.training.columns)})"
+            )
+        try:
+            model.fit(view).forecast(view.horizon)
+        except ModelSkip:
+            continue
+        answered += 1
+        for column in columns:
+            row = view.row.copy()
+            row[column] = float("nan")
+            nulled = dataclasses.replace(
+                view, training=view.training.assign(**{column: float("nan")}), row=row
+            )
+            try:
+                model.fit(nulled).forecast(view.horizon)
+            except ModelSkip:
+                continue
+            raise AssertionError(
+                f"{model.name} declares it requires {column!r} but answered at {view.origin} "
+                "with it null"
+            )
+    assert answered, f"{model.name} answered no view with its required columns intact"
+
+
+def conformance_suite(
+    model: Model,
+    *,
+    toy: Toy,
+    rebuild: Callable[[pd.DataFrame], Model],
+    also_at: Sequence[Toy] = (),
+) -> None:
     """Run every clause against ``model`` on ``toy``. See the module docstring for how to call.
 
     ``rebuild`` is required, not optional (R105, clause 8): it builds ``model`` from a target
@@ -549,3 +636,5 @@ def conformance_suite(model: Model, *, toy: Toy, rebuild: Callable[[pd.DataFrame
     clause_6_horizon_contract(model, toy)
     clause_7_unknowable_targets_are_out_of_reach(model, toy)
     clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets(model, toy, rebuild)
+    clause_9_the_declared_domain_is_exercised(model, toy, also_at)
+    clause_10_a_declared_requirement_is_real(model, toy)

@@ -722,11 +722,22 @@ def test_the_bound_is_derived_from_a_fixed_skew_t_error_law() -> None:
 
 
 def test_garch11_conforms() -> None:
-    conformance_suite(GARCH11_SKEWT, toy=make_toy(1), rebuild=lambda _: GARCH11_SKEWT)
+    # Unbounded, so clause 9 is also asked at the other horizons the toy supports.
+    conformance_suite(
+        GARCH11_SKEWT,
+        toy=make_toy(1),
+        rebuild=lambda _: GARCH11_SKEWT,
+        also_at=[make_toy(5), make_toy(22)],
+    )
 
 
 def test_gjr11_conforms_at_a_multistep_horizon() -> None:
-    conformance_suite(_few(GJR11_SKEWT), toy=make_toy(22), rebuild=lambda _: _few(GJR11_SKEWT))
+    conformance_suite(
+        _few(GJR11_SKEWT),
+        toy=make_toy(22),
+        rebuild=lambda _: _few(GJR11_SKEWT),
+        also_at=[make_toy(1), make_toy(5)],
+    )
 
 
 def test_egarch11_conforms_at_a_horizon_where_the_seed_matters() -> None:
@@ -738,6 +749,17 @@ def test_egarch11_conforms_at_a_horizon_where_the_seed_matters() -> None:
         OutsideItsDomain(_few(EGARCH11_SKEWT)),
         toy=make_toy(22),
         rebuild=lambda _: OutsideItsDomain(_few(EGARCH11_SKEWT)),
+    )
+
+
+def test_egarch11_conforms_within_its_declared_domain_and_is_not_asked_above_it() -> None:
+    """At h=1 with a toy at h=22 on offer: clause 9 skips what EGARCH disclaims instead of
+    refusing, so the declared bound is honoured by the suite as it is by the harness."""
+    conformance_suite(
+        _few(EGARCH11_SKEWT),
+        toy=make_toy(1),
+        rebuild=lambda _: _few(EGARCH11_SKEWT),
+        also_at=[make_toy(22)],
     )
 
 

@@ -1133,6 +1133,23 @@ def test_every_measured_cohort_figure_is_withheld_while_it_comes_from_the_probe_
         assert comparison.unclaimed == ("egarch",), horizon
 
 
+def test_egarch_is_unclaimed_at_h1_and_its_error_is_not_declared_zero() -> None:
+    """At h=1 every one of EGARCH's paths is the same number, so its Monte-Carlo error is
+    identically zero, and declaring ``Measurement(percent=0.0, ...)`` would lift it out of
+    ``unclaimed`` and hand a significance claim to the contestant leading h=1 QLIKE. R124 refused
+    exactly that, by name, as post-hoc selection. Out of scope twice over; this is the guard."""
+    base = _named_contenders(60, 0, ("har_levels", "random_walk", "egarch11_skewt"), (0.0,) * 3)
+    series = dataclasses.replace(base, horizon=1)
+    errors = monte_carlo_error(SHOOTOUT, 1)
+    assert errors["egarch11_skewt"] is None
+    sampling = EGARCH11_SKEWT.domain.sampling
+    assert sampling is not None and sampling.measured == () and sampling.error(1) is None
+    comparison = analyse(
+        series, monte_carlo_error=errors, monte_carlo_source=series_source(series), reps=200
+    )
+    assert comparison.unclaimed == ("egarch11_skewt",)
+
+
 def _named_contenders(n: int, q: int, names: tuple[str, ...], gaps: tuple[float, ...]):
     """``_contenders`` with distinguishable names, so a line can be searched for one of them."""
     base = _contenders(n, q, gaps=gaps)
