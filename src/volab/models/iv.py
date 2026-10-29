@@ -20,11 +20,21 @@ absence; a one-sided or non-linear transform would move it. Witness:
 ``max_horizon=22``; a cohort holding this contestant is refused at h=66 by ``Cohort.refusal``
 rather than having the contestant dropped from it.
 
+**``max_horizon=22`` overstates: it answers only h in {1, 5, 22}.** ``Domain`` can express a prefix
+and nothing else, so a configured horizon in 2-4 or 6-21 would pass ``Cohort.refusal`` and then
+raise the ``ValueError`` below inside ``fit``. ``HORIZONS`` is ``(1, 5, 22, 66)`` and nothing
+configures one, so no non-prefix domain is built for a case that cannot occur; whoever adds such
+a horizon meets this paragraph first.
+
 **A null or degenerate column is a refusal, not a fit around it.** Null at the origin, too thin in
 the training window, or singular only because of the column (constant, or collinear with the HAR
 regressors, where the HAR alone would fit), the contestant raises ``ModelSkip`` naming the column
 (R87): recorded against this contestant, not filed as an unfittable window for the whole cohort.
-Conformance clause 10 nulls the declared column and demands this of the first two. A window the
+Conformance clause 10 nulls the column in the view's training window and its row together, so it
+exercises only the first check: ``fit`` tests the row before it counts the training rows, and the
+null row always fires first. Each branch is pinned by its own test (null at the origin,
+``test_it_skips_an_origin_whose_iv_column_is_null``; too thin,
+``test_it_skips_when_too_few_training_rows_carry_the_iv_column``). A window the
 HAR regressors cannot fit either stays the window's ``SchemaError``. There is no fallback to the
 plain HAR -- that would make the contestant become the baseline while still being reported as
 implied-variance.

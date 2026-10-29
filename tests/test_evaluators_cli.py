@@ -27,7 +27,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from conftest import SyntheticStore
-from test_compare import TOY_COHORT, WINDOW
+from test_compare import TOY_COHORT, TOY_WIDE, WINDOW
 from test_evaluators import HAND_ORIGINS, _hand_evaluation
 from test_walkforward_cli import _settings_with_root, _toy_panel_and_targets_by_horizon
 
@@ -886,12 +886,70 @@ def test_a_run_writes_strict_json_with_the_p_values_and_their_reasons(run: _Run,
 
 
 def test_coverage_at_a_short_stride_is_refused_in_the_written_line(run: _Run, capsys) -> None:
+    # Stride 4, and not 2, which is where this test began: the toy cohort holds ``rw_scaled``, an
+    # exactly proportional copy of ``random_walk``, and off a breach their FZ0 values differ by a
+    # constant. Once a run reaches the 11 origins the bootstrap needs, that pair has no spread and
+    # ``block_length`` raises ``ValueError`` -- out of ``cli.main``, after the trials were
+    # appended. ``WINDOW`` keeps stride 4 under 11 origins (7), so ``analyse`` only refuses here;
+    # every stride tried that reaches 11 on this cohort raised (h=1 at 1, 2, 3; h=5 at 3, 4 over
+    # Feb-Aug 2024), so widening the window under stride 4 lands on the crash. The defect
+    # is ``volab.compare.multiple`` (``superior_predictive_ability`` pre-checks the benchmark's
+    # pairs only), recorded under "Blocks the recorded run" in ``docs/phase3-sprint-board.md`` and
+    # not fixed by this story. The statistics are computed, on a cohort without the pair, in
+    # ``test_a_run_that_reaches_the_bootstrap_computes_every_statistic``.
     assert run.main("--symbol", "SPY", "--horizon", "5", "--every", "4", *WINDOW) == 0
     capsys.readouterr()
     for line in run.lines(DECISION_LEDGER):
         assert line["stride"] == 4
         for result in line["coverage"].values():
             assert "stride 4 < horizon 5" in result["refusal"]
+
+
+def test_a_run_that_reaches_the_bootstrap_computes_every_statistic(run: _Run, capsys) -> None:
+    """Every other run in this file ends under the 11 origins Politis-White needs, so ``analyse``
+    refuses DM, MCS and SPA there and only its refusal branch is ever exercised. This one reaches
+    22 comparable origins (h=1, stride 2, nothing overlaps) on ``TOY_WIDE`` -- the toy cohort
+    without ``rw_scaled`` -- so the statistics are computed for both decision series.
+
+    ``TOY`` cannot do this: it holds a proportional pair, and every configuration of it that
+    reaches 11 origins raises in the bootstrap (see the comment on
+    ``test_coverage_at_a_short_stride_is_refused_in_the_written_line``)."""
+    run.monkeypatch.setattr(cli, "COHORTS", {TOY_WIDE.name: TOY_WIDE})
+    window = ["--from", "2024-02-01", "--to", "2024-12-31", "--minimum-training", "20"]
+    argv = ["run", "--cohort", TOY_WIDE.name, "--symbol", "SPY", "--horizon", "1", "--every", "2"]
+    assert cli.main([*argv, *window]) == 0
+    printed = capsys.readouterr().out
+    assert "Politis-White needs" not in printed and "REFUSED" not in printed
+
+    names = list(TOY_WIDE.contestants)
+    pairs = len(names) * (len(names) - 1) // 2
+    lines = run.lines(DECISION_LEDGER)
+    assert [line["alpha"] for line in lines] == list(ALPHAS)
+    for line in lines:
+        fz0 = line["fz0"]
+        assert line["origins"] == fz0["origins"] == 22
+        assert fz0["refusal"] is None and "Politis-White needs" not in json.dumps(fz0)
+        assert fz0["block"] is not None and fz0["n_eff"] == 22.0
+
+        assert len(fz0["dm"]) == pairs
+        for test in fz0["dm"]:
+            assert test["n"] == 22
+            for column in ("headline", "bartlett"):
+                assert test[column]["refusal"] is None, test
+                assert 0.0 <= test[column]["p_value"] <= 1.0, test
+
+        mcs = fz0["mcs"]
+        assert mcs["pvalues"] is not None and sorted(mcs["pvalues"]) == sorted(names)
+        assert all(0.0 <= p <= 1.0 for p in mcs["pvalues"].values())
+        assert max(mcs["pvalues"].values()) == 1.0, "the MCS always keeps its best contestant"
+        assert mcs["sizes"] and all("refused" not in size for size in mcs["sizes"].values())
+
+        benchmarks = {spa["benchmark"] for spa in fz0["spa"]}
+        assert benchmarks and benchmarks <= set(names)
+        for spa in fz0["spa"]:
+            assert spa["refusal"] is None and spa["block"] is not None, spa
+            assert 0.0 <= spa["lower"] <= spa["consistent"] <= spa["upper"] <= 1.0, spa
+    assert len(run.lines(TRIAL_LEDGER)) == len(LOSSES) * len(TOY_WIDE.models)
 
 
 def test_a_single_origin_run_writes_null_statistics_not_zeros(run: _Run, capsys) -> None:

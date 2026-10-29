@@ -123,10 +123,16 @@ class Domain:
     only there, for a contestant whose input differs by horizon (the implied-variance model reads
     ``iv_var_h1`` at h=1 and ``iv_var_h5`` at h=5). The distinction is quantitative, not tidy: a
     column declared at a horizon where it is not read costs **every** contestant its origins, by
-    two routes in ``volab.walkforward``. ``evaluate`` drops an origin for the whole cohort, before
-    any fit, when a declared column is null at it; and ``coverage_refusal`` refuses a window that
-    begins before the column has enough history. (``Evaluation.comparable`` is not the route: it
-    intersects origins where each forecast is loss-defined and never reads ``requires``.)
+    three routes in ``volab.walkforward``, each of which reads ``cohort.requires_at``. ``evaluate``
+    drops an origin for the whole cohort, before any fit, when a declared column is null at it;
+    it also skips the origin for the whole cohort when too few training rows carry the column
+    (the thin-training skip, which counts non-null rows of ``requires_at(horizon)``); and
+    ``coverage_refusal`` refuses a window that begins before the column has enough history.
+    (``Evaluation.comparable`` is not a route that reads the declaration: it intersects origins
+    where each forecast is loss-defined and never reads ``requires``. A contestant's own
+    ``ModelSkip`` reaches it as a NaN, but that is the contestant's choice and not a cost the
+    declaration imposes.) The skip is witnessed by
+    ``test_the_thin_training_skip_counts_the_columns_of_the_horizon_being_run``.
     A tuple of pairs rather than a mapping, so ``Domain`` stays frozen and hashable and ``==``
     keeps value semantics. ``requires_at`` is the single reader of both for the harness;
     ``__post_init__`` also reads ``per_horizon``, to refuse a column for a horizon not answered.

@@ -37,6 +37,7 @@ from model_conformance import (
 )
 
 import volab.walkforward as wf
+from volab.compare.cohorts import COHORTS
 from volab.errors import ModelSkip
 from volab.features.build import build_features
 from volab.features.targets import target_column
@@ -140,9 +141,9 @@ def test_the_baseline_models_satisfy_the_protocols() -> None:
 
 def test_every_named_cohort_begins_with_har_levels() -> None:
     """``training_rows`` is the first contestant's ``observations`` (R87), so the first entry of
-    every cohort must be the model whose count the recorded run reported. Only the baseline is
-    named in this story; the story that names the shootout cohorts extends this list."""
-    for cohort in (BASELINE_COHORT,):
+    every cohort must be the model whose count the recorded run reported. The baseline and every
+    registered cohort are checked (``tests/test_compare.py`` asserts the same over ``COHORTS``)."""
+    for cohort in (BASELINE_COHORT, *COHORTS.values()):
         assert cohort.models[0].name == "har_levels", cohort.name
 
 

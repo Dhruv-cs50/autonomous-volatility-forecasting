@@ -583,8 +583,10 @@ def clause_10_a_declared_requirement_is_real(
     nothing checked. Reading ``requires`` alone would return at the first line for a contestant
     that declares everything through ``per_horizon``, passing without having looked:
     ``test_clause_10_checks_a_requirement_declared_only_through_per_horizon``. Checking only the
-    first probe, or dropping an unprobed horizon, would do the same for the second and third:
-    ``test_clause_10_checks_every_probed_horizon``.
+    first probe, or dropping an unprobed horizon, would do the same for the second:
+    ``test_clause_10_checks_every_probed_horizon``. That witness has two probes, so it covers the
+    second and not a third: a mutation that checks ``(toy, *also[:1])`` passes it, and nothing
+    pins a third probe.
 
     Checkable in one direction only: this catches *declared but unused*. A column used and
     undeclared is not detectable, and still drags the origin out of everyone's comparable set --
