@@ -228,6 +228,67 @@ def test_clause_10_reads_the_declaration_at_the_toys_horizon_and_no_other() -> N
         clause_10_a_declared_requirement_is_real(IgnoresH5(checks=False), make_toy(5))
 
 
+class _NeedsIvVarAtTwoHorizons:
+    """Declares ``iv_var_h1`` at h=1 and ``iv_var_h5`` at h=5, plus ``requires`` at every horizon;
+    honours the declaration only at the horizons in ``honours``."""
+
+    fit_depends_on_horizon = False
+
+    def __init__(
+        self,
+        *,
+        honours: frozenset[int],
+        max_horizon: int | None = None,
+        requires: tuple[str, ...] = (),
+    ) -> None:
+        self.name = "needs_iv_var_twice"
+        declared = ((1, "iv_var_h1"), (5, "iv_var_h5"))
+        self.domain = Domain(
+            max_horizon=max_horizon,
+            requires=requires,
+            per_horizon=tuple(
+                pair for pair in declared if max_horizon is None or pair[0] <= max_horizon
+            ),
+        )
+        self._honours = honours
+
+    def fit(self, view: TrainingView) -> Forecaster:
+        if view.horizon in self._honours:
+            for column in self.domain.requires_at(view.horizon):
+                if pd.isna(view.row[column]):
+                    raise ModelSkip(f"{column} is null at the origin")
+        return Answer(1e-4)
+
+
+def test_clause_10_checks_every_probed_horizon() -> None:
+    """Honoured at h=1, ignored at h=5. The toy alone cannot see it; passing the h=5 toy must."""
+    liar = _NeedsIvVarAtTwoHorizons(honours=frozenset({1}))
+    clause_10_a_declared_requirement_is_real(liar, make_toy(1))
+    with pytest.raises(AssertionError, match=r"declares it requires 'iv_var_h5'"):
+        clause_10_a_declared_requirement_is_real(liar, make_toy(1), [make_toy(5)])
+    honest = _NeedsIvVarAtTwoHorizons(honours=frozenset({1, 5}))
+    clause_10_a_declared_requirement_is_real(honest, make_toy(1), [make_toy(5)])
+
+
+def test_the_suite_passes_its_also_at_toys_to_clause_10() -> None:
+    """Wired into ``conformance_suite``, not merely defined: the h=5 plant fails the whole suite."""
+    from model_conformance import conformance_suite
+
+    def liar() -> _NeedsIvVarAtTwoHorizons:
+        return _NeedsIvVarAtTwoHorizons(honours=frozenset({1}))
+
+    conformance_suite(liar(), toy=make_toy(1), rebuild=lambda _: liar())
+    with pytest.raises(AssertionError, match=r"declares it requires 'iv_var_h5'"):
+        conformance_suite(liar(), toy=make_toy(1), rebuild=lambda _: liar(), also_at=[make_toy(5)])
+
+
+def test_clause_10_skips_a_probe_the_contestant_does_not_answer() -> None:
+    """Bounded at h=1 and given the h=5 toy: skipped, as clause 9 skips it, and not failed for a
+    column the contestant does not honour at a horizon it cannot be asked about."""
+    bounded = _NeedsIvVarAtTwoHorizons(honours=frozenset({1}), max_horizon=1, requires=("vvix",))
+    clause_10_a_declared_requirement_is_real(bounded, make_toy(1), [make_toy(5)])
+
+
 # -- Sampling and Measurement: shipped with the declaration, read by US-3.9b ---------------------
 
 

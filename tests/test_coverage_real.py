@@ -232,8 +232,10 @@ MATCHED = {1: "iv_var_h1", 5: "iv_var_h5", 22: "iv_var_h22"}
 
 @pytest.mark.parametrize("horizon", [1, 5, 22])
 def test_the_horizon_matched_column_refuses_only_at_h1(horizon: int) -> None:
-    """The figure spec section 4 reasons from. Expected to be **re-measured, not edited**, when
-    the store is rebuilt (R133's third category of figure)."""
+    """The figure spec section 4 reasons from. **A pinned measurement in the sense of R133** (its
+    third category of figure): expected to fail and be **re-measured, not edited**, when the
+    store is rebuilt. Both branches discriminate: the 119 is exact, and a refusal at h=5 or h=22
+    fails the ``reason is None`` branch."""
     origins = origins_for(horizon)
     reason = refusal(horizon, origins, required=MATCHED[horizon])
     if horizon == 1:

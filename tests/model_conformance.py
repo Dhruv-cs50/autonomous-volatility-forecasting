@@ -568,16 +568,22 @@ def clause_9_the_declared_domain_is_exercised(
     assert exercised, f"no horizon {model.name} declares was one the toy was built at"
 
 
-def clause_10_a_declared_requirement_is_real(model: Model, toy: Toy) -> None:
-    """For each column in ``domain.requires_at(toy.horizon)``, nulling it makes the contestant
+def clause_10_a_declared_requirement_is_real(
+    model: Model, toy: Toy, also: Sequence[Toy] = ()
+) -> None:
+    """At every probed horizon the contestant answers, nulling each column it reads there makes it
     raise ``ModelSkip``.
 
-    **Only ``toy.horizon`` is checked**: ``requires`` plus the ``per_horizon`` columns declared for
-    that horizon. A column declared only for another horizon is not looked at here; calling the
-    clause with a toy built at that horizon is what checks it (``conformance_suite`` passes the
-    clause its one ``toy``, not ``also_at``). Reading ``requires`` alone would return at the first
+    ``toy`` and each of ``also`` is a probe, as in clause 9. At a probe the columns are
+    ``domain.requires_at(probe.horizon)``: ``requires`` plus the ``per_horizon`` columns declared
+    for that horizon. A probe whose horizon the contestant does not answer is skipped, and so is a
+    probe at which it reads no column. A column declared only for a horizon none of the probes is
+    built at is **not** checked: the caller vouches for the horizons by passing the toys, and
+    ``conformance_suite`` passes ``also_at``. Reading ``requires`` alone would return at the first
     line for a contestant that declares everything through ``per_horizon``, passing without having
-    looked: ``test_clause_10_checks_a_requirement_declared_only_through_per_horizon``.
+    looked: ``test_clause_10_checks_a_requirement_declared_only_through_per_horizon``. Checking
+    only the first probe would do the same for the second and third horizon:
+    ``test_clause_10_checks_every_probed_horizon``.
 
     Checkable in one direction only: this catches *declared but unused*. A column used and
     undeclared is not detectable, and still drags the origin out of everyone's comparable set --
@@ -589,11 +595,22 @@ def clause_10_a_declared_requirement_is_real(model: Model, toy: Toy) -> None:
     declines everything would "raise ModelSkip" for the wrong reason, so it must answer with the
     column intact first.
     """
-    columns = model.domain.requires_at(toy.horizon)
-    if not columns:
-        return
+    reading = [
+        (probe, columns)
+        for probe in (toy, *also)
+        if model.domain.answers(probe.horizon)
+        if (columns := model.domain.requires_at(probe.horizon))
+    ]
+    exercised: list[int] = []
+    for probe, columns in reading:
+        _a_declared_requirement_is_real_at(model, probe, columns)
+        exercised.append(probe.horizon)
+    assert len(exercised) == len(reading), "a probe that reads a column was not exercised"
+
+
+def _a_declared_requirement_is_real_at(model: Model, probe: Toy, columns: Sequence[str]) -> None:
     answered = 0
-    for view in views_of(toy)[:4]:
+    for view in views_of(probe)[:4]:
         for column in columns:
             assert column in view.training.columns and column in view.row.index, (
                 f"{model.name} declares it requires {column!r}, which the view does not carry "
@@ -618,7 +635,9 @@ def clause_10_a_declared_requirement_is_real(model: Model, toy: Toy) -> None:
                 f"{model.name} declares it requires {column!r} but answered at {view.origin} "
                 "with it null"
             )
-    assert answered, f"{model.name} answered no view with its required columns intact"
+    assert answered, (
+        f"{model.name} answered no view with its required columns intact at h={probe.horizon}"
+    )
 
 
 def conformance_suite(
@@ -645,4 +664,4 @@ def conformance_suite(
     clause_7_unknowable_targets_are_out_of_reach(model, toy)
     clause_8_a_rebuilt_contestant_cannot_see_unknowable_targets(model, toy, rebuild)
     clause_9_the_declared_domain_is_exercised(model, toy, also_at)
-    clause_10_a_declared_requirement_is_real(model, toy)
+    clause_10_a_declared_requirement_is_real(model, toy, also_at)
