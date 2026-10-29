@@ -733,6 +733,21 @@ git commit -m "Add vol-target P&L, turnover and the ex-date count beside it (P3-
 - Test: `tests/test_evaluators_cli.py` (create)
 
 **Interfaces:**
+**Four contracts tasks 6 and 7 hand you, discovered while building them:**
+
+- `coverage(...)` takes `stride` and `horizon` from the caller — pass `evaluation.every` and
+  `evaluation.horizon`, not literals.
+- `VolTargetResult`'s `realized_vol`, `sharpe` and `turnover` are `float | None`: a single origin
+  or a constant P&L leaves them undefined. **The sink must serialise `None`**, not coerce to 0.0.
+- `vol_target([], [])` raises while `decision_series` accepts an empty evaluation, so the driver
+  must guard an empty origin set before calling it.
+- **Nothing currently reads `has_distribution` from the store.** Spec 7.4 requires the ex-date
+  count beside the vol-target result, so supplying it is **this task's job** — without it the
+  disclosure is hollow and the `distributions` argument is never exercised on real data.
+
+The cap binds at `TARGET_VOL / POSITION_CAP` = **5% annualised vol**, not the "about 0.25%" an
+earlier draft of this plan claimed.
+
 - Consumes: Tasks 5-7, **and Task 4** (`PHASE3_IV`, which the CLI refusal test names);
   `volab.compare.analyse`; `volab.walkforward.run_configuration`.
 - Produces: `DECISION_LEDGER = Path("data") / "decisions.jsonl"`; `Decision`; `JsonlSink`.
