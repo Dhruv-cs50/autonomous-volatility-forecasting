@@ -58,7 +58,7 @@ from volab.walkforward import Evaluation, OriginResult
 def test_gaussian_var_and_es_at_one_percent() -> None:
     var, es = var_es(variance=0.0004, alpha=0.01)  # sigma = 0.02
     assert var == pytest.approx(0.02 * 2.3263478740, rel=1e-9)
-    # The brief quoted 2.6652142437 here, which is 9e-9 away from the true ratio
+    # The brief quoted 2.6652142437 here, which is 8.7e-9 away, relatively, from the true ratio
     # phi(z_0.01) / 0.01 = 2.66521422035 and so fails its own rel=1e-9. This is the true value; the
     # next test derives it independently so a transcribed digit cannot be what pins it.
     assert es == pytest.approx(0.02 * 2.6652142203, rel=1e-9)
@@ -383,9 +383,13 @@ def test_analyse_accepts_a_decision_series_without_losses_gaining_an_entry() -> 
 
     ``LOSSES`` is read by ``Evaluation.trials`` and so by the driver loop; an entry there makes
     every future run of every cohort write another trial line per contestant per configuration,
-    and ``count_trials`` is what the holdout pre-registration pins. Asserted on the thing itself
-    -- the dict is the same before and after, nothing in it is an FZ loss, and the trials a run
-    would write are still exactly one per loss in it -- not on an enumeration of today's names.
+    and ``count_trials`` is what the holdout pre-registration pins.
+
+    What guards that is ``series.loss not in LOSSES`` (and its restatement from the consumer's
+    side: no trial a run would write carries the decision loss's name -- the same fact, since
+    ``trials`` iterates ``LOSSES``, not a second witness). The before/after equality is weaker and
+    only catches ``decision_series`` or ``analyse`` mutating the dicts at run time. No enumeration
+    of today's loss names is asserted (R151).
     """
     before = dict(wf.LOSSES)
     domain_before = dict(wf.LOSS_DOMAIN)
@@ -402,8 +406,7 @@ def test_analyse_accepts_a_decision_series_without_losses_gaining_an_entry() -> 
     assert dict(wf.LOSS_DOMAIN) == domain_before
     assert series.loss not in wf.LOSSES
     assert not any(name.lower().startswith("fz") for name in wf.LOSSES)
-    written = {trial.loss for trial in evaluation.trials()}
-    assert written == set(wf.LOSSES), "scoring a decision changed what a run writes to the ledger"
+    assert series.loss not in {trial.loss for trial in evaluation.trials()}
 
 
 def test_a_decision_series_with_a_wrong_variance_loses_to_the_right_one() -> None:

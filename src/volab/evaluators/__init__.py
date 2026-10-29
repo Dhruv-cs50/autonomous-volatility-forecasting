@@ -163,9 +163,10 @@ def decision_series(
     """The FZ0 loss of every contestant's Gaussian ``(VaR, ES)`` at every comparable origin.
 
     Origins are ``evaluation.comparable("qlike")`` -- the set the QLIKE trial beside it is computed
-    over, on which every contestant has a strictly positive variance forecast, which is exactly
-    where ``var_es`` is defined -- so a decision comparison and a forecast comparison rest on the
-    same origins. ``symbol``, ``horizon`` and ``stride`` are the evaluation's.
+    over, on which every contestant has a strictly positive variance forecast, so ``var_es`` is
+    defined there unless a forecast is ``inf``, which it refuses (QLIKE's domain admits it) -- so a
+    decision comparison and a forecast comparison rest on the same origins. ``symbol``,
+    ``horizon`` and ``stride`` are the evaluation's.
 
     ``returns`` maps origin to the signed horizon return (``horizon_returns``). A comparable origin
     with no entry there is **refused**, not dropped: the series would silently rest on fewer origins
