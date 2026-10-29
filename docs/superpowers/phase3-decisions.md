@@ -4,7 +4,7 @@ Continues the numbering from R133 in `docs/superpowers/phase2-completion-decisio
 
 ---
 
-## R134 — Phase 3's requirement is a reconstruction, and it is labelled as one
+## R135 — Phase 3's requirement is a reconstruction, and it is labelled as one
 
 The framework document that defines each phase's exit criterion **is not in this repository**.
 The user confirmed on 2026-10-28 that it is not to hand and said to proceed.
@@ -27,7 +27,7 @@ carried items.
 
 ---
 
-## R135 — `Domain.requires` is horizon-dependent, and R131's figures were measured on a premise a
+## R136 — `Domain.requires` is horizon-dependent, and R131's figures were measured on a premise a
 real IV contestant does not share
 
 R131 measured what a VIX1D-requiring contestant costs the whole cohort: 119 of 251 origins at
@@ -78,7 +78,7 @@ Phase 3 witness claims more.
 
 ---
 
-## R136 — the evaluators are a separate package whose loss feeds the existing machinery
+## R137 — the evaluators are a separate package whose loss feeds the existing machinery
 
 **Ruling (user decision, 2026-10-29):** `src/volab/evaluators/` consumes an in-memory
 `Evaluation`, computes the Fissler-Ziegel joint (VaR, ES) loss, assembles a `LossSeries` by hand
@@ -104,7 +104,7 @@ a second source of truth for numbers the driver already holds.
 
 ---
 
-## R137 — the quantile map is Gaussian, and the understatement is the finding
+## R138 — the quantile map is Gaussian, and the understatement is the finding
 
 **Ruling (user decision, 2026-10-29):** `VaR = z_alpha * sqrt(sigma2_h)`, ES from the Gaussian
 formula. One map, no estimated parameter, one trial per contestant.
@@ -131,7 +131,7 @@ with what it is wrong about.
 
 ---
 
-## R138 — no Phase 3 run appends to `trials.jsonl` until the reveal has been triggered
+## R139 — no Phase 3 run appends to `trials.jsonl` until the reveal has been triggered
 
 **Ruling (user decision, 2026-10-29):** Phase 3 builds and tests to completion; no Phase 3
 walk-forward writes a ledger line until the user has triggered the holdout reveal.
@@ -147,7 +147,7 @@ ledger and are unaffected.
 
 ---
 
-## R139 — the registered read has no mechanical fence, and Phase 3 builds one before it builds
+## R140 — the registered read has no mechanical fence, and Phase 3 builds one before it builds
 anything else
 
 `docs/holdout-preregistration.md` section 5 says Phase 3's contestants "must not be added to this
@@ -160,3 +160,46 @@ a one-way door, with a one-line diff and a green suite.
 `SHOOTOUT.contestants` and `MULTISTEP.contestants` to the pre-registration's own list, with the
 document's section 2 quoted in the docstring and R130 and the registering sha `65617ee` named. It
 is the cheapest story in the phase and the only one protecting something that cannot be undone.
+
+---
+
+## R141 — what the Phase 2 session's report changed, and the one claim in it that is not mine
+
+Reported by `local_198fffa2` on 2026-10-29. **Every claim below was verified here before being
+acted on**, which is the standing rule about another agent's report.
+
+**Verified and acted on:**
+
+- **US-3.9b landed** at `761cf71`; `8e3b65b` records it as **R134**. Merged into this branch at
+  `7827af0`. So Phase 3's rulings were **renumbered R134-R139 to R135-R140** — the collision was
+  real and the Phase 2 ruling has priority, being recorded first. The commit message of `c2570f8`
+  says "R134-R139" and cannot be corrected; this ruling is the correction.
+- `tests/test_compare.py::test_no_module_level_table_in_cohorts_is_keyed_by_a_contestant_and_a_horizon`
+  exists. **P3-04 must not add a `dict[tuple[str, int], ...]` to `cohorts.py`.**
+- `cohort.requires` still has **exactly the seven call sites** R136 names; US-3.9b's three-line
+  touch of `base.py` did not move them. R136 stands unamended.
+- `main` is at `b8d11cd` and **does not carry Phase 2 completion**; PR #6 is `BLOCKED` under the
+  new branch protection. The session's suggestion to re-cut from `main` was therefore **declined**
+  — it would have discarded the `Domain` machinery this whole design is built on. Merging forward
+  once #6 lands is the correct move and is what the board says.
+
+**Verified, and reclassified.** The session reports a latent flaw in `Sampling`'s contract and
+says it "will bite your IV contestant specifically". The flaw is real — read directly from
+`src/volab/models/base.py`: `__post_init__` refuses measurements disagreeing on `source`, while
+`compare.series_source` is `f"{symbol} h{horizon}"`, so one contestant cannot hold measurements
+at h=22 and h=66 on one series.
+
+**It does not bite `har_rv_iv`.** Under R138 the quantile map is Gaussian and under section 5 the
+contestant is OLS: deterministic, no simulation, no `Sampling`, nothing to measure. The premise
+offered — that an IV contestant would naturally declare a per-horizon measured error — is true of
+a *simulated* IV contestant and this one is not.
+
+Recorded rather than absorbed, because taking on a sealed-path contract change on another
+session's framing would be the inverse of R129's lesson: it is the same failure as declaring a
+phase done on an unchecked claim, run in the generous direction.
+
+**Ruling: carried as optional P3-11, not scheduled, and the user's call.** The coupling is
+genuine — P3-02 already makes `Domain` horizon-aware through `per_horizon`, and `Sampling` is the
+other per-horizon declaration in the same frozen dataclass, so one architect's pass is cheaper
+than two a sprint apart. But no Phase 3 story needs it, and without it the flaw stays exactly as
+latent as it is today.

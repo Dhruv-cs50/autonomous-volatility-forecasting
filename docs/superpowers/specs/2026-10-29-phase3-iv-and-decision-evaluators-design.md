@@ -2,8 +2,9 @@
 
 **Status:** design, approved in conversation on 2026-10-29, not yet implemented.
 **Branch:** `phase-3-iv-and-evaluators`, cut from `phase-2-completion-groundwork`.
-**Continues:** rulings from R133. Phase 3's own rulings begin at R134 in
-`docs/superpowers/phase3-decisions.md`.
+**Continues:** rulings from R134. Phase 3's own rulings begin at **R135** in
+`docs/superpowers/phase3-decisions.md` — R134 is Phase 2's, recorded at `8e3b65b`.
+**Merged `phase-2-completion-groundwork` at `7827af0`**, which brings US-3.9b (`761cf71`).
 
 ---
 
@@ -355,14 +356,38 @@ so whoever picks it up afterwards reads that first.
 
 ## 9. Sequencing, and the ledger constraint (D5)
 
-**US-3.9b is `todo`** on the Phase 2 board and owns `src/volab/compare/cohorts.py` and
-`src/volab/models/base.py` — the two files sections 4 and 6 need. Section 5 (`models/iv.py`) and
-section 7 (`evaluators/`) are **new files** and block on nothing.
+**US-3.9b has landed** (`761cf71`, merged here at `7827af0`), so `src/volab/models/base.py` and
+`src/volab/compare/cohorts.py` are free and **nothing in this phase is blocked on another
+session**. The Phase 2 board's `todo` was stale; it was confirmed with the Phase 2 session rather
+than inferred.
 
-**Ownership of those two files must be settled with the Phase 2 session before the first commit
-that touches them.** Our own rule — never two implementers writing the same files — is the rule in
-question, and R131 records that it does not even cover mutation testing. Do not assume US-3.9b was
-abandoned because the board is stale; ask.
+**Two things it leaves behind that constrain this phase.**
+
+First, `monte_carlo_error` now reads each member's `domain.sampling` instead of a module table,
+and `tests/test_compare.py::test_no_module_level_table_in_cohorts_is_keyed_by_a_contestant_and_a_horizon`
+forbids reintroducing a `dict[tuple[str, int], ...]` in `cohorts.py`. **P3-04 must not add a
+name-and-horizon keyed table**, as a convenience or otherwise.
+
+Second, R134 records a **latent flaw in `Sampling`'s own contract**, verified here by reading
+`src/volab/models/base.py`: `__post_init__` refuses a contestant whose measurements disagree on
+`source`, while `compare.series_source` builds that string as `f"{symbol} h{horizon}"`. A single
+contestant therefore **cannot hold measurements at two horizons on one series** — `"SPY h22"` and
+`"SPY h66"` read as two sources. It is latent only because no `Measurement` ships anywhere.
+
+**It does not bite `har_rv_iv`.** That contestant is OLS: deterministic, no simulation, no
+`Sampling`, so it declares no measurement and cannot reach the constraint. The Phase 2 session
+raised it on the premise that an IV contestant would naturally declare a per-horizon measured
+error; under D4 and section 5 this one has nothing to measure.
+
+**But the coupling is real and worth naming.** P3-02 already makes `Domain` horizon-aware through
+`per_horizon`/`requires_at`. `Sampling` is the other per-horizon declaration in the same frozen
+dataclass, and the fix is of the same shape — require one source *per horizon* rather than one
+per contestant, or drop the horizon from `series_source` given `Measurement` already carries it
+as a field. Doing both in one architect's pass is cheaper than doing them a sprint apart.
+
+It is nonetheless a **sealed-path contract change that no Phase 3 story needs**, so it is carried
+as **optional P3-11** and is the user's call, not an agent's. Without it, Phase 3 is complete; the
+flaw stays latent exactly as it is today.
 
 **D5: no Phase 3 walk-forward run appends a line to `trials.jsonl` until the user has triggered
 the holdout reveal.** `count_trials` counts that file and the reveal records a second count plus
@@ -379,15 +404,16 @@ the wrong row.
 | id | story | files | blocks on |
 |---|---|---|---|
 | P3-01 | Pin the registered cohorts to the pre-registration | `tests/` | nothing |
-| P3-02 | `Domain.requires_at` and `Cohort.requires_at`; delete `Cohort.requires` | `models/base.py`, `walkforward/`, `tests/` | US-3.9b |
+| P3-02 | `Domain.requires_at` and `Cohort.requires_at`; delete `Cohort.requires` | `models/base.py`, `walkforward/`, `tests/` | nothing — US-3.9b landed |
 | P3-03 | `har_rv_iv` in `models/iv.py` | new file, `tests/` | P3-02 for its domain test |
-| P3-04 | The `phase3-iv` cohort | `compare/cohorts.py`, `tests/` | P3-02, P3-03, US-3.9b |
+| P3-04 | The `phase3-iv` cohort | `compare/cohorts.py`, `tests/` | P3-02, P3-03 |
 | P3-05 | `evaluators/`: `var_es`, `fz0` | new package, `tests/` | nothing |
 | P3-06 | Coverage tests and their stride refusal | `evaluators/`, `tests/` | P3-05 |
 | P3-07 | Vol-target P&L, turnover and the ex-date count | `evaluators/`, `tests/` | P3-05 |
 | P3-08 | The decisions sink and `__main__` | `evaluators/`, `tests/` | P3-05–P3-07 |
 | P3-09 | A witness for `har_levels_mz` at h >= 22 (carried 2) | `tests/` | nothing |
 | P3-10 | `tools/measure_iv_requires.py` | new file | P3-02 |
+| P3-11 | **Optional.** Make `Sampling` horizon-aware (R134's latent flaw) | `models/base.py`, `compare/`, `tests/` | user's call; no Phase 3 story needs it |
 | — | Recorded run | `data/` | **the reveal** |
 | — | Carried 3, EGARCH at h=1 | — | **the reveal** |
 
