@@ -70,15 +70,22 @@ SPY, scripts in the session scratchpad. **IV coverage, per series:**
 **What a VIX1D contestant would cost every other contestant**, over the shootout window
 `--from 2021-01-04 --to 2025-12-31 --every 5`:
 
-| horizon | scoreable origins | kept with any VIX1D | kept with 250 VIX1D rows | **origins lost** |
+| horizon | scoreable origins | kept, column non-null | kept, 250 rows **and the target lag** | **origins lost** |
 |---|---|---|---|---|
 | 1 | 251 | 182 | 132 | **119 (47.4%)** |
-| 5 | 250 | 181 | 131 | **119 (47.6%)** |
-| 22 | 247 | 178 | 128 | **119 (48.2%)** |
-| 66 | 238 | 169 | 119 | **119 (50.0%)** |
+| 5 | 250 | 181 | 130 | **120 (48.0%)** |
+| 22 | 247 | 178 | 124 | **123 (49.8%)** |
+| 66 | 238 | 169 | 106 | **132 (55.5%)** |
 
-VIX1D's 250th session is 2023-05-11. At h=22, 69 of the 247 origins have a null `iv_h1` and **every
-one of them precedes 2022-05-13**; a further 50 are lost to training sufficiency. By contrast a FRED
+**The last column carries the target lag, and the first draft of this table did not.** `evaluate`
+counts a training row only if its target had completed by the origin, so a base session `b` counts
+at origin `t` only when `b + h <= t`. The qualifying origin is therefore `h` sessions **after** the
+250th non-null session of the column, not the 250th session itself: VIX1D's 250th session is
+2023-05-11, and the first runnable origin is 2023-05-12 at h=1, 2023-05-18 at h=5, 2023-06-13 at
+h=22 and **2023-08-16 at h=66**. Ignoring the lag understates the cost by 1, 4 and 13 origins at
+h=5, 22 and 66 — a flat 119 at every horizon, which was the tell that the first measurement was
+wrong. At h=22, 69 of the 247 origins have a null `iv_h1` and **every one of them precedes
+2022-05-13**; a further 54 are lost to training sufficiency. By contrast a FRED
 column costs **3 of 247** origins, scattered interior (bond holidays with XNYS open: 2022-11-14 and
 2025-10-14 are two). **So the two kinds of gap are structurally different and the design treats them
 differently:** a leading boundary is a window error and refuses; an interior gap is a data accident
@@ -117,9 +124,9 @@ class Measurement:
 class Sampling:
     """Declared by a contestant whose forecast is a Monte-Carlo estimate rather than a value.
 
-    ``__post_init__`` refuses measurements that disagree on ``source``: the comparison record
-    carries one source for the whole record, so two sources in one cohort is a schema change to
-    ``data/comparisons.jsonl`` and must be refused at construction rather than mislabelled.
+    ``__post_init__`` refuses *this contestant's own* measurements if they disagree on ``source``.
+    The **cross-contestant** rule cannot live here -- a ``Sampling`` sees only one contestant -- so
+    it lives in ``monte_carlo_error``, which is the first place that holds a whole cohort's figures.
     """
 
     paths: int
@@ -249,11 +256,22 @@ and the reasoning is a chain of constraints the repository already enforces.
 3. **`evaluate` already raises `ValueError` to defend precisely this claim.** The reserved-name
    guard refuses a cohort calling itself `phase2-baseline` with other members, because *"a cohort
    name is a claim about which experiment produced a ledger line"*.
-4. **So dropping under the same name breaks an invariant the code enforces today.** Drop EGARCH at
-   h=22 while still writing `cohort: "phase2-shootout"` and that name no longer determines the set:
-   the 108 existing `phase2-shootout-multistep` lines at h>=2 hold exactly those six contestants and
-   would no longer be joinable with new six-contestant lines under a different name. Two runs of the
-   same cohort name would not be comparable, which is the thing the field exists to prevent.
+4. **So dropping under the same name breaks an invariant the code enforces today — and the
+   collision is already in the committed data, not hypothetical.** Counted from
+   `data/trials.jsonl` (414 lines):
+
+   | cohort | h=1 | h=5 | h=22 | h=66 |
+   |---|---|---|---|---|
+   | `phase2-baseline` | 18 | 18 | 18 | 18 |
+   | `phase2-shootout` | 98 | **14** | **14** | 0 |
+   | `phase2-shootout-multistep` | 0 | 72 | 72 | 72 |
+
+   **There are already 14 `phase2-shootout` lines at h=5 and 14 at h=22, and they mean seven
+   contestants** — the crashed run R112 counted rather than discarded, at 7 x 1 symbol x 2 losses.
+   So a drop design writing six-contestant lines under `phase2-shootout` at h=22 would put two
+   different contestant sets under one name **at the same horizon in the same file**, 14 lines
+   meaning seven and the new ones meaning six, with nothing on either to tell them apart. That is
+   not a risk to weigh; it is a contradiction the ledger would already contain on the first run.
 5. **Repairing drop requires a ledger schema change, and R124 already refused a smaller one.** The
    repair is a `contestants` array on every trial line. R124 refused adding a single `method` string
    because the leaderboard *"already partitions by `(at, git_sha)`"* so per-trial self-description is
@@ -373,9 +391,10 @@ before the contestant could answer. No declared date, and no threshold.**
 
 The refusal rule, stated exactly:
 
-> A configuration is refused when a column in `cohort.requires` has fewer than `minimum_training`
-> non-null sessions at or before the **first requested origin**. The message names the column, the
-> session at which it reaches `minimum_training`, and how many of the requested origins precede it.
+> A configuration is refused when, at the **first requested origin**, a column in
+> `cohort.requires` has fewer than `minimum_training` sessions that are both non-null **and have a
+> completed target** — the predicate `evaluate` itself counts on. The message names the column, the
+> first origin that does qualify, and how many of the requested origins precede it.
 
 **Keyed to the `minimum_training`-th session, not the first.** This is the part the obvious design
 gets wrong, and the measurements show it: a rule keyed to the first non-null session catches 69 of
@@ -443,15 +462,24 @@ In `run_configuration`, not in `evaluate`, and the seam is a new pure function b
 # src/volab/walkforward/__init__.py -- added. Pure pandas; the sealed path stays pure.
 def coverage_refusal(
     stored: pd.DataFrame,
+    targets: pd.DataFrame,
     required: Sequence[str],
     origins: Sequence[dt.date],
     *,
+    horizon: int,
     minimum_training: int,
 ) -> str | None:
     """Why ``required`` cannot support a run over ``origins``, or ``None`` when it can.
 
     ``stored`` is the persisted feature table ``run_configuration`` already holds for the
-    truncation comparison, so this opens no read path and takes no ``end`` of its own.
+    truncation comparison and ``targets`` is the frame it already passes to ``evaluate``, so this
+    opens no read path and takes no ``end`` of its own.
+
+    ``targets`` and ``horizon`` are **required, not conveniences**: the qualifying origin depends on
+    the target lag, and a signature without them can only compute the wrong boundary. The row
+    predicate here must be the same one ``evaluate`` counts -- non-null in ``required`` and
+    ``target_as_of <= origin`` -- so the two mechanisms cannot disagree about which origin is the
+    first runnable one. W9 asserts that agreement.
     """
 ```
 
@@ -461,6 +489,9 @@ table loaded to `dev_end`, so the coverage comes from a frame in hand and **no n
 `end` parameter is introduced** — `load_panel` stays the only read path. And `evaluate` keeps its
 per-origin skip as the fallback, so a caller reaching `evaluate` directly degrades to "69 origins
 skipped, each with a reason" rather than to silence.
+
+**The check runs before `evaluate`, not after**, or the fits it exists to prevent have already
+run: it sits immediately after `scoreable_origins` returns and before the `RunAudit` is built.
 
 **`persisted()` may be `None`**, and this project's rule is that nothing to check is not a pass. The
 driver reports `coverage: NOT CHECKED, the store holds no built table` in the same voice as the
@@ -532,6 +563,14 @@ read on this path is the kind of thing a later reviewer must be able to find a r
 | `tests/test_garch.py:673::test_egarch11_conforms_at_a_horizon_where_the_seed_matters` | wrap in `OutsideItsDomain`. **The horizon stays 22** — moving it to h=1 would delete the seeding witness |
 | `tests/test_compare.py:1430-1462` (the `monte_carlo_error` tests) | follow the new return type; the `fewer_paths` case must keep reading `None` |
 | `tests/test_compare.py:1464::test_every_monte_carlo_figure_is_reachable` | **deleted with its reason recorded**, see section 5 |
+| `tests/test_compare.py:45-46` | the imports of `MONTE_CARLO_ERROR_PERCENT` and `MONTE_CARLO_ERROR_SOURCE` go; both symbols are deleted |
+| `tests/test_compare.py:1063`, `:1121`, `:1831`, `:1870` | four more readers of `MONTE_CARLO_ERROR_SOURCE`, including `test_every_measured_cohort_figure_is_withheld_while_it_comes_from_the_probe_series` (1109) and `test_every_printed_monte_carlo_error_names_the_series_it_was_measured_on` (1852). Each keeps its property and takes the source from the cohort instead of the constant; `:1870`'s `"not SPY" in …` assertion is the one that must be **restated**, not ported |
+| `tests/test_compare.py:1478` | asserts every table key is a simulated contestant; goes with the table |
+
+`tests/test_leaderboard.py:54` defines the probe string as its **own local literal** rather than
+importing it, so the leaderboard's tests are unaffected by the deletion — they check that a stored
+record is rendered faithfully, whatever the source string says. That is the import discipline of
+R126 paying off, and it is the reason section 4 can claim the leaderboard is untouched.
 
 Tests that must pass **unchanged**, because they are the witnesses that nothing recorded moved:
 `test_the_baseline_cohort_reproduces_the_committed_goldens`,
@@ -578,12 +617,20 @@ def monte_carlo_error(cohort: Cohort, horizon: int) -> MonteCarlo:
 
 `Measurement` **ships with zero instances**, and that is deliberate rather than an oversight: the
 type exists so the next measured figure has a place to live that cannot outlive its contestant, and
-`Sampling(paths=self.simulations)` with no measurements is what EGARCH declares. `MonteCarlo.source`
-is then the sentinel `"no measurement exists"` — never equal to `series_source(series)`, so the
+`Sampling(paths=self.simulations)` with no measurements is what EGARCH declares. `monte_carlo_error` is also where the cross-contestant source rule lives, because it is the first
+place that sees a whole cohort's figures: two simulated members whose measurements name different
+series would need the comparison record to carry a source *per contestant*, which is a schema change
+to `data/comparisons.jsonl`, so it raises instead (W15). `MonteCarlo.source` is otherwise the
+sentinel `"no measurement exists"` — never equal to `series_source(series)`, so the
 figure is withheld — and `analyse`'s existing rule puts `egarch11_skewt` in `unclaimed` with the
-reason *"not measured, so no precision is established"*. **The printed output is byte-identical to
-today's** at h=1, which is the only horizon it now prints at, because today's path is also
-`percent=None` plus a non-matching source.
+reason *"not measured, so no precision is established"*. **One display string changes and nothing else does.** At h=1, the only horizon EGARCH now prints
+at, today's line reads `[MC error not measured (synthetic probe series, not SPY)]` and the new one
+reads `[MC error not measured (no measurement exists)]`; new comparison records store the new string
+in `monte_carlo_error_source`. There is **no schema change**, `egarch11_skewt` stays in `unclaimed`
+for the same reason with the same wording, and the registered read compares and claims exactly what
+it did. Earlier records keep their own string, as R126 ruled for the 28 older ones. Calling this
+byte-identical would be an overclaim; it is a source label that stops naming a measurement that no
+longer exists.
 
 `test_every_monte_carlo_figure_is_reachable` is **deleted, not weakened**, and the reason is the
 strongest available: it exists to catch a key naming a contestant that is no longer in a cohort, and
@@ -607,12 +654,18 @@ witness that it has not been done.
 
 - **W1, the red case, and the one that matters most.**
   `test_the_compare_cli_refuses_the_shootout_above_h1_and_writes_nothing`. Invoke
-  `main(["run", "--cohort", "phase2-shootout", "--horizon", "22", *WINDOW], sink=sink)`. Assert it
-  returns 1, that the printed text contains `egarch11_skewt` and `h<=1`, and that **the sink
-  received no trial and no comparison**. Today this invocation produces fourteen ledger lines of
-  ordinary-looking numbers, one of them an estimate of infinity. The assertion that nothing was
-  written is the red case: the trap is not "a wrong number" but "a plausible number", so the test
-  has to check that no number was produced at all.
+  `main(["run", "--cohort", …, "--horizon", "22", *WINDOW], sink=sink)`. Assert it returns 1, that
+  the printed text names the contestant and its bound, and that **the sink received no trial and no
+  comparison**. On the real cohort that invocation today produces 7 contestants x 3 symbols x 2
+  losses = **42** ledger lines of ordinary-looking numbers, one of them an estimate of infinity (14
+  with `--symbol SPY`, which is the shape of the 14 already in the ledger). The assertion that
+  nothing was written is the red case: the trap is not "a wrong number" but "a plausible number", so
+  the test has to check that no number was produced at all.
+
+  **Harness note the implementer needs:** `test_compare.py`'s `_Entry` patches the module's
+  `COHORTS` to `{TOY_COHORT.name: TOY_COHORT}`, and `TOY_COHORT`'s members are all unrestricted. So
+  this test must register its **own** horizon-limited cohort in that patched mapping rather than
+  reaching for `phase2-shootout`, which the harness has replaced.
 - **W2.** `test_the_refusal_names_a_cohort_that_can_answer_the_horizon` — the message contains
   `phase2-shootout-multistep`. A refusal nobody can act on is a worse trap than the original.
 - **W3.** `test_evaluate_refuses_a_cohort_at_a_horizon_a_member_cannot_answer` — `ValueError` from
@@ -648,9 +701,15 @@ the toy version is the one the design requires.
   — a spy declaring `requires=("iv_h1",)`, a panel with VIX1D's rows dropped before a mid-window
   session, and `run_configuration` refusing with the column, the qualifying session and the count
   of origins that would have been lost. Assert **nothing was appended**.
-- **W9.** `test_the_coverage_refusal_counts_the_training_minimum_and_not_the_first_session` — with
-  the window starting exactly at the column's first non-null session, the run is **still** refused.
-  This is the 69-versus-119 hole; without this test the rule looks right and leaks 50 origins.
+- **W9, and it is the subtle one.**
+  `test_the_coverage_refusal_agrees_with_the_origin_evaluate_stops_skipping`. Two assertions at a
+  **long** horizon, where the lag bites hardest. First: with the window starting exactly at the
+  column's first non-null session the run is **still** refused — that is the 69-versus-119 hole, and
+  without it the rule looks right while leaking 50 origins. Second: the first qualifying origin the
+  refusal names **equals** the first origin `evaluate` does not skip for sufficiency, computed by
+  running `evaluate` over the earlier window and reading `Evaluation.skipped`. Without the second
+  assertion the refusal and the skip can disagree by `h` sessions — which is exactly the error the
+  first draft of this design made, and it survived until someone re-measured.
 - **W10.** `test_an_interior_gap_in_a_required_column_skips_the_origin_for_everyone_with_a_reason`
   — one nulled mid-window session: the configuration is **not** refused, the origin appears in
   `Evaluation.skipped` with the column named, and every contestant's trial `origins` drops by
@@ -720,7 +779,7 @@ the toy version is the one the design requires.
   must precede `git_state` and every load.
 - The `OutsideItsDomain` adapter's field layout.
 
-## 8. Sequencing, and what the board needs
+## 8. Sequencing
 
 Two stories, **serialized** — they both touch `models/base.py` and `compare/cohorts.py`, so they
 cannot be parallel implementers:
@@ -731,7 +790,19 @@ cannot be parallel implementers:
 - **US-3.9b** — retire the Monte-Carlo table onto the declaration: `MonteCarlo`, the deletions,
   W13-W15. Depends on 3.9a.
 
-**The board's acceptance check for US-3.9 says the harness "drops a contestant at a horizon it
-cannot answer". This design refuses instead**, for the reasons in section 2, and the board needs
-amending to match. Flagged rather than silently deviated from, and the amendment is the user's to
-approve, not an implementer's to assume.
+## 9. Two things only the user can settle
+
+1. **The board's acceptance check for US-3.9 says the harness "drops a contestant at a horizon it
+   cannot answer". This design refuses instead**, for the reasons in section 2 — chiefly that the
+   ledger already holds 14 `phase2-shootout` lines at h=22 meaning seven contestants, so a drop
+   would put two contestant sets under one name at one horizon. The board needs amending to match.
+   Flagged rather than silently deviated from, and the amendment is the user's to approve, not an
+   implementer's to assume.
+2. **`python -m volab.compare run` changes meaning.** Today the bare command runs the
+   seven-contestant cohort at all four horizons, which is the trap. Under this design `--horizon`
+   defaults to the cohort's own derived set, so the bare command runs **h=1 only** and prints why.
+   That is a deliberate CLI default change: it makes the common invocation correct instead of
+   refusing it, at the cost of a default that is narrower than it looks. The alternative is to leave
+   the default at all four horizons and let the bare command be refused, which is louder and more
+   annoying. **Recommended as designed; the user's call**, because it changes what a documented
+   command does.
