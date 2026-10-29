@@ -1636,3 +1636,69 @@ measurement should therefore take its expected values *from the inventory* rathe
 literals, so changing one is a diff in a reviewed file with a stated reason rather than a quiet edit
 in a test body. The gate cannot stop a determined edit; it can make the edit visible and require it
 to say why.
+
+## R134 — US-3.9b: the Monte-Carlo table is retired, and a latent flaw in R132's own contract
+
+`761cf71`. **1448 tests**, from 1442. Verified here: `MONTE_CARLO_ERROR_PERCENT` and
+`MONTE_CARLO_ERROR_SOURCE` are **gone** (zero references), the ledgers are byte-identical at
+414 / 52 with md5 `090e37b0…` / `b9f41c26…`, and the registered read is unchanged — the shipped
+shootout at h=1 reports `{'egarch11_skewt': None}` against source `'no measurement exists'`, so
+EGARCH is withheld on **both** grounds (no figure, and no figure measured on the evaluated series)
+with the same stored reason sentence as before.
+
+A contestant's measured error now travels with the contestant: `monte_carlo_error` reads each
+member's `domain.sampling` and **refuses** when two members were measured on different series,
+naming both. EGARCH's h=22 and h=66 rows are **deleted rather than migrated**, because the horizon
+guard makes them unreachable by construction — the same ground R125 removed GJR's rows on.
+
+**The witness that matters is the one that kills the class rather than the instance:**
+`test_no_module_level_table_in_cohorts_is_keyed_by_a_contestant_and_a_horizon` asserts no
+module-level dict in `cohorts.py` has `(str, int)` keys. The old table's original sin was
+**surviving its reader** (R119), and a deleted table can be reinstated by the next person who wants
+somewhere convenient to put a number. A test that refuses the *shape* is the only kind that holds.
+Its companion, W14's rename case, is what a resurrected name-keyed table would fail: a renamed
+contestant carries its figure under the new name.
+
+### The latent flaw, which is R132's and not this story's
+
+`Sampling.__post_init__` requires **one source per contestant**, but `series_source` includes the
+horizon — `"SPY h22"`. So **a single contestant can never hold measurements at both h=22 and h=66
+on its own series without being refused.** It is latent today only because **zero measurements
+ship**: nothing in the repository declares a `Measurement`, so the constraint has never been
+exercised.
+
+It is a defect in the contract US-3.9a introduced, not in US-3.9b's use of it, and the implementer
+correctly left a `base.py`-level change alone rather than widening its own story. **It will bite
+the first time anyone measures one contestant at two horizons**, which is precisely what a Phase 3
+IV contestant measured at h=1, h=5 and h=22 would need. Carried, and the Phase 3 session has been
+told.
+
+### Two things the design undercounted
+
+**Two display strings change, not one.** With the sentinel in place, `describe` would have printed
+"measured on the **no measurement exists**" — a sentence that reads as a series name. Fixed with a
+branch on the sentinel. The design's "one display string changes" was wrong, and the CLI's trial
+line now reads `[MC error not measured (no measurement exists)]`.
+
+**`None` could not be the empty source.** `analyse` raises on it, so the absence of a measurement
+needed a *name* — `NO_MEASUREMENT = "no measurement exists"`, living in `volab.compare` rather than
+`cohorts` to avoid an import cycle. That is R119's rule holding in a new place: **no figure at all
+must read as "not measured", never as zero and never as precision.**
+
+### Deleted tests, and why deleting them was right
+
+`test_every_monte_carlo_figure_is_reachable` is **gone**, because the staleness class it guarded is
+eliminated rather than managed — there is no table for a figure to outlive its reader in. Likewise
+`test_the_shipped_source_says_it_is_not_the_run_s_series`, which asserted properties of a constant
+that no longer exists; its property is restated against the shipped cohort instead. Deleting a test
+whose subject is gone is correct; deleting one whose subject merely moved would not be, and the
+shape test above is what guards the difference.
+
+### One honest gap in the planted-defect sweep
+
+The R124 door — EGARCH declared with `Measurement(0.0, "SPY h1", …)`, which would hand the h=1
+leader a significance claim — **is** caught, by the source-comparison test and the shipped-cohort
+test. But the implementer did not confirm that W16 and the registered-read test fail on it
+independently, and said so rather than implying full coverage. Recorded because the first attempt at
+that plant failed at import and therefore proved nothing, which is the kind of thing a sweep can
+silently miscount.

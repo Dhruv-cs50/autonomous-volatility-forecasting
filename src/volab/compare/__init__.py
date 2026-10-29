@@ -52,6 +52,13 @@ BENCHMARKS: tuple[str, ...] = ("har_levels", "random_walk")
 # the same error in its purest form: absence of measured spread is not presence of precision.
 MC_ERROR_CEILING_PERCENT = 1.5
 
+# The source a cohort carries when a member simulates and **nothing was measured**: stored in the
+# comparison record and printed beside "not measured". It is not a series' name, so it never equals
+# :func:`series_source` and can only withhold a claim -- which is the point of having it. ``None``
+# is not available for the job: ``analyse`` refuses a figure with no source, and "no source" would
+# read as "no problem".
+NO_MEASUREMENT = "no measurement exists"
+
 
 def series_source(series: LossSeries) -> str:
     """The name a Monte Carlo error carries when it was measured on exactly ``series``.
@@ -84,8 +91,9 @@ def analyse(
     :func:`series_source`. Three things put a contestant in ``unclaimed``: a figure above the
     ceiling, a figure measured on any other series (whatever its value), and **no figure**
     (``None``).
-    The map holds simulated contestants only (``cohorts.monte_carlo_error`` builds it from
-    ``method == "simulation"``), so a deterministic contestant has no entry and keeps its claims.
+    The map holds simulated contestants only (``cohorts.monte_carlo_error`` builds it from each
+    contestant's declared ``Sampling``), so a deterministic contestant has no entry and keeps its
+    claims.
     Witnesses:
     ``test_a_figure_measured_on_another_series_can_withhold_a_claim_but_never_authorise_one`` and
     ``test_a_simulated_contestant_with_no_measurement_is_withheld``.
@@ -276,8 +284,13 @@ def describe(comparison: Comparison, *, trials: int | None = None) -> list[str]:
     lines.extend(_pair_line(c, pair) for pair in c.pairs)
     if c.monte_carlo_error:
         parts = _error_parts(c, tuple(c.monte_carlo_error))
+        basis = (
+            c.monte_carlo_source
+            if c.monte_carlo_source == NO_MEASUREMENT
+            else f"measured on the {c.monte_carlo_source}"
+        )
         lines.append(
-            f"  Monte Carlo error (R102), measured on the {c.monte_carlo_source}, "
+            f"  Monte Carlo error (R102), {basis}, "
             f"no claim above {MC_ERROR_CEILING_PERCENT:g}%, on a figure measured on another "
             f"series, or where none was measured: " + "; ".join(parts)
         )
@@ -287,6 +300,7 @@ def describe(comparison: Comparison, *, trials: int | None = None) -> list[str]:
 __all__ = [
     "BENCHMARKS",
     "MC_ERROR_CEILING_PERCENT",
+    "NO_MEASUREMENT",
     "SIZES",
     "McsResult",
     "analyse",

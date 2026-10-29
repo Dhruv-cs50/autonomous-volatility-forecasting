@@ -82,7 +82,8 @@ class Sampling:
 
     ``__post_init__`` refuses *this contestant's own* measurements if they disagree on ``source``.
     The **cross-contestant** rule cannot live here -- a ``Sampling`` sees only one contestant -- so
-    it belongs to whatever first holds a whole cohort's figures (US-3.9b).
+    it is ``volab.compare.cohorts.monte_carlo_error``, which is the first to hold a whole
+    cohort's figures.
     """
 
     paths: int
