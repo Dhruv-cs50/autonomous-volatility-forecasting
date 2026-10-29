@@ -46,10 +46,13 @@ mean exists (R114) whose error could be measured.
 **These figures can only withhold a claim, never authorise one.** They were measured on a series
 that is not the one a shootout compares, and ``analyse`` lets a figure clear the ceiling only if
 its source is the evaluated series (``volab.compare.series_source``). EGARCH at h=22 reads 0.163%
-here and 230.79% on SPY at the same path count: the probe's process (alpha 0.05, beta 0.87) is far
-gentler than SPY's fit (alpha ~0.25, beta ~0.96), and a six-seed sd of an estimator with no finite
-mean is not evidence of precision. So every entry below is withheld wherever it is used, and
-re-measuring on the real panel -- with the source changed to name it -- is what would change that.
+here, on a process (alpha 0.05, beta 0.87) far gentler than SPY's fit (alpha ~0.25, beta ~0.96) --
+and a six-seed sd of an estimator with **no finite mean** is not evidence of precision whatever it
+reads. There is deliberately no SPY counterpart quoted: this docstring carried "230.79% on SPY"
+until R129, a figure no committed probe prints, and in any case a percentage error against a
+divergent quantity invites being read as an error bar when R114 established the quantity does not
+exist. So every entry below is withheld wherever it is used, and the only thing that would change
+that for GJR was making it exact (R127) -- which removed it from this table entirely.
 """
 
 from __future__ import annotations

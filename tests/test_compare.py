@@ -1052,11 +1052,13 @@ def test_a_simulated_contestant_above_the_error_floor_has_no_significance_claime
 
 def test_a_figure_measured_on_another_series_can_withhold_a_claim_but_never_authorise_one() -> None:
     """R102 follow-up. ``("egarch11_skewt", 22)`` is 0.163% on the probe's series, under the 1.5%
-    ceiling, so EGARCH at h=22 was *not* withheld -- while its measured spread on SPY at the same
-    path count is 230.79%. The probe's series is a gentler process (alpha 0.05, beta 0.87 against
-    SPY's ~0.25, ~0.96), and a six-seed sd is not a measurement of an estimator with no finite
-    mean: a small spread there is no evidence of precision. So a figure from another series is
-    withhold-only, whatever its value."""
+    ceiling, so EGARCH at h=22 was *not* withheld on its value. The probe's series is a gentler
+    process (alpha 0.05, beta 0.87 against SPY's ~0.25, ~0.96), and a six-seed sd is not a
+    measurement of an estimator with no finite mean: a small spread there is no evidence of
+    precision. So a figure from another series is withhold-only, whatever its value.
+
+    This docstring quoted "230.79% on SPY" until R129 struck it: no committed probe prints it, and
+    a percentage error against a quantity R114 showed to be divergent is not an error bar."""
     own = series_source(_contenders(60, 0))
     assert own == "SPY h1" and own != MONTE_CARLO_ERROR_SOURCE
     series = _contenders(60, 0)

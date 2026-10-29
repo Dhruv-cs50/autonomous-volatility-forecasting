@@ -260,9 +260,14 @@ def test_a_line_with_no_cohort_key_is_the_baseline_cohort(tmp_path) -> None:
 
 
 def test_the_committed_ledger_reads_correctly_and_is_not_touched() -> None:
-    """The real 72 lines, read-only. The count is not pinned to 72, because the next story appends
-    168 to this file: what is pinned is that **every line with no ``cohort`` key** -- today all of
-    them -- is attributed to ``phase2-baseline`` and none is lost."""
+    """The real pre-cohort lines, read-only. The count is deliberately **not** pinned, because
+    shootouts keep appending: 72 baseline, then 42 from the crashed run, then 150 and 150 from the
+    two full runs, so the file is at 414 and will grow again. What is pinned is that **every line
+    with no ``cohort`` key** is attributed to ``phase2-baseline`` and none is lost.
+
+    The original said "the next story appends 168", which R114 made unreachable before any story
+    did it (R129). Pinning a predicted total here would have been the wrong witness anyway: the
+    thing worth protecting is the attribution rule, not the arithmetic of one planned run."""
     ledger = REPO / TRIAL_LEDGER
     before = ledger.read_bytes()
     rows = [json.loads(line) for line in before.decode().splitlines() if line.strip()]

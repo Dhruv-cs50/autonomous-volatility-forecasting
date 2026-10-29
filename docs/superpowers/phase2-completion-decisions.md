@@ -1052,7 +1052,10 @@ new line is the ratchet working.
 ### The decision it escalated: the 28 old records keep a fallback, and that is right
 
 The committed comparison records predate the stored fields, so they print
-`<name> has no claim, and this record stores no reason` — **162 lines of the recorded run.** The
+`<name> has no claim, and this record stores no reason` — **204 output lines** (222 occurrences),
+78 on `37c74e7` and 126 on `0dd0e60`. *(This read "162 lines" until R129's audit counted it; the
+figure was wrong when written, not drift since. All 204 are on superseded runs and the clean runs
+show none, so the acceptance below is unaffected and only the number was wrong.)* The
 alternative was to let the leaderboard classify from the stored source and value, which is exactly
 the derivation its contract forbids and `test_the_leaderboard_imports_no_statistics` structurally
 prevents. Backfilling an append-only ledger is worse than either.
@@ -1224,12 +1227,137 @@ one was not. No significance attaches either way: h=66 refuses all of it on `n_e
 ### What the output no longer says
 
 At every horizon above 1 the leaderboard now prints **no Monte-Carlo line at all**, because nothing
-in `phase2-shootout-multistep` simulates — `monte_carlo_error(MULTISTEP, h)` is `{}`. And the
-withheld reasons on the new records are only ever true ones: `n_eff` thinness and columns
-disagreeing at 5%. R126's fallback text (`this record stores no reason`) now appears **only on the
+in `phase2-shootout-multistep` simulates — `monte_carlo_error(MULTISTEP, h)` is `{}`. The withheld
+reasons on those records are only `n_eff` thinness and columns disagreeing at 5%.
+
+**That was overstated when first written, and R129's audit caught it.** It said the new records'
+reasons are "only ever" those two. True of the h>=2 half; **false of the h=1 half of the same
+recorded run**, where `234b85d` carries 48 reasons reading `egarch11_skewt's Monte Carlo error was
+not measured, so no precision is established`. That sentence is literally true of the record
+(`monte_carlo_error: {"egarch11_skewt": None}`) and is one of R126's three real causes, so nothing
+false is printed — but "only ever" was wrong, and the honest statement is that **three** causes
+appear across the clean run, not two. A nuance worth keeping beside it: EGARCH's h=1 Monte-Carlo
+error is in fact identically zero, since the forecast takes no expectation, so "not measured" is
+accurate about the record while the *operative* reason is R124's refusal to make it exact. R126's fallback text (`this record stores no reason`) now appears **only on the
 superseded records**, which is exactly the expiry R126 predicted rather than a debt anyone has to
 pay.
 
 Pre-registration sections 1, 2 and 4 are updated: R115's clause now binds `egarch11_skewt` at h=1
 alone, section 4 carries the ledger's history to 414 with the dirty-flag blemish disclosed, and the
 unordered-pair rule is kept while binding nothing at h>=2.
+
+## R129 — the delivery audit, and six things it found that I had wrong
+
+US-3.6. The auditor confirmed five of the six claims I put to it with measured numbers, changed
+nothing in the tree, and found more than I expected. **Every finding below was verified here before
+being acted on.** What it confirmed, for the record: the acceptance check (132 bit-identical, 18
+changed, all GJR at h>=2, every other field identical on all 150), the headline (414 lines, 108
+dirty and all of them `0dd0e60`, zero on the clean run), R114 in practice, R121's 38-of-38, the
+gates (1357 passed), and every R128 figure including the 0.014779 -> 0.007751 margin.
+
+### The transitive ban had two gaps, and its docstring claimed one of them did not exist
+
+The worst finding, because it is a false claim inside a witness I wrote three rulings ago.
+
+**Parent-package `__init__` edges were never added.** `_first_party_imports` added the parent only
+for `from volab.models import base`. Python runs `volab/__init__.py` and `volab/models/__init__.py`
+whenever anything imports `volab.models.base`, whatever the spelling — and the scan was reading the
+names written down rather than the packages they imply. Measured here before fixing:
+`_first_party_imports("from volab.models.base import X")` returned
+`['volab.models.base', 'volab.models.base.X']` with **no `volab.models`**, and `volab.models` and
+`volab.ingest` were **absent from the reachable set entirely**. So numpy placed in either
+package's `__init__` was invisible. **The function's own docstring asserted the edge was there.**
+
+**Relative imports were skipped outright** (`not node.level`), excused by a comment that grep finds
+no relative import under `src`. True when written, enforced by nothing: `ruff` selects neither
+`TID252` nor `ban-relative-imports`, so one appearing would have passed every gate while silently
+emptying the scan.
+
+Both fixed, with `_ancestors` and a resolved `package` per module, plus
+`test_a_numeric_import_in_a_parent_package_init_is_caught` and
+`test_a_relative_import_reaching_numpy_is_caught` (which covers `from . import x`, `from .x import
+f` and a level-2 climb). The one-hop guard now also asserts `volab`, `volab.models`, `volab.ingest`
+and `volab.features` are all reached. **Verified on the real tree**: `import numpy` planted in
+`src/volab/models/__init__.py` now fails with
+`walkforward/__init__.py reaches a numeric library through volab.walkforward -> volab.models`,
+which the old scan could not see at all.
+
+**`arch` is now a numeric root.** A sealed module doing `import arch` passed the AST scan, because
+`NUMERIC_ROOTS` held only numpy and scipy — yet R82 admitted arch on exactly the same terms and it
+pulls scipy in behind it. The test names still say "numpy or scipy"; left alone deliberately,
+because a renamed test is a citation this project then has to chase, which is finding 6 below.
+
+**Not fixed, and rated correctly as low:** `importlib.import_module("numpy")` and `__import__` are
+invisible to any AST scan. That is the technique's limit, not this witness's.
+
+### Three figures in live source that no committed probe prints
+
+R32 requires a cited figure to have something that reproduces it. I had told the auditor the one
+figure I knew about was accepted *because* a probe printed it. **It does not**, and I had not run it.
+
+| where | said | the committed probe prints |
+|---|---|---|
+| `garch.py` method docstring | analytic GJR "17.7% low at h=66 ... on the probe series" | **20.1%** at h=66, 9.4% at h=22 |
+| `garch.py` `_path_sum` | geometric form "wrong by up to 51%", "reproduces an 80-bit evaluation exactly" | **44%** at h=22 and **71%** at h=66 at `1 - 2**-52`; iteration within ~1e-15 of **exact rationals** |
+| `cohorts.py` docstring | EGARCH h=22 "230.79% on SPY" | nothing; no SPY figure exists |
+
+The 17.7% was the design's own earlier series, and **the decisions log already recorded 20.1%
+against it** — so live source contradicted this file. The 51% was R125's SPY figure, which that
+same ruling says must stay out of `garch.py` for want of a probe. And "80-bit ... exactly" is the
+claim **R125 explicitly struck**, surviving verbatim in the module while the ruling that struck it
+sat in the log. All three corrected to what the probe prints, each naming the probe.
+
+The EGARCH SPY figure is deleted rather than replaced: a percentage error against a quantity R114
+established **does not exist** reads as an error bar for something that has none, so the argument
+it was supporting is now made without it.
+
+### The truncation result had no artifact, so here it is
+
+R128 said twelve reports were captured and gave only the four `N of N` pairs. The log was in the
+scratchpad, which is ephemeral, and US-3.7's acceptance wants the console output *in this file* the
+way Phase 2's own recorded run quoted it. Quoted now, from the clean run:
+
+```
+SPY h1:   truncation equivalence: 251 of 251 origins identical
+QQQ h1:   truncation equivalence: 251 of 251 origins identical
+IWM h1:   truncation equivalence: 251 of 251 origins identical
+SPY h5:   truncation equivalence: 250 of 250 origins identical
+SPY h22:  truncation equivalence: 247 of 247 origins identical
+SPY h66:  truncation equivalence: 238 of 238 origins identical
+QQQ h5:   truncation equivalence: 250 of 250 origins identical
+QQQ h22:  truncation equivalence: 247 of 247 origins identical
+QQQ h66:  truncation equivalence: 238 of 238 origins identical
+IWM h5:   truncation equivalence: 250 of 250 origins identical
+IWM h22:  truncation equivalence: 247 of 247 origins identical
+IWM h66:  truncation equivalence: 238 of 238 origins identical
+```
+
+Each sits beside its companion line — for SPY h1,
+`251 build(s) and 251 training set(s), every one stopping at its own origin` — which is what makes
+the count mean something rather than being a tally of nothing. Twelve configurations, zero
+disagreements. The standalone exhaustive sweep over the dev window is the stronger witness and
+reads `0 of 2245 cutoffs disagree`.
+
+### My two wrong numbers, corrected in place
+
+R126 said the fallback reason prints on **162** lines. It is **204** output lines, 78 on `37c74e7`
+and 126 on `0dd0e60`. Wrong when written, not drift: rendering R126's own commit gives 204 too.
+
+R128 said the clean records' withheld reasons are "only ever" `n_eff` thinness and column
+disagreement. True at h>=2, **false at h=1**, where 48 reasons read "Monte Carlo error was not
+measured". Three causes appear across the run, not two. Nothing false is printed — the sentence is
+accurate about the record — but my summary of it was.
+
+### The board was stale on four stories
+
+US-3.5 and US-3.3c were **done and unmarked** (`f1df79f`, `d0f1902`), with their witnesses present
+and passing. US-3.13 was marked done with no sha, against this board's own rule that a story closes
+when a commit exists; it is `234b85d`. And **US-3.7 was never closed or superseded**, still naming
+an acceptance check — 168 trials — that R114 made unreachable, and carrying "from 72 to 240" and
+"doubles" where the ledger is 414. Five Risks entries that later rulings overturned are also still
+written as live. All corrected.
+
+**This is the third time a review seat has caught a witness of mine claiming something it did not
+do** (R79, R82, and now the parent-package edge), and the first time it caught live source
+contradicting this very file. The pattern is narrower than "I don't test enough": in all three the
+test existed and passed, and the *docstring* described a stronger test than the code performed.

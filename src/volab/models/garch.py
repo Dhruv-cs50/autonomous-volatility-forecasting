@@ -37,7 +37,9 @@ only the ones that give its true conditional mean (``GarchModel.__post_init__`` 
 
 * ``"analytic"`` is ``arch``'s recursion, which hard-codes ``E[z**2 1{z<0}] = 1/2``. That is the
   true mean only for ``o == 0`` (GARCH(1,1)). Under a skewed law ``arch``'s analytic GJR is
-  wrong -- 17.7% low at h=66 against 200,000 paths on the probe series (R90).
+  wrong -- **20.1% low at h=66** and 9.4% at h=22, against 200,000 paths on the probe series.
+  Both are printed by ``tools/measure_garch_forecast_error.py`` (R90; the figure here read 17.7%
+  until R129, which was the design's own series and not the committed probe's).
 * ``"exact"`` is GJR's recursion with the real ``kappa = E[z**2 1{z<0}]`` of the fitted skew-t:
   ``m_1`` is ``arch``'s one-step variance (known at the origin) and ``m_{k+1} = omega + phi*m_k``
   with ``phi = alpha + gamma*kappa + beta``. Deterministic, so it reads no seed, and it removes
@@ -250,7 +252,12 @@ def _path_sum(omega: float, phi: float, first: float, horizon: int) -> float:
 
     Iterated and not summed in closed form: ``alpha + beta`` arrives as ``1 - O(eps)``, the
     ``phi == 1`` branch of the geometric sum never fires, and the ratio ``(1 - phi**h)/(1 - phi)``
-    is then wrong by up to 51% at h=66. Iteration reproduces an 80-bit evaluation exactly.
+    is then wrong by **44% at h=22 and 71% at h=66** at a persistence of ``1 - 2**-52``, where
+    iteration stays within float rounding of an **exact-rational** evaluation (~1e-15). Both
+    printed by ``tools/measure_garch_forecast_error.py``. The earlier wording here claimed up to
+    51% and an "80-bit evaluation": the 51% was an SPY figure no committed probe prints, and
+    ``numpy.longdouble`` is plain ``float64`` on arm64, so the 80-bit comparison was vacuous --
+    struck in R125, corrected here in R129.
     ``first`` is known at the origin and is not an expectation.
     """
     total, step = 0.0, first

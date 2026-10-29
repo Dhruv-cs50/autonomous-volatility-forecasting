@@ -44,9 +44,12 @@ BENCHMARKS: tuple[str, ...] = ("har_levels", "random_walk")
 # contestant measured above the top of it has no significance claimed (R102): EGARCH at h=66 is
 # 3.273% at S = 100,000. The ceiling can only *withhold*. Clearing it is no evidence of precision
 # unless the figure was measured on the series being compared: EGARCH at h=22 is 0.163% on the
-# probe's gentler synthetic process and 230.79% on SPY at the same path count, and a six-seed sd
-# of an estimator with no finite mean is not a measurement of it. No figure at all is the same
-# error in its purest form: absence of measured spread is not presence of precision.
+# probe's gentler synthetic process (alpha 0.05, beta 0.87) and nothing at all on SPY, whose fit
+# is far harsher (alpha ~0.25, beta ~0.96). A six-seed sd of an estimator with **no finite mean**
+# is not a measurement of it at any value -- R129 struck the "230.79% on SPY" this comment used
+# to quote, both because no committed probe prints it and because a percentage error against a
+# divergent quantity (R114) reads as an error bar for something that has none. No figure at all is
+# the same error in its purest form: absence of measured spread is not presence of precision.
 MC_ERROR_CEILING_PERCENT = 1.5
 
 

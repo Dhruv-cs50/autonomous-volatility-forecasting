@@ -276,7 +276,11 @@ SEALED: tuple[str, ...] = (
 # is covered the day it is written rather than the day someone remembers to list it.
 SEALED_PACKAGES: tuple[str, ...] = ("features",)
 
-NUMERIC_ROOTS = {"numpy", "scipy"}
+# ``arch`` belongs here although the test names below say "numpy or scipy": R82 admitted it for
+# the model zoo exactly as it admitted the other two, it pulls scipy in behind it, and a sealed
+# module importing it is the same violation. The names predate its admission and are left alone
+# rather than renamed, because a renamed test is a citation this project has to chase (R129).
+NUMERIC_ROOTS = {"numpy", "scipy", "arch"}
 
 
 def _sealed_modules() -> list[Path]:
@@ -505,22 +509,65 @@ def _module_name(path: Path) -> str:
     return ".".join(("volab", *parts))
 
 
-def _first_party_imports(source: str) -> set[str]:
-    """Every ``volab`` module ``source`` imports, by dotted name.
+def _package_of(path: Path) -> str:
+    """The package a relative import inside ``path`` resolves against.
 
-    ``from volab.models import base`` yields both ``volab.models`` and ``volab.models.base``: the
-    package's own ``__init__`` runs on that import, so it is an edge too. Absolute imports only,
-    which is this project's whole style -- ``grep`` finds no relative import under ``src``.
+    For ``features/build.py`` that is ``volab.features``; for ``features/__init__.py`` it is also
+    ``volab.features``, because a package's ``__init__`` resolves ``from . import x`` against the
+    package itself. Dropping the last component gives both, since ``__init__`` *is* the package.
+    """
+    parts = path.relative_to(SRC).with_suffix("").parts
+    return ".".join(("volab", *parts[:-1]))
+
+
+def _ancestors(dotted: str) -> set[str]:
+    """``volab.models.base`` -> itself plus ``volab.models`` and ``volab``.
+
+    **This is the hop the first version of this scan missed**, and its docstring claimed it had.
+    Python executes `volab/__init__.py` and `volab/models/__init__.py` when anything imports
+    `volab.models.base`, so each is an edge whatever the import's spelling -- but only
+    ``from volab.models import base`` names the parent, and the scan was reading the names rather
+    than the packages they imply. The result was that ``volab.models`` and ``volab.ingest`` were
+    absent from the reachable set altogether, so a numeric import placed in either package's
+    ``__init__`` was invisible. Found by a delivery audit (R129), not by me.
+    """
+    parts = dotted.split(".")
+    return {".".join(parts[: i + 1]) for i in range(len(parts))}
+
+
+def _first_party_imports(source: str, package: str = "volab") -> set[str]:
+    """Every ``volab`` module ``source`` imports, by dotted name, with every ancestor package.
+
+    ``package`` is what a *relative* import resolves against -- :func:`_package_of` of the file
+    being read. Relative imports were skipped entirely at first, excused by "grep finds no
+    relative import under ``src``": true at the time, enforced by nothing, and ``ruff`` selects
+    neither ``TID252`` nor ``ban-relative-imports``, so no gate would have noticed one appearing.
+
+    An entry may be a *symbol* rather than a module (``from volab.paths import Tier``). That is a
+    deliberate over-approximation: the walk skips a name that is not a module in the graph, so a
+    spurious entry costs nothing while a missing one hides an edge.
     """
     found: set[str] = set()
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
-            found.update(a.name for a in node.names if a.name.split(".")[0] == "volab")
-        elif isinstance(node, ast.ImportFrom) and not node.level:
-            module = node.module or ""
-            if module.split(".")[0] == "volab":
-                found.add(module)
-                found.update(f"{module}.{a.name}" for a in node.names)
+            for alias in node.names:
+                if alias.name.split(".")[0] == "volab":
+                    found |= _ancestors(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                base = package.split(".")
+                # ``level`` 1 is the package itself, 2 its parent, and so on.
+                base = base[: len(base) - (node.level - 1)] if node.level > 1 else base
+                prefix = ".".join(base)
+                if not prefix:
+                    continue
+                module = f"{prefix}.{node.module}" if node.module else prefix
+            else:
+                module = node.module or ""
+            if module.split(".")[0] != "volab":
+                continue
+            found |= _ancestors(module)
+            found |= {name for a in node.names for name in _ancestors(f"{module}.{a.name}")}
     return found
 
 
@@ -531,7 +578,14 @@ def _graph() -> dict[str, str]:
     return {_module_name(path): path.read_text(encoding="utf-8") for path in SRC.rglob("*.py")}
 
 
-def _numeric_reach(start: str, graph: dict[str, str]) -> list[str]:
+def _packages() -> dict[str, str]:
+    """Each module's own package, so a relative import in it resolves to the right target."""
+    return {_module_name(path): _package_of(path) for path in SRC.rglob("*.py")}
+
+
+def _numeric_reach(
+    start: str, graph: dict[str, str], packages: dict[str, str] | None = None
+) -> list[str]:
     """The import chain from ``start`` to a direct numeric import, or ``[]`` if there is none.
 
     Breadth-first, so the chain reported is a shortest one and reads as an explanation rather
@@ -547,7 +601,8 @@ def _numeric_reach(start: str, graph: dict[str, str]) -> list[str]:
             continue
         if _numeric_imports(source) and len(chain) > 1:
             return chain
-        for target in sorted(_first_party_imports(source)):
+        package = (packages or {}).get(chain[-1], "volab")
+        for target in sorted(_first_party_imports(source, package)):
             if target not in seen:
                 seen.add(target)
                 queue.append([*chain, target])
@@ -558,7 +613,7 @@ def _numeric_reach(start: str, graph: dict[str, str]) -> list[str]:
 def test_the_point_in_time_path_reaches_no_numpy_or_scipy_even_indirectly(module: Path) -> None:
     """R82's ban with the hop the per-file scan cannot see (the 2026-10-28 design, Decision 3)."""
     graph = _graph()
-    chain = _numeric_reach(_module_name(module), graph)
+    chain = _numeric_reach(_module_name(module), graph, _packages())
     assert not chain, (
         f"{module.relative_to(SRC)} reaches a numeric library through "
         f"{' -> '.join(chain)}: {_numeric_imports(graph[chain[-1]])}. R82 admits numpy and scipy "
@@ -574,16 +629,17 @@ def test_the_transitive_scan_walks_more_than_one_hop() -> None:
     actually reach modules outside itself -- it does: ``config``, ``errors``, ``paths``,
     ``sessions``, ``identity`` and ``ingest.curate`` are all on the path and none is sealed.
     """
-    graph = _graph()
+    graph, packages = _graph(), _packages()
     reached = set()
     for module in _sealed_modules():
         start = _module_name(module)
         queue, seen = [start], {start}
         while queue:
-            source = graph.get(queue.pop(0))
+            name = queue.pop(0)
+            source = graph.get(name)
             if source is None:
                 continue
-            for target in sorted(_first_party_imports(source)):
+            for target in sorted(_first_party_imports(source, packages.get(name, "volab"))):
                 if target not in seen:
                     seen.add(target)
                     queue.append(target)
@@ -591,6 +647,10 @@ def test_the_transitive_scan_walks_more_than_one_hop() -> None:
     sealed_names = {_module_name(path) for path in _sealed_modules()}
     assert reached - sealed_names, "the walk followed no edge out of the sealed set"
     assert "volab.config" in reached and "volab.sessions" in reached, sorted(reached)
+    # The parent packages, which the first version of this scan never reached (R129). A numeric
+    # import in either ``__init__`` was invisible, so asserting their presence is the witness
+    # that the ancestor edges exist at all.
+    assert {"volab", "volab.models", "volab.ingest", "volab.features"} <= reached, sorted(reached)
 
 
 def test_a_planted_first_party_edge_to_numpy_is_caught() -> None:
@@ -620,3 +680,79 @@ def test_a_planted_first_party_edge_to_numpy_is_caught() -> None:
         "volab.models.base",
         {**graph, "volab.models.quadrature": "import math\n"},
     )
+
+
+def test_a_numeric_import_in_a_parent_package_init_is_caught() -> None:
+    """R129's first gap: the ``__init__`` that runs on the way to a submodule.
+
+    ``from volab.models.garch import SCALE`` executes ``volab/models/__init__.py``, so numpy
+    placed there is reached by anything importing *any* module in the package. The first version
+    of this scan added the parent edge only for ``from volab.models import base`` -- it read the
+    names written down rather than the packages they imply -- so ``volab.models`` and
+    ``volab.ingest`` were absent from the reachable set and this was invisible.
+    """
+    graph = {
+        "volab.models.base": "from volab.models.garch import SCALE\n",
+        "volab.models": "import numpy as np\n",
+        "volab.models.garch": "import math\n",
+    }
+    assert _numeric_reach("volab.models.base", graph) == ["volab.models.base", "volab.models"]
+    # And by the other spelling, which runs the same __init__.
+    assert _numeric_reach(
+        "volab.models.base", {**graph, "volab.models.base": "import volab.models.garch\n"}
+    ) == [
+        "volab.models.base",
+        "volab.models",
+    ]
+    # Clean parent, numeric grandchild: still found, by the longer chain.
+    assert _numeric_reach(
+        "volab.models.base",
+        {**graph, "volab.models": "import math\n", "volab.models.garch": "import scipy.special\n"},
+    ) == ["volab.models.base", "volab.models.garch"]
+
+
+def test_a_relative_import_reaching_numpy_is_caught() -> None:
+    """R129's second gap: ``node.level`` was skipped outright.
+
+    The excuse was that ``grep`` finds no relative import under ``src``. True when written, and
+    enforced by nothing -- ``ruff`` selects neither ``TID252`` nor ``ban-relative-imports``, so a
+    relative import appearing would have passed every gate while silently emptying this scan.
+    """
+    graph = {
+        "volab.features.build": "from . import helper\n",
+        "volab.features.helper": "import numpy as np\n",
+    }
+    packages = {"volab.features.build": "volab.features"}
+    assert _numeric_reach("volab.features.build", graph, packages) == [
+        "volab.features.build",
+        "volab.features.helper",
+    ]
+    # ``from .helper import f`` resolves the same way.
+    assert _numeric_reach(
+        "volab.features.build",
+        {**graph, "volab.features.build": "from .helper import f\n"},
+        packages,
+    ) == ["volab.features.build", "volab.features.helper"]
+    # And a level-2 import climbs out of the package.
+    assert _numeric_reach(
+        "volab.features.build",
+        {"volab.features.build": "from .. import identity\n", "volab.identity": "import scipy\n"},
+        packages,
+    ) == ["volab.features.build", "volab.identity"]
+
+
+def test_arch_counts_as_a_numeric_root() -> None:
+    """R82 admitted ``arch`` for the model zoo exactly as it admitted numpy and scipy, and it
+    pulls scipy in behind it, so a sealed module importing it is the same violation. It was
+    missing from ``NUMERIC_ROOTS`` while the per-file test's name said only "numpy or scipy"
+    (R129); the names are left as they are, because a renamed test is a citation to chase."""
+    assert "arch" in NUMERIC_ROOTS
+    assert _numeric_imports("import arch\n") == ["imports arch"]
+    assert _numeric_imports("from arch.univariate import SkewStudent\n") == [
+        "imports from arch.univariate"
+    ]
+    graph = {
+        "volab.panel": "from volab.models.garch import SCALE\n",
+        "volab.models.garch": "import arch\n",
+    }
+    assert _numeric_reach("volab.panel", graph) == ["volab.panel", "volab.models.garch"]
