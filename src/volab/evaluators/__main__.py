@@ -120,8 +120,16 @@ def distribution_flags_known(settings: Settings, symbol: str) -> bool:
     distributions for QQQ alone: SPY's and IWM's are ``False`` by absence, which a panel cannot be
     told apart from "no ex-date occurred". So the question is put to the source: does it hold a
     row for ``symbol`` up to ``dev_end``? If not, a count of zero is a count of nothing recorded,
-    and the decision says so (``distribution_flags_known: false``). A source whose only rows fall
-    after ``dev_end`` reads as unknown too, which errs the safe way.
+    and the decision says so (``distribution_flags_known: false``). That covers three states, which
+    this does not separate: no source for the symbol, a source with no rows, and a source whose
+    only rows fall after ``dev_end`` (``load_panel`` filters them out and then finds nothing).
+    Reading those as unknown errs the safe way.
+
+    **``True`` is weaker than it sounds.** It means a dividend source exists for ``symbol`` with at
+    least one row at or before the seal -- not that the source's history covers the window being
+    scored, and not that the ex-date count is complete for it. Coverage is not checked: a source
+    holding a single old row reads known. Vendor history is a trailing window (Nasdaq serves ten
+    years), so a window older than that is the case this cannot see.
     """
     try:
         load_panel(
@@ -358,8 +366,9 @@ def _describe(decision: Decision) -> list[str]:
         )
     else:
         lines.append(
-            "    ex-dates: NOT KNOWN -- no dividend source for this symbol, so a count of 0 "
-            f"({decision.distribution_window} session(s) looked at) is not evidence of none"
+            "    ex-dates: NOT KNOWN -- the dividend source holds no row for this symbol at or "
+            "before dev_end (no source, an empty one, or rows only after the seal), so a count "
+            f"of 0 ({decision.distribution_window} session(s) looked at) is not evidence of none"
         )
     return lines
 

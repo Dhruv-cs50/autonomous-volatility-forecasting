@@ -926,9 +926,12 @@ def test_a_configuration_with_nothing_to_score_is_decided_without_raising(
 
 def test_persisted_returns_the_stored_table_in_order_and_stops_at_dev_end(tmp_path: Path) -> None:
     """``_persisted`` is restated from ``volab.compare.__main__`` and stubbed in every run above,
-    so it is tested here against a real store. Its ``sort_values`` is a no-op on ``load_panel``'s
-    output, which is already ordered, so no test here can witness it; the bound at ``dev_end`` is
-    what this pins."""
+    so it is tested here against a real store. The bound at ``dev_end`` is what this pins. Its
+    ``sort_values("as_of")`` is not witnessed, and that mutant is equivalent for a narrower reason
+    than "nothing could witness it" (``SyntheticStore.write(ts=...)`` can make ``ts`` and
+    ``as_of`` disagree): ``load_panel`` orders by ``(symbol, ts)`` and the sort is by ``as_of``,
+    and the two coincide only because ``features/build.py::_require_ascending_sessions`` refuses a
+    panel whose ``ts`` or ``as_of`` is not ascending, so a table it built has both in one order."""
     settings = _settings_with_root(load_settings(), tmp_path)
     store = _store(settings)
     dev_end = settings.splits.dev_end
