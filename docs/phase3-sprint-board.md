@@ -41,8 +41,10 @@ is itself held until the user triggers the holdout reveal (R139).
 
 | finding | why it blocks |
 |---|---|
-| **`superior_predictive_ability` crashes on near-identical non-benchmark series.** `src/volab/compare/multiple.py` pre-checks only the benchmark's pairs, then `block_length` re-checks **all** pairs and raises `ValueError`. Reproduced on the toy cohort at stride 2 with two near-identical FZ0 series. Pre-existing Phase 2 code, surfaced by Phase 3's losses | **a real run would die *after* trials were appended**, leaving `trials.jsonl` carrying lines for a run that produced no comparison. Needs its own story |
+| **`superior_predictive_ability` crashes on proportional non-benchmark series, with certainty.** `src/volab/compare/multiple.py:295-298` pre-checks only the benchmark's pairs; `block_length` then re-checks **all** pairs and raises `ValueError`. Mechanism: under a Gaussian (VaR, ES) map `var/es` is constant, so an off-breach FZ0 value is `const + log(sigma)` and a **proportional** pair's differential is exactly constant — which is what `same_losses` (`dm.py:130-140`) tests for. So any proportional pair trips it at any alpha with no breach, i.e. usually at alpha=1%. Pre-existing Phase 2 code; Phase 3's losses are its first caller | **a real run dies *after* trials were appended**, leaving `trials.jsonl` carrying lines for a run that produced no comparison. **Nothing pins it** — the P3-08 implementer moved a test from stride 2 to stride 4 to get around it, so the suite is green and the defect is invisible. Its own session is proposed |
 | **Zero ex-dates is not "no ex-dates".** SPY's and IWM's `has_distribution` flags are uniformly `False` because the vendor serves distributions for QQQ only | spec 7.4's dividend disclosure reads as "no ex-dates in the window" when it means "no distribution data for this symbol" — a hollow disclosure is worse than none, because it looks discharged |
+
+| **The first real evaluator run moves `data/trials.jsonl` off 414**, which is a reported number, and the only guard is that `--cohort` is required | R139 holds the recorded run until the user triggers the reveal; until then no one may run the CLI against the real store |
 
 ## Deferred findings, carried to the final whole-branch review
 
