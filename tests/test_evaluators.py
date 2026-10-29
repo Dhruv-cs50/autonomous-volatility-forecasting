@@ -14,8 +14,11 @@ Three things are witnessed here rather than argued, and each had a way to be sil
   entry there would write a third trial line per contestant per configuration);
 * the standing of the signed horizon return. ``OriginResult.realized`` is a *variance*; a breach
   needs the signed return, which nothing in an ``Evaluation`` carries, so ``horizon_returns``
-  reads it from the store. It is a scoring read, like ``realized``, and the sections from
-  ``horizon_returns`` on demonstrate that rather than assert it.
+  reads it from the store. It is a scoring read, like ``realized``. Two separate things are shown:
+  the ``horizon_returns`` tests show it reads to ``dev_end`` and no further, and
+  ``test_no_horizon_return_reaches_a_fit`` shows the walk-forward hands no contestant a signed
+  forward return -- that test does not call ``horizon_returns``; it is about what the harness
+  gives a fit, which is what makes the read a scoring read.
 
 Nothing here appends to ``data/trials.jsonl`` or reads past ``dev_end``; the store tests write a
 synthetic one under ``tmp_path``.
@@ -41,7 +44,7 @@ from test_import_discipline import _unlocks
 import volab.evaluators as evaluators
 import volab.walkforward as wf
 from volab.compare import analyse
-from volab.config import Settings, Splits
+from volab.config import Settings, Splits, load_settings
 from volab.errors import HoldoutViolation
 from volab.evaluators import ALPHAS, decision_series, fz0, horizon_returns, var_es
 from volab.models.base import Cohort
@@ -347,6 +350,28 @@ def test_decision_series_refuses_a_comparable_origin_with_no_return() -> None:
         decision_series(evaluation, alpha=0.01, cohort="toy", returns=returns)
 
 
+def test_a_missing_return_error_says_how_to_get_one() -> None:
+    returns = _returns_for(10)
+    del returns[HAND_ORIGINS[3]]
+    evaluation = _hand_evaluation({"a": _variances(10, seed=1)})
+    with pytest.raises(ValueError, match=r"pass horizon_returns\(\.\.\., origins="):
+        decision_series(evaluation, alpha=0.01, cohort="toy", returns=returns)
+
+
+def test_an_infinite_forecast_is_refused_naming_the_contestant_and_origin() -> None:
+    """``inf`` is inside QLIKE's domain, so ``comparable`` keeps it, and ``var_es`` refuses it.
+
+    The refusal stays -- the volatility-target task divides by the result -- but it must say
+    *whose* forecast and *where*, or a long run dies with no locus.
+    """
+    forecasts = {"a": _variances(10, seed=1), "culprit": _variances(10, seed=2)}
+    forecasts["culprit"][4] = float("inf")
+    evaluation = _hand_evaluation(forecasts)
+    assert HAND_ORIGINS[4] in evaluation.comparable("qlike"), "the premise: QLIKE admits inf"
+    with pytest.raises(ValueError, match=rf"contestant 'culprit' at origin {HAND_ORIGINS[4]}"):
+        decision_series(evaluation, alpha=0.01, cohort="toy", returns=_returns_for(10))
+
+
 def test_decision_series_refuses_a_cohort_the_evaluation_did_not_run() -> None:
     evaluation = _hand_evaluation({"a": _variances(10, seed=1)}, cohort="real")
     with pytest.raises(ValueError, match="was asked for but the evaluation ran cohort"):
@@ -412,9 +437,12 @@ def test_analyse_accepts_a_decision_series_without_losses_gaining_an_entry() -> 
 def test_a_decision_series_with_a_wrong_variance_loses_to_the_right_one() -> None:
     """The series is a ranking of decisions: returns drawn at sigma favour the forecast at sigma.
 
-    The same evaluation machinery, two contestants, one forecasting the variance the returns were
-    drawn from and one forecasting a third of it. Over enough origins the mean FZ0 of the first is
-    lower -- the sign the DM statistic's ``d_bar`` reports.
+    The same evaluation machinery, three contestants: one forecasting the variance the returns were
+    drawn from, one a third of it and one three times it. Over enough origins the mean FZ0 of the
+    first is lower than both -- the sign the DM statistic's ``d_bar`` reports. **Both directions
+    are needed.** For a Gaussian forecaster ``var / es`` is the constant ``z / k``, so without the
+    ``log(es)`` term the loss is the breach penalty alone, under-forecasting is still punished, and
+    inflating sigma is *rewarded*: only the over-forecaster discriminates the full formula.
     """
     count = 40
     sigma = 0.045
@@ -422,12 +450,16 @@ def test_a_decision_series_with_a_wrong_variance_loses_to_the_right_one() -> Non
         {
             "right": [sigma**2] * count,
             "too_small": [sigma**2 / 3.0] * count,
+            "too_large": [sigma**2 * 3.0] * count,
         }
     )
     returns = _returns_for(count, sigma=sigma)
     for alpha in ALPHAS:
         series = decision_series(evaluation, alpha=alpha, cohort="toy", returns=returns)
         assert sum(series.values["right"]) < sum(series.values["too_small"])
+        # A real margin, not a float-noise tie: no draw breaches at either, so what separates them
+        # is the ``log(es)`` term, 40 * log(sqrt(3)) ~ 22.
+        assert sum(series.values["too_large"]) - sum(series.values["right"]) > 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -513,7 +545,10 @@ def test_it_reads_no_further_than_dev_end(
     An origin whose horizon runs past ``dev_end`` has no entry rather than a value read past the
     seal. The post-``dev_end`` bars are on disk at ``SEALED_CLOSE``, so a read that reached them
     would produce a return of about 20: the assertion on magnitude is what the seal looks like
-    from outside. The autouse holdout fixture is a second, independent check on the ``end``.
+    from outside. The two guards are the ``reads`` assertion (every ``load_panel`` call carries
+    ``end == dev_end``) and the magnitude bound against ``SEALED_CLOSE``. The autouse holdout
+    fixture is *not* a third: it fails only for ``end`` past the repository's own ``dev_end``
+    (2025-12-31), and this store's seal is earlier, so it cannot fire here.
     """
     sessions = _store_with_bars(synthetic_store)
     settings = synthetic_store.settings
@@ -742,11 +777,13 @@ def test_settings_is_what_horizon_returns_is_handed(synthetic_store: SyntheticSt
     """A guard on the guard: a ``Settings`` with a *later* ``dev_end`` is refused by the store, so
     ``horizon_returns`` cannot be used to move the seal by handing it one."""
     _store_with_bars(synthetic_store)
+    # One day past the repository's own seal, derived so it cannot go stale when the seal rolls.
+    later = load_settings().splits.dev_end + dt.timedelta(days=1)
     moved = Settings(
         universe=synthetic_store.settings.universe,
         exogenous=synthetic_store.settings.exogenous,
         calendar=synthetic_store.settings.calendar,
-        splits=Splits(dev_end=dt.date(2026, 6, 30), holdout_start=dt.date(2026, 7, 1)),
+        splits=Splits(dev_end=later, holdout_start=later + dt.timedelta(days=1)),
         storage_root=synthetic_store.settings.storage_root,
     )
     with pytest.raises(HoldoutViolation, match="later than the repository's configured dev_end"):

@@ -171,7 +171,8 @@ def decision_series(
     ``returns`` maps origin to the signed horizon return (``horizon_returns``). A comparable origin
     with no entry there is **refused**, not dropped: the series would silently rest on fewer origins
     than the trial beside it, which is the silent-denominator defect again. Entries for origins
-    outside the comparable set are ignored.
+    outside the comparable set are ignored. A forecast ``var_es`` refuses (``inf``) is re-raised
+    naming the contestant and origin.
 
     The loss is named ``fz0_a<alpha>`` and is **not** in ``walkforward.LOSSES``, so building and
     analysing this series writes no trial line and moves no ledger count.
@@ -186,13 +187,23 @@ def decision_series(
     if absent:
         raise ValueError(
             f"no horizon return for {len(absent)} comparable origin(s), first {absent[0]}: "
-            "the series would rest on fewer origins than the trial beside it"
+            "the series would rest on fewer origins than the trial beside it; pass "
+            "horizon_returns(..., origins=[r.origin for r in evaluation.results])"
         )
     origins = tuple(sorted(usable))
     values: dict[str, tuple[float, ...]] = {}
+
+    def loss(model: str, origin: dt.date, forecast: float) -> float:
+        # ``inf`` is inside QLIKE's domain and so in ``usable``, but ``var_es`` refuses it. Name
+        # the contestant and origin, or a long run dies with no locus.
+        try:
+            return fz0(returns[origin], *var_es(forecast, alpha), alpha)
+        except ValueError as refusal:
+            raise ValueError(f"contestant {model!r} at origin {origin}: {refusal}") from refusal
+
     for model in evaluation.contestants:
         by_origin = {
-            origin: fz0(returns[origin], *var_es(forecast, alpha), alpha)
+            origin: loss(model, origin, forecast)
             for origin, _, forecast in evaluation.scored(model)
             if origin in usable
         }
