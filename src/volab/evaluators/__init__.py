@@ -20,6 +20,10 @@ and no further. That is the same standing as ``realized`` itself: it is what a f
 against and is never what one is fitted on. The tests demonstrate this rather than assert it
 (``tests/test_evaluators.py``).
 
+``coverage`` tests the breaches themselves (Kupiec, Christoffersen) and **refuses** where the
+origins' stride is shorter than the horizon, since their overlapping returns break the independence
+both tests assume; ``coverage``'s docstring says why a HAC correction was not used instead.
+
 This package is off the sealed point-in-time path and may import scipy: nothing sealed imports it,
 and ``tests/test_import_discipline.py`` would fail if a sealed module reached it.
 
@@ -33,10 +37,11 @@ from __future__ import annotations
 
 import datetime as dt
 import math
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 
 import pandas as pd
-from scipy.stats import norm
+from scipy.stats import chi2, norm
 
 from volab.compare.series import LossSeries
 from volab.config import Settings
@@ -216,4 +221,114 @@ def decision_series(
         stride=evaluation.every,
         origins=origins,
         values=values,
+    )
+
+
+@dataclass(frozen=True)
+class CoverageResult:
+    """What ``coverage`` found: the count, what was expected, and the two p-values.
+
+    ``kupiec_p`` and ``christoffersen_p`` are ``None`` exactly when ``refusal`` is a reason; the
+    counts are reported either way.
+    """
+
+    breaches: int
+    expected: float
+    kupiec_p: float | None
+    christoffersen_p: float | None
+    refusal: str | None
+
+
+def _log_likelihood_term(count: int, probability: float) -> float:
+    """``count * log(probability)``, with the limit ``0 * log(0) = 0`` taken and not evaluated.
+
+    A maximised binomial or Markov likelihood has a zero probability exactly where its count is
+    zero -- no breach at all, none after a breach, and so on -- and ``log(0)`` is then neither
+    needed nor evaluated. A positive count with a zero probability cannot arise from estimated
+    probabilities, and ``math.log`` raises on it rather than returning ``-inf``.
+    """
+    return 0.0 if count == 0 else count * math.log(probability)
+
+
+def _chi_squared_p(statistic: float) -> float:
+    # A statistic that is zero analytically can come out a rounding error below it; the survival
+    # function is 1.0 for any negative argument, which is the right p-value for it.
+    return float(chi2.sf(statistic, 1))
+
+
+def coverage(hits: Sequence[bool], alpha: float, *, horizon: int, stride: int) -> CoverageResult:
+    """Kupiec's unconditional-coverage test and Christoffersen's independence test of breaches.
+
+    ``hits[i]`` is whether origin ``i`` breached its VaR (``return < -var``), in origin order, for
+    a VaR at tail level ``alpha``. Both tests are likelihood ratios against chi-squared with one
+    degree of freedom (``scipy.stats.chi2.sf``):
+
+    * **Kupiec** (1995): the breach count is binomial with probability ``alpha``. Zero breaches is
+      ordinary -- the expectation is 2.5 over 251 origins at ``alpha = 0.01`` -- and the statistic
+      is defined there; so it is when every origin breaches.
+    * **Christoffersen** (1998), independence only: the indicator is a first-order Markov chain
+      whose breach probability does not depend on the previous origin's outcome. Zero or all
+      breaches leave nothing to compare, the statistic is zero and ``christoffersen_p`` is ``1.0``:
+      the test could not reject, which is not evidence that breaches are independent.
+
+    **Both assume independent indicators, so an overlapping window is refused.** An h-day return
+    shares ``h - stride`` sessions with the next origin's when ``stride < horizon``, so successive
+    indicators are dependent by construction -- at stride 5 and h=22 each overlaps the next three
+    -- and the tests' p-values would be reported against a null they do not satisfy. Where
+    ``stride < horizon`` the result carries a ``refusal`` naming that condition, and no p-value.
+    A HAC correction was considered and set aside: its own validity at these sample sizes would
+    need evidence of its own. A refusal also covers fewer than two origins, as the independence
+    test counts transitions between them.
+
+    ``expected`` is ``alpha * len(hits)``. The counts are in the result whether or not it refuses.
+    """
+    _check_alpha(alpha)
+    if horizon < 1:
+        raise ValueError(f"horizon must be at least 1, got {horizon}")
+    if stride < 1:
+        raise ValueError(f"stride must be at least 1, got {stride}")
+    flags = [bool(hit) for hit in hits]
+    count, breaches = len(flags), sum(flags)
+    expected = alpha * count
+
+    def refused(reason: str) -> CoverageResult:
+        return CoverageResult(breaches, expected, None, None, reason)
+
+    if stride < horizon:
+        return refused(
+            f"the breach indicators overlap: stride {stride} < horizon {horizon}, so each "
+            f"{horizon}-session return shares sessions with the next origin's, and Kupiec's and "
+            "Christoffersen's tests assume independent indicators; use stride >= horizon"
+        )
+    if count < 2:
+        return refused(f"fewer than two origins ({count}): there is no transition to count")
+
+    # Kupiec: the binomial likelihood at alpha against its maximum at x / n.
+    pi = breaches / count
+    kupiec = -2.0 * (
+        _log_likelihood_term(count - breaches, 1.0 - alpha)
+        + _log_likelihood_term(breaches, alpha)
+        - _log_likelihood_term(count - breaches, 1.0 - pi)
+        - _log_likelihood_term(breaches, pi)
+    )
+
+    # Christoffersen: transitions between consecutive origins, ``n[before][now]``.
+    n = [[0, 0], [0, 0]]
+    for before, now in zip(flags, flags[1:], strict=False):
+        n[before][now] += 1
+    from_clear, from_breach = n[0][0] + n[0][1], n[1][0] + n[1][1]
+    # A state never left has no estimate, and then every term that would use it has a zero count.
+    p01 = n[0][1] / from_clear if from_clear else 0.0
+    p11 = n[1][1] / from_breach if from_breach else 0.0
+    p = (n[0][1] + n[1][1]) / (from_clear + from_breach)
+    independence = -2.0 * (
+        _log_likelihood_term(n[0][0] + n[1][0], 1.0 - p)
+        + _log_likelihood_term(n[0][1] + n[1][1], p)
+        - _log_likelihood_term(n[0][0], 1.0 - p01)
+        - _log_likelihood_term(n[0][1], p01)
+        - _log_likelihood_term(n[1][0], 1.0 - p11)
+        - _log_likelihood_term(n[1][1], p11)
+    )
+    return CoverageResult(
+        breaches, expected, _chi_squared_p(kupiec), _chi_squared_p(independence), None
     )

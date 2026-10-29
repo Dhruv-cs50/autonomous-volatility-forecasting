@@ -46,12 +46,14 @@ import volab.walkforward as wf
 from volab.compare import analyse
 from volab.config import Settings, Splits, load_settings
 from volab.errors import HoldoutViolation
-from volab.evaluators import ALPHAS, decision_series, fz0, horizon_returns, var_es
+from volab.evaluators import ALPHAS, coverage, decision_series, fz0, horizon_returns, var_es
+from volab.features.targets import build_targets
 from volab.models.base import Cohort
 from volab.panel import as_of_dates
 from volab.paths import curated_path
 from volab.sessions import get_calendar, sessions_between
-from volab.walkforward import Evaluation, OriginResult
+from volab.store import load_panel
+from volab.walkforward import Evaluation, OriginResult, evaluate, target_panel_for
 
 # ---------------------------------------------------------------------------
 # var_es
@@ -480,15 +482,17 @@ def _store_with_bars(
     *,
     drop: Sequence[dt.date] = (),
     null_close: Sequence[dt.date] = (),
+    first: dt.date = dt.date(2023, 11, 1),
+    last: dt.date = dt.date(2024, 1, 31),
 ) -> list[dt.date]:
-    """Curated SPY bars from 2023-11-01 to 2024-01-31, written whole.
+    """Curated SPY bars from ``first`` to ``last`` (2023-11-01 to 2024-01-31), written whole.
 
     Everything after ``dev_end`` (2023-12-31 in this store's settings) is written too, at
     ``SEALED_CLOSE``: the file is on disk and ``load_panel`` is what must keep it out. ``drop``
     leaves a session with no bar; ``null_close`` writes the bar with a null close.
     """
     calendar = get_calendar(store.settings)
-    sessions = sessions_between(calendar, dt.date(2023, 11, 1), dt.date(2024, 1, 31))
+    sessions = sessions_between(calendar, first, last)
     dev_end = store.settings.splits.dev_end
     schema = pa.schema(
         [
@@ -604,6 +608,88 @@ def test_a_missing_or_null_close_is_omitted_not_bridged(synthetic_store: Synthet
     # The two ends of the horizon are what matter; a hole in the middle does not poison a
     # point-to-point return, so the origin one session before ``gap - 5`` is present.
     assert sessions[2] in returns and gap not in returns and hole not in returns
+
+
+@pytest.mark.parametrize("horizon", [5, 22])
+def test_every_comparable_origin_has_a_signed_return(
+    synthetic_store: SyntheticStore, horizon: int
+) -> None:
+    """The premise behind ``decision_series`` raising rather than dropping.
+
+    A comparable origin is one the QLIKE trial scores, so it has a realized variance, so every
+    return in ``t+1..t+h`` is present -- the forward variance target is NaN if *any* of them is.
+    ``horizon_returns`` needs only the two *endpoint* closes. The first condition implies the
+    second, hence ``comparable("qlike") <= set(returns)`` for any symbol, and ``decision_series``
+    can treat a comparable origin without a return as an inconsistency to surface.
+
+    The inclusion is shown on a real ``evaluate`` over a store with two gaps -- one session with
+    no bar, one with a null close, so both mechanisms by which a close goes missing -- and each
+    gap is classified against the origins around it:
+
+    * a **boundary** origin, whose window *ends* on the gap, loses its return (the endpoint is
+      missing) and its target;
+    * an **interior** origin, with the gap strictly inside its window, keeps its return -- both
+      endpoints are present -- but has already lost its target, and with it its place in
+      ``comparable``. That is the case that makes the inclusion strict, and the one a target
+      built from endpoints alone would break.
+
+    Every classified origin is first shown to have been *scored* with a NaN realized value, so
+    its absence from ``comparable`` is the target's doing and not a skip upstream of it.
+    """
+    store = synthetic_store
+    settings = store.settings
+    calendar = get_calendar(settings)
+    first, last = dt.date(2023, 1, 3), dt.date(2023, 12, 29)
+    reference = sessions_between(calendar, first, last)
+    # Far enough apart that the 66-session feature window after the first gap has closed before the
+    # boundary origin of the second (200 - 22 > 92 + 66), and far enough in that the boundary
+    # origin of the first (92 - 22) still has a full window behind it.
+    absent_bar, null_close = reference[92], reference[200]
+    sessions = _store_with_bars(
+        store, first=first, last=last, drop=[absent_bar], null_close=[null_close]
+    )
+    assert sessions == reference
+
+    panel = load_panel(
+        BARS, end=settings.splits.dev_end, symbols=["SPY"], settings=settings
+    ).assign(has_distribution=False)
+    targets = build_targets(target_panel_for(panel, calendar), horizon=horizon, calendar=calendar)
+    origins = sessions[66 : len(sessions) - horizon - 1]
+    spy = Spy()
+    evaluation = evaluate(
+        panel,
+        targets,
+        origins,
+        symbol="SPY",
+        horizon=horizon,
+        calendar=calendar,
+        minimum_training=20,
+        cohort=Cohort("seam-decisions", (spy,)),
+    )
+    returns = horizon_returns(settings, "SPY", origins, horizon=horizon)
+    comparable = evaluation.comparable("qlike")
+
+    # The premise itself, and that it is not an inclusion of the empty set in something.
+    assert comparable <= set(returns)
+    assert len(comparable) > 50
+    realized = {result.origin: result.realized for result in evaluation.results}
+
+    position = {day: index for index, day in enumerate(sessions)}
+    for gap in (absent_bar, null_close):
+        at = position[gap]
+        boundary = sessions[at - horizon]
+        interior = sessions[at - horizon + 1 : at]
+        assert len(interior) == horizon - 1
+        assert gap not in returns, "a gap is not an origin that can be scored"
+
+        assert boundary in realized and math.isnan(realized[boundary]), "not scored, or not NaN"
+        assert boundary not in returns, f"{boundary}: its horizon ends on the gap"
+        assert boundary not in comparable
+
+        for origin in interior:
+            assert origin in realized and math.isnan(realized[origin]), f"{origin}: not scored"
+            assert origin in returns, f"{origin}: both endpoints are present"
+            assert origin not in comparable, f"{origin}: a gap inside the window left a target"
 
 
 def test_an_origin_that_is_not_a_session_gets_no_entry(synthetic_store: SyntheticStore) -> None:
@@ -788,3 +874,188 @@ def test_settings_is_what_horizon_returns_is_handed(synthetic_store: SyntheticSt
     )
     with pytest.raises(HoldoutViolation, match="later than the repository's configured dev_end"):
         horizon_returns(moved, "SPY", [dt.date(2023, 11, 1)], horizon=1)
+
+
+# ---------------------------------------------------------------------------
+# coverage -- Kupiec and Christoffersen, and the stride they refuse below
+# ---------------------------------------------------------------------------
+
+
+def _hits(length: int, at: Sequence[int]) -> list[bool]:
+    return [index in set(at) for index in range(length)]
+
+
+# Ten breaches in 251 origins either way, so the unconditional count is the same and only the
+# arrangement differs: one run of ten against ten singletons 25 apart.
+SPREAD = _hits(251, range(10, 251, 25))
+CLUSTERED = _hits(251, range(100, 110))
+
+
+def test_coverage_refuses_where_the_stride_is_shorter_than_the_horizon() -> None:
+    result = coverage([True, False, False], alpha=0.01, horizon=22, stride=5)
+    assert result.refusal is not None
+    assert "stride 5 < horizon 22" in result.refusal and "overlap" in result.refusal
+    assert result.kupiec_p is None and result.christoffersen_p is None
+    # What was counted is still reported: only the p-values are withheld.
+    assert result.breaches == 1 and result.expected == pytest.approx(0.03)
+
+
+@pytest.mark.parametrize(("horizon", "stride"), [(5, 5), (5, 6), (22, 22), (22, 66), (1, 1)])
+def test_coverage_does_not_refuse_where_the_stride_reaches_the_horizon(
+    horizon: int, stride: int
+) -> None:
+    result = coverage(SPREAD, alpha=0.01, horizon=horizon, stride=stride)
+    assert result.refusal is None
+    assert result.kupiec_p is not None and result.christoffersen_p is not None
+
+
+@pytest.mark.parametrize(("horizon", "stride"), [(5, 4), (22, 5), (22, 21), (2, 1)])
+def test_coverage_refuses_one_session_short_of_the_horizon_too(horizon: int, stride: int) -> None:
+    refusal = coverage(SPREAD, alpha=0.01, horizon=horizon, stride=stride).refusal
+    assert refusal is not None and f"stride {stride} < horizon {horizon}" in refusal
+
+
+@pytest.mark.parametrize(
+    ("length", "breaches"), [(251, 0), (251, 1), (251, 2), (251, 10), (100, 3), (20, 0), (20, 20)]
+)
+def test_kupiec_is_the_binomial_likelihood_ratio(length: int, breaches: int) -> None:
+    """Kupiec's statistic from the binomial log-likelihood, not from the closed form it rewrites.
+
+    ``LR = -2 [ log L(alpha) - log L(x / n) ]`` with ``L`` the binomial pmf; the coefficient
+    cancels, so ``binom.logpmf`` supplies it independently of ``coverage``'s own terms. The zero-
+    and all-breach rows are the boundaries where the maximised likelihood is ``1``.
+    """
+    alpha = 0.01
+    hits = _hits(length, range(breaches))
+    expected = float(
+        stats.chi2.sf(
+            -2.0
+            * (
+                stats.binom.logpmf(breaches, length, alpha)
+                - stats.binom.logpmf(breaches, length, breaches / length)
+            ),
+            1,
+        )
+    )
+    result = coverage(hits, alpha=alpha, horizon=1, stride=1)
+    assert result.breaches == breaches
+    assert result.expected == pytest.approx(alpha * length)
+    assert result.kupiec_p == pytest.approx(expected, rel=1e-9)
+
+
+def test_zero_breaches_gives_a_defined_kupiec_statistic() -> None:
+    # Review Focus 2. Zero breaches is ordinary at alpha = 0.01 over ~251 origins (expectation
+    # 2.5), and the unrestricted likelihood there is ``0 * log(0)``. It must not be evaluated, and
+    # no warning may be raised: ``filterwarnings = ["error"]`` turns one into a failure.
+    result = coverage([False] * 251, alpha=0.01, horizon=1, stride=5)
+    assert result.breaches == 0
+    assert result.kupiec_p is not None and math.isfinite(result.kupiec_p)
+    # By hand: LR = -2 * 251 * log(0.99), a little over 5 against chi-squared(1).
+    assert result.kupiec_p == pytest.approx(
+        float(stats.chi2.sf(-2.0 * 251 * math.log(0.99), 1)), rel=1e-12
+    )
+    assert 0.02 < result.kupiec_p < 0.03
+    assert result.christoffersen_p is not None and math.isfinite(result.christoffersen_p)
+
+
+def test_a_statistic_that_rounds_just_below_zero_is_a_p_value_of_one() -> None:
+    # 3 / 10 is the maximum-likelihood level and ``0.1 + 0.2`` is the same number to rounding, so
+    # the likelihood ratio is zero analytically and -1.8e-15 in floating point.
+    result = coverage(_hits(10, [0, 1, 2]), alpha=0.1 + 0.2, horizon=1, stride=1)
+    assert result.kupiec_p == 1.0
+
+
+def test_all_breaches_gives_defined_statistics() -> None:
+    result = coverage([True] * 30, alpha=0.025, horizon=5, stride=5)
+    assert result.breaches == 30
+    assert result.kupiec_p is not None and 0.0 <= result.kupiec_p < 1e-6
+    assert result.christoffersen_p is not None and math.isfinite(result.christoffersen_p)
+
+
+def _markov_log_likelihood(hits: Sequence[bool], p01: float, p11: float) -> float:
+    """The log-likelihood of ``hits[1:]`` given ``hits[0]``, one factor per step.
+
+    Written as a loop over the sequence, where ``coverage`` multiplies counts, so a miscounted
+    transition cannot be repeated here.
+    """
+    total = 0.0
+    for before, now in zip(hits, hits[1:], strict=False):
+        p = p11 if before else p01
+        total += math.log(p if now else 1.0 - p)
+    return total
+
+
+def _christoffersen_by_the_loop(hits: Sequence[bool]) -> float:
+    pairs = list(zip(hits, hits[1:], strict=False))
+    from_clear = [now for before, now in pairs if not before]
+    from_breach = [now for before, now in pairs if before]
+    p01 = sum(from_clear) / len(from_clear)
+    p11 = sum(from_breach) / len(from_breach)
+    p = sum(now for _, now in pairs) / len(pairs)
+    unrestricted = _markov_log_likelihood(hits, p01, p11)
+    restricted = _markov_log_likelihood(hits, p, p)
+    return float(stats.chi2.sf(-2.0 * (restricted - unrestricted), 1))
+
+
+@pytest.mark.parametrize("hits", [CLUSTERED, SPREAD, _hits(60, [3, 4, 20, 41, 42, 43])])
+def test_christoffersen_is_the_markov_likelihood_ratio(hits: list[bool]) -> None:
+    result = coverage(hits, alpha=0.01, horizon=1, stride=1)
+    assert result.christoffersen_p == pytest.approx(_christoffersen_by_the_loop(hits), rel=1e-9)
+
+
+def test_christoffersen_detects_clustered_breaches() -> None:
+    """Independence is rejected for a run of consecutive breaches, not for the same count spread.
+
+    Both series have ten breaches in 251 origins, so Kupiec cannot tell them apart -- its two
+    p-values are equal -- and that equality is what makes the Christoffersen contrast the whole
+    difference between the two tests.
+    """
+    clustered = coverage(CLUSTERED, alpha=0.04, horizon=1, stride=1)
+    spread = coverage(SPREAD, alpha=0.04, horizon=1, stride=1)
+    assert clustered.christoffersen_p is not None and spread.christoffersen_p is not None
+    assert clustered.christoffersen_p < 0.001
+    assert spread.christoffersen_p > 0.05  # measured 0.36: no run, so nothing to reject
+    assert clustered.kupiec_p == pytest.approx(spread.kupiec_p, rel=1e-12)
+    assert clustered.breaches == spread.breaches == 10
+
+
+def test_no_breach_pattern_is_a_cluster() -> None:
+    # With nothing to cluster the independence statistic is zero, so its p-value is one -- which
+    # says the test could not reject, not that independence was shown.
+    assert coverage([False] * 251, alpha=0.01, horizon=1, stride=1).christoffersen_p == 1.0
+    assert coverage([True] * 30, alpha=0.01, horizon=1, stride=1).christoffersen_p == 1.0
+
+
+@pytest.mark.parametrize("alpha", [0.0, 1.0, -0.01, float("nan")])
+def test_coverage_refuses_a_level_outside_the_open_unit_interval(alpha: float) -> None:
+    with pytest.raises(ValueError, match=r"alpha must lie in the open interval"):
+        coverage(SPREAD, alpha=alpha, horizon=1, stride=1)
+
+
+def test_coverage_refuses_a_horizon_or_stride_below_one() -> None:
+    with pytest.raises(ValueError, match="horizon must be at least 1"):
+        coverage(SPREAD, alpha=0.01, horizon=0, stride=5)
+    with pytest.raises(ValueError, match="stride must be at least 1"):
+        coverage(SPREAD, alpha=0.01, horizon=1, stride=0)
+
+
+@pytest.mark.parametrize("hits", [[], [True]])
+def test_coverage_withholds_p_values_it_cannot_compute_and_says_why(hits: list[bool]) -> None:
+    # Christoffersen counts transitions, so it needs two origins; Kupiec is withheld with it
+    # rather than reported beside a refusal for its sibling.
+    result = coverage(hits, alpha=0.01, horizon=1, stride=1)
+    assert result.refusal is not None and "fewer than two origins" in result.refusal
+    assert result.kupiec_p is None and result.christoffersen_p is None
+    assert result.breaches == sum(hits)
+
+
+def test_the_stride_refusal_is_checked_before_the_sample_size() -> None:
+    # An overlapping window is the more fundamental reason; say that one.
+    refusal = coverage([True], alpha=0.01, horizon=22, stride=5).refusal
+    assert refusal is not None and "overlap" in refusal
+
+
+def test_a_coverage_result_is_frozen() -> None:
+    result = coverage(SPREAD, alpha=0.01, horizon=1, stride=1)
+    with pytest.raises(AttributeError):
+        result.breaches = 0  # type: ignore[misc]
