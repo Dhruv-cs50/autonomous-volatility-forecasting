@@ -1413,3 +1413,109 @@ plus each horizon's tail — h=66 needs about three further months of sessions b
 origin completes — it takes a second trial count and records both plus the delta against the 414
 above, and it happens deliberately and once. Changing anything in the registered document means a
 new registration and a new look, **both counted**.
+
+## R131 — US-3.9's design, and the collision already sitting in the ledger
+
+Design: `docs/superpowers/specs/2026-10-28-contestant-capability-design.md`, `78b2d61` corrected by
+`af8d223`, ratified by reference. 808 lines. Every load-bearing number below was re-measured here
+before being accepted.
+
+### The decision: refuse the configuration, do not drop the contestant
+
+The board's acceptance check said the harness "drops" a contestant it cannot answer for.
+**Amended to refuse**, and the deciding reason is not taste — it is already in the committed data:
+
+```
+phase2-shootout  h=5   14 lines  SPY  all seven contestants incl. egarch11_skewt
+phase2-shootout  h=22  14 lines  SPY  all seven contestants incl. egarch11_skewt
+```
+
+Those are the crashed run's (R112). A drop design would write **six**-contestant lines under that
+*same cohort name* at that *same horizon*, so the ledger would hold two different contestant sets
+under one name at one horizon with nothing to distinguish them, and a reader comparing the two
+would be comparing different things. **The contradiction is latent in the file today**; a drop
+design would realise it on its first run. Refusal cannot.
+
+`evaluate` raises `ValueError`, joining its existing reserved-name guard; the CLI pre-checks and
+exits 1 printing the same refusal string. The inflexibility is paid down by *deriving* the cohort's
+horizons, deriving `MULTISTEP`'s membership, and naming the cohort to run instead.
+
+### Form 2 measured: what a VIX1D contestant would cost everyone else
+
+Verified independently here, straight from the curated panel:
+
+| series | rows | first session |
+|---|---|---|
+| VIX, VIX9D, VVIX | 2,389 each | 2016-07-01 |
+| **VIX1D** | **912** | **2022-05-13** |
+
+`Evaluation.comparable()` intersects *defined* origins across all contestants, so a VIX1D
+contestant removes origins from **every** contestant's loss. Measured over the shootout window at
+stride 5, **with the target lag**: **119 of 251 origins at h=1 (47.4%)**, 120 of 250 at h=5, 123 of
+247 at h=22, and **132 of 238 (55.5%) at h=66**. Against R121's measured **zero** for EGARCH's
+removal. So this is not the same scale of effect at all, and the output would look entirely
+ordinary.
+
+The chosen answer declares the required feature **columns** and lets the harness measure coverage
+per run — no declared start date, because that is a second copy of a measurable fact and R119
+already recorded what happens to those. A **leading** boundary refuses; an **interior** gap stays a
+recorded per-origin skip. That split is empirical: `iv_h1`/`iv_var_h1` have 912 non-null values and
+**zero** interior nulls, while FRED's `dgs10`/`t10y2y` have 17 interior nulls of which **3 of 247
+land on shootout origins** — bond holidays with XNYS open. Refusing on those would refuse the run
+for three missing days.
+
+### Two premises I gave the architect that were wrong
+
+**"It touches `Evaluation.contestants`, `trials()` and the comparison record's shape."** Under
+refusal it touches **none of them**, and no ledger schema change is proposed. That is the main
+thing refusal buys and I had it backwards — I briefed the blast radius as larger than the design
+needed, which would have made the heavier option look cheaper than it was.
+
+**`comparisons.jsonl` already carries `contestants`.** Verified: the first record lists all seven.
+So the comparison record already self-describes its contestant set, and part of what I thought
+needed building exists.
+
+### The CLI default changes, deliberately
+
+`python -m volab.compare run` goes from "seven contestants at all four horizons" to the cohort's
+own horizons with the reason printed. **Accepted**, because the present default *is* the trap this
+story closes — an operator should not have to pass a flag to get a meaningful run, and the old
+behaviour's output looked ordinary while being meaningless. Recorded as a deliberate change to what
+a documented command does.
+
+### Sequencing
+
+**US-3.9a** (declaration, both refusals, conformance clauses 9 and 10) then **US-3.9b** (retire the
+Monte-Carlo table). They **serialise**: both touch `models/base.py` and `compare/cohorts.py`, so
+they cannot be parallel implementers. 3.9a is in flight.
+
+EGARCH's two remaining table entries are to be **deleted rather than migrated**, because the
+horizon guard makes them unreachable by construction — the same ground R125 removed GJR's rows on.
+
+### What the witnesses can and cannot do, stated rather than discovered later
+
+`max_horizon` **cannot be checked behaviourally.** EGARCH at h=22 returns a finite,
+ordinary-looking `1.70e+12`; that is exactly why R114 demanded an a-priori refusal. So the
+witnesses enforce "the declaration cannot be omitted and cannot be expressed wrongly", not "the
+harness notices a bad forecast". `requires` is checkable in one direction only, and the
+undeclared-column residual is **today's behaviour unchanged**. A design that claimed more here
+would be claiming a witness it does not have, which this project has now done three times (R79,
+R82, R129).
+
+### A hazard of two agents in one checkout, which our own rules do not cover
+
+The architect observed `src/volab/models/recalibrated.py` **with the Mincer-Zarnowitz recalibration
+stripped** (`value=outer.value`) partway through its session, ran `tests/test_recalibrated.py`, and
+saw **3 failures including the in-sample red case**. Nothing was wrong: that was US-3.14's
+implementer running a planted mutation, and it reverted. The tree is clean and the suite is at
+1368.
+
+But the rule we work to is *"never two implementers writing the same files"*, and that rule was
+**satisfied** — one owned `tests/test_recalibrated.py`, the other owned only `docs/`. It does not
+cover **mutation testing**, which temporarily breaks a file in `src/` that the planter does not own
+and every concurrent agent can see. An agent that happened to run the gates in that window would
+report a red tree and could reasonably start debugging someone else's plant.
+
+**The rule needs a clause: a plant-and-revert needs exclusive `src/`, or it belongs in a scratch
+copy.** The architect handled it correctly — it did not revert what it had not written, and it
+re-checked `git log -1` before each amend so it never amended across another agent's commit.
