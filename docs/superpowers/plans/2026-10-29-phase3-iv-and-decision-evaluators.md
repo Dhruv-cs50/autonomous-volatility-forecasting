@@ -62,6 +62,16 @@ not a requirement anyone supplied, and each would change the work if corrected.
   US-3.9b's `test_no_module_level_table_in_cohorts_is_keyed_by_a_contestant_and_a_horizon`
   enforces it.
 - Commit with an explicit pathspec. New files need `git add -N <paths>` first.
+- **Every `pytest.raises(..., match=...)` must be specific to the branch it names.** A `match`
+  string that other error paths in the same module also contain makes the test pass when a
+  *different* failure fires, so it witnesses nothing. Added here after the defect was found and
+  fixed in tasks 1, 2 and 3 in a row; check every `match=` you write, and every one already in a
+  file you touch.
+- **A test that asserts a numeric consequence does not witness the property it is named for**
+  unless the consequence actually follows. Task 3's scale witness asserted that a rescaled
+  regressor would change the forecast; OLS is scale-equivariant, so it cannot, and the test could
+  never fail. Prefer pinning the thing itself — identity, the call's arguments, the declared
+  value — over a downstream number.
 
 ## Review Focus
 
