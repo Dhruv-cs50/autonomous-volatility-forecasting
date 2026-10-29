@@ -1592,3 +1592,47 @@ the log are the honest record of who wrote what.
 cover it: it now prints `--horizon not given: running h=1 ... left out: <refusal>` when the default
 narrows a run. That is the point — an operator should see why they got one horizon instead of four
 — but it is a change to what a documented command prints, recorded rather than discovered.
+
+## R133 — US-3.9a's two gaps closed, and a third category of figure the test kit will need
+
+`8c8b2a8` and `0cfe2e4`. **1442 tests**, from 1424. Ledgers unchanged at 414 / 52, tree clean.
+Verified here: `har_levels_mz().domain` **is** its base's domain and is `UNRESTRICTED` today, so
+nothing in the registered read moves; the `UNRESTRICTED` import is gone from `recalibrated.py`.
+
+**The delegation went further than I asked, correctly.** I said to inherit the bound; it inherits
+the whole domain — `max_horizon`, `requires` **and `sampling`** — on the argument that a
+recalibration of a *sampled* forecast is still a Monte-Carlo estimate, so `sampling` travels by the
+same reasoning as the bound. That is right and I had not said it. Witnessed with a deliberately
+declaring base: a base bounded at h=5 gives a wrapper whose derived horizons are `(1, 5)` and whose
+refusal at h=22 names `declaring_base_mz`; a base requiring `iv_h1` gives a wrapper that requires
+it. Both ran red against the old `UNRESTRICTED` return before the fix.
+
+**The real-store witness uses an independent oracle**, which is what makes it worth having: a
+cumulative scan from the *definition* — the 250th row non-null in both the HAR floor and `iv_h1`,
+plus the session its target completes on — against `coverage_refusal`, which rebuilds a training
+frame per origin. Two paths, one answer. It also caught the planted target-lag defect at h=5, where
+h=1's single-session lag is too small to move the named origin.
+
+### The finding that changes the test kit's design
+
+One of its tests, `test_the_designs_measured_figures_still_hold`, **pins the data**: (251, 119),
+(250, 120), (247, 123), (238, 132) — the VIX1D coverage figures R131 recorded. It could not avoid
+that honestly, flagged it, kept it separate from the five mechanism tests that will not move with
+the data, and documented in its docstring that **a store rebuild should make it fail and be
+re-measured, not edited to pass.**
+
+That is a **third category of figure** the planned merge-gate kit did not have:
+
+1. **A figure in prose** — needs an anchor and a probe. The 28 in `src/`.
+2. **A figure in a dated record** — `docs/` decisions logs. Must *not* be pinned; re-deriving it
+   would overwrite history.
+3. **A figure pinned inside a test** — already executable and self-proving, but with semantics
+   unlike any ordinary test: it is *expected* to fail when the data legitimately changes, and the
+   correct response is re-measurement, not editing the literal.
+
+Category 3 is where the kit could be defeated most easily, and by exactly the move that let `17.7%`
+survive two sprints: **making the build green by editing the number.** A test that pins a
+measurement should therefore take its expected values *from the inventory* rather than from inline
+literals, so changing one is a diff in a reviewed file with a stated reason rather than a quiet edit
+in a test body. The gate cannot stop a determined edit; it can make the edit visible and require it
+to say why.
