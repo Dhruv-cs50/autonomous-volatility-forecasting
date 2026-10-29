@@ -56,6 +56,7 @@ Each has already cost this project time, so each is stated rather than assumed:
 | US-3.11 | Implement the closed form, retire GJR's simulation | `src/volab/models/garch.py`, `src/volab/compare/cohorts.py`, `tests/` | GJR forecasts exactly at every horizon, leaves R115 entirely, and `MONTE_CARLO_ERROR_PERCENT` loses its GJR rows because `monte_carlo_error()` keys off `method == "simulation"` | **done** `2e8b023`, `39e644c`, `75ae610`, `fb58468`, `a21bb8c` — **`75ae610` is the boundary sha** R124's provenance decision rests on. All five witnesses built, including W2 (arch's analytic GJR *is* the `kappa = 1/2` recursion), which turns R118's root cause into a test. R91's table amended to `("GARCH", 1, "exact")` (R127) |
 | US-3.12 | The one clean recorded run | — | **one** shootout on a clean tree with nothing else committing, replacing both the dirty-tree part 2 and GJR's simulated rows in a single pass (R122) | **done** `4865619`, `6e0da08` — zero dirty flags, ledger 264 -> 414, truncation equivalence `N of N` at all twelve configurations, and 132 of 150 overlapping values bit-identical with all 18 changes being GJR at h>=2 (R128) |
 | US-3.13 | The transitive numeric ban the GJR design specified and nobody built | `tests/test_import_discipline.py` | the sealed path reaches no numeric library *indirectly* either, with two guards against the walk passing emptily | **done** `234b85d`, corrected in R129 — the first version's walk missed parent-package `__init__` edges *and said in its docstring that it did not*, and skipped relative imports; both closed, `arch` added to `NUMERIC_ROOTS`, and verified by planting numpy in `models/__init__.py` on the real tree |
+| US-3.14 | A real-panel witness for `har_levels_mz` at h=22 and h=66 | `tests/test_recalibrated.py` | the shipped 60-point lookback and 40-pair floor are exercised on real data at the horizons the toy cannot reach, with the floor tested at its shipped value on a real origin either side of it | **done** `b04f079` — 8 cases, 11 planted defects run, one honestly reported inert. 1368 tests |
 | US-3.6 | `delivery-auditor` over this board against git at the sprint close | — | the board and the repository agree, and the board is corrected where they do not | **done** (R129) — it confirmed five of six claims with measured numbers and found six things wrong, including a witness of mine whose docstring described a stronger test than the code performed. Every finding acted on in `b81c455` |
 
 **US-3.1b reported DONE_WITH_CONCERNS, and the concerns were right.** It kept the design as
@@ -151,12 +152,15 @@ its null changed.
   two entry points now disagree on a default, which is worth knowing before someone compares runs.
 - **`_persisted` is duplicated** in `compare/__main__.py` because `walkforward`'s copy is private
   to its own `__main__`. Coordinator's to resolve, not an implementer's.
-- **The recalibrated contestant still has no real-data witness at h ≥ 22, and it is still carried.**
-  The toy has no usable pairs there, so only the hand-built lattice test covers it. US-3.7 was
-  where the real data was meant to close this; US-3.12 supplied the data — `har_levels_mz` has
-  ledger lines at h=22 and h=66 on all three symbols — but **no test or board line discharges the
-  gap**, so it is not closed. R129's audit flagged exactly this: data arriving is not a witness
-  arriving. Carried into Phase 3 explicitly rather than quietly.
+- ~~**The recalibrated contestant has no real-data witness at h ≥ 22**~~ — **discharged**
+  `b04f079` (US-3.14). Carried for two sprints, and R129's audit is what finally named it: data
+  arriving is not a witness arriving. Three real-panel tests at h=22 and h=66 now cover the fit,
+  the 60-point lookback and the 40-pair floor, the last against a **real** origin with 39 pairs
+  and the next session with 40, found by bisection rather than a hardcoded date. **Not redundant
+  with the toy:** an unscaled intercept in `mincer_zarnowitz` is caught *only* by these, because
+  the toy's a=0, b=1 case has no intercept to mis-scale. SPY only; QQQ and IWM have ledger lines
+  at those horizons and no witness, accepted because the contestant is symbol-agnostic and the
+  logic is what is under test. +18s suite runtime.
 - **Coverage gaps in the recalibrated contestant's tests**, stated rather than discovered later:
   the shipped 60-point lookback and 40-pair floor are exercised only at h=1, stride 1, on the last
   four toy origins; the toy has no usable pairs at h≥22, so those horizons are covered only by the

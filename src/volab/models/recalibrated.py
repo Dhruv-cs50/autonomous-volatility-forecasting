@@ -32,6 +32,22 @@ Witnesses (``tests/test_recalibrated.py``):
 * the a=0, b=1 test, which also witnesses the scaling in ``mincer_zarnowitz`` (its name is 97
   characters and does not fit a bullet):
 test_the_recalibrated_forecast_reduces_to_the_base_forecast_when_a_is_zero_and_b_is_one
+
+**On the real panel at h=22 and h=66** (US-3.14), where the toy has no usable pairs at all:
+
+* ``test_the_shipped_contestant_fits_on_real_data_where_the_toy_has_no_pairs``
+* ``test_the_sixty_point_lookback_bounds_what_the_real_fit_consumes``
+* ``test_the_forty_pair_floor_refuses_one_pair_short_and_fits_at_forty_on_real_origins``
+
+The third finds a **real** origin with 39 pairs and the next session with 40, by bisection rather
+than a hardcoded date — early in the panel the 250 training rows an inner fit needs hold the count
+down. The floor is therefore witnessed against the shipped 40 rather than a lowered one.
+
+**These were not redundant with the toy.** Planting an unscaled intercept in
+:func:`mincer_zarnowitz` — dropping the ``* scale`` — is caught **only** by the real-data tests:
+the toy's a=0, b=1 case cannot see it, because at a=0 there is no intercept to mis-scale. The gap
+between "the data arrived" and "a witness arrived" was real, and it was carried for two sprints
+before a delivery audit named it (R129).
 * ``test_the_inner_forecasts_are_what_the_walk_forward_itself_produces_at_those_origins`` -- the
   inner pairs equal what ``evaluate`` produces at those origins, compared with ``==``.
 
@@ -74,8 +90,11 @@ from volab.panel import as_of_dates
 # gloss and not the design's: two parameters at twenty observations each, below which the slope's
 # standard error is wide enough that "recalibrated" would mostly mean "noisier". It is a refusal
 # threshold and nothing was searched over. ``minimum_pairs`` is an argument so a test on a short
-# panel can lower it without a second code path (the shipped values are exercised by
-# ``test_the_shipped_defaults_conform_where_forty_pairs_are_reachable``).
+# panel can lower it without a second code path. The shipped values are exercised by
+# ``test_the_shipped_defaults_conform_where_forty_pairs_are_reachable`` on the toy and, since
+# US-3.14, by the three real-panel tests at h=22 and h=66 named in the module docstring --
+# including a real origin on each side of the 40 found by bisection, so the floor is tested at
+# its shipped value and not at a lowered one.
 CALIBRATION_POINTS = 60
 MINIMUM_PAIRS = 40
 
