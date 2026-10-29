@@ -1,7 +1,21 @@
 # Pre-registration for the one-time holdout read
 
-**Status: DRAFT. Not registered.** This document is only binding once it is committed on a clean
-tree and the reveal records its content hash. Until then it is a proposal to react to.
+**Status: REGISTERED 2026-10-28, on the user's instruction.** Committed on a clean tree, and
+binding from that commit: nothing below may change, and a change means a **new** registration and
+a new look, both counted.
+
+**This document does not name its own commit, deliberately.** A file cannot carry the hash of
+itself and a commit cannot name its own sha — a lesson this project learned the hard way when an
+amend invalidated a sha that had just been written into the board. So the registering commit's sha
+and this file's content hash are recorded in `docs/superpowers/phase2-completion-decisions.md`
+(R130) in the *following* commit, and the reveal compares the file it reads against that hash.
+
+**Registered while the window is still open, which is the point.** `holdout_end` is **2026-10-30**,
+two sessions after this registration. So the commitments below were fixed before the window they
+describe had even finished, let alone been read — the timestamp demonstrably precedes the data.
+Nothing in this repository has read past `dev_end` (2025-12-31): `load_panel` requires an explicit
+`end`, `allow_holdout` has never been set, `VOLAB_HOLDOUT_UNLOCK` has never been read, and an
+autouse fixture fails any unmarked test that reaches past it.
 
 **Why it exists.** The trial ledger counts how many things were tried. This closes the remaining
 loose end — how the final number gets *read*. Everything below is fixed before the answer is
@@ -122,10 +136,13 @@ not include a bad score:
 
 ## 4. Trials already counted
 
-`data/trials.jsonl` line count at registration: **TO BE FILLED AT REGISTRATION.**
+`data/trials.jsonl` line count at registration: **414.** `data/comparisons.jsonl`: **52.**
 
-Still blank, and still deliberately. The expected figure has now moved three times, which is the
-whole argument for reading it at the moment of registration rather than predicting it here.
+Read from the ledger at this moment rather than predicted, which is why the field was left blank
+until now: **the expected figure moved three times** while this document was a draft (240, then
+264, then 414). Each move had a reason recorded — R112's crashed run counted rather than
+discarded, R114's exclusion cutting a run from 168 lines to 150, and R127's exact GJR forcing the
+clean re-run — and any of the three predictions would have been wrong by the time it mattered.
 
 | ledger state | lines | why |
 |---|---|---|
@@ -166,6 +183,11 @@ Said plainly, so the boundary is not mistaken for a claim:
 
 ---
 
-**To register:** fill section 4, commit on a clean tree, and the reveal will record this file's
-content hash. Nothing here may change afterwards; a change means a new registration and a new
-look, both counted.
+**Registered.** Section 4 is filled from the ledger, the tree was clean, and the registering
+commit's sha and this file's content hash are recorded in R130 in the commit that follows this
+one. Nothing here may change afterwards; a change means a new registration and a new look, both
+counted.
+
+**What remains, and belongs to the user:** the reveal itself. It cannot run before `holdout_end`
+(2026-10-30) plus each horizon's tail, it takes a second trial count and records both plus the
+delta, and it is triggered deliberately and once.
