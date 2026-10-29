@@ -48,6 +48,7 @@ exactly when someone would want to triage it. Raised by task 4's reviewer.
 | P3-02 | Clause 10's docstring cites a witness with two probes as covering "the second and third horizon"; no test covers a third | wording, not behaviour |
 | P3-02 | The 13/12 origin counts and the HAR-floor clearance of origins 60-61 are evidenced only by the 553-passed run, not from the diff | would need a dedicated construction test |
 | P3-03 | `test_it_is_named_and_fits_the_target_side` is mostly covered by the conformance suite | redundancy, not a gap |
+| P3-05 | The leak detector (`tests/test_evaluators.py:872`) matches at `atol=1e-12, rtol=0` and its red witness plants the bit-identical float, so only an exact-value leak is demonstrated caught; a leak through any transform is invisible | acceptable as a ratchet; widening it is its own design question |
 | P3-04 | `_imports` ignores relative imports (`from ..models import x`), so the derived guard could be bypassed by one; none exist in `volab/compare/` today | not addressed, and no relative import exists in the package |
 | P3-04 | `test_every_named_cohort_begins_with_har_levels` (`tests/test_model_interface.py:141`) iterates a one-element tuple despite its name; its docstring says a later story should extend it and none did | **protection is real** at `tests/test_compare.py:1400-1402`, which loops `COHORTS.values()` including `phase3-iv`; the defect is the name and a stale instruction |
 
