@@ -150,7 +150,13 @@ git commit -m "Fence the registered cohorts against a later contestant (P3-01)" 
 - Modify: `src/volab/models/base.py` — `Domain`, `Cohort`
 - Modify: `src/volab/walkforward/__init__.py:966,996,999,1002,1011,1307,1317`
 - Modify: `tests/model_conformance.py` — `clause_10_a_declared_requirement_is_real`
-- Test: `tests/test_domain.py` (extend)
+- Modify: `tests/test_recalibrated.py:128` — calls `Cohort(...).requires`, which this task deletes
+- Test: `tests/test_domain.py` (extend; `:123-124` also call `Cohort(...).requires`)
+- Test: `tests/test_coverage_real.py` (extend — see Step 7)
+
+`Domain.requires` is **kept**, so `domain.requires` at `tests/test_garch.py:682`,
+`tests/test_recalibrated.py:127` and `tests/test_domain.py:57` stays valid. Only the **cohort**
+accessor goes.
 
 **Interfaces:**
 - Produces: `Domain.per_horizon: tuple[tuple[int, str], ...]`;
@@ -223,21 +229,47 @@ def test_a_null_in_a_required_column_at_one_origin_skips_it_for_every_contestant
     assert any("iv_var_h1" in reason for _, reason in evaluation.skipped)
 ```
 
-- [ ] **Step 7: Run the full suite**
+- [ ] **Step 7: Witness the matched-column coverage against the real store**
+
+This is the board's stated acceptance for this task and the measurement the whole
+horizon-dependent design rests on. `tests/test_coverage_real.py` today pins only the
+`iv_h1`-at-every-horizon figures; nothing witnesses that the *matched* column costs nothing above
+h=1. Add to `tests/test_coverage_real.py`:
+
+```python
+MATCHED = {1: "iv_var_h1", 5: "iv_var_h5", 22: "iv_var_h22"}
+
+
+@pytest.mark.parametrize("horizon", [1, 5, 22])
+def test_the_horizon_matched_column_refuses_only_at_h1(horizon: int) -> None:
+    """The figure spec section 4 reasons from. Expected to be **re-measured, not edited**, when
+    the store is rebuilt (R133's third category of figure)."""
+    origins = origins_for(horizon)
+    reason = refusal(horizon, origins, required=MATCHED[horizon])
+    if horizon == 1:
+        assert reason is not None and named(reason)[1] == 119
+    else:
+        assert reason is None
+```
+
+`refusal` currently hard-codes `REQUIRED`; give it a `required` keyword defaulting to the present
+value so the existing tests are untouched.
+
+- [ ] **Step 8: Run the full suite**
 
 Run: `uv run --locked python -m pytest -q`
 Expected: all pass. Then `uv run --locked mypy --strict src` and `uv run --locked ruff check .`.
 
-- [ ] **Step 8: Prove clause 10 now bites**
+- [ ] **Step 9: Prove clause 10 now bites**
 
 Give `Spy` a `per_horizon` declaration it ignores, run
 `tests/test_model_interface.py::test_a_contestant_that_ignores_its_declared_requirement_is_caught`,
 confirm FAIL, revert. Confirm with `git diff --exit-code -- src/ tests/`.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git commit -m "Declare required columns per horizon, and make clause 10 read them (P3-02)" -- src/volab/models/base.py src/volab/walkforward/__init__.py tests/model_conformance.py tests/test_domain.py
+git commit -m "Declare required columns per horizon, and make clause 10 read them (P3-02)" -- src/volab/models/base.py src/volab/walkforward/__init__.py tests/model_conformance.py tests/test_domain.py tests/test_recalibrated.py tests/test_coverage_real.py
 ```
 
 ---
@@ -351,8 +383,10 @@ def test_it_requires_only_the_matched_column_at_each_horizon() -> None:
     assert PHASE3_IV.requires_at(5) == ("iv_var_h5",)
 
 
-def test_the_registered_cohorts_are_unchanged_by_the_phase3_cohort() -> None:
-    assert SHOOTOUT.contestants == (...)   # the same tuple Task 1 pins
+def test_the_iv_contestant_did_not_reach_the_registered_cohorts() -> None:
+    # Task 1's fence already pins SHOOTOUT and MULTISTEP against the pre-registration; do not
+    # restate that assertion here. This is this task's own claim.
+    assert "har_rv_iv" not in SHOOTOUT.contestants + MULTISTEP.contestants
 ```
 
 - [ ] **Step 2: Run to verify they fail**
@@ -643,7 +677,8 @@ git commit -m "Add vol-target P&L, turnover and the ex-date count beside it (P3-
 - Test: `tests/test_evaluators_cli.py` (create)
 
 **Interfaces:**
-- Consumes: Tasks 5-7; `volab.compare.analyse`; `volab.walkforward.run_configuration`.
+- Consumes: Tasks 5-7, **and Task 4** (`PHASE3_IV`, which the CLI refusal test names);
+  `volab.compare.analyse`; `volab.walkforward.run_configuration`.
 - Produces: `DECISION_LEDGER = Path("data") / "decisions.jsonl"`; `Decision`; `JsonlSink`.
 
 **Resolves spec open question 1:** the driver calls the existing `run_configuration` rather than
@@ -751,10 +786,11 @@ git commit -m "Witness the recalibration at h=22, discharging R129's flag (P3-09
 
 **Files:**
 - Create: `tools/measure_iv_requires.py`
-- Test: `tests/test_tools.py` (extend, if the existing witness pattern for `tools/` covers it)
 
 The spec's section 4 table must be reproducible rather than asserted. R79 established that a
-figure in prose needs an anchor and a probe.
+figure in prose needs an anchor and a probe. **This task ships no test of its own:** no
+`tests/test_tools.py` exists, and Task 2's Step 7 already witnesses the matched-column figures in
+`tests/test_coverage_real.py`. This script is the probe.
 
 - [ ] **Step 1: Write the script**
 
