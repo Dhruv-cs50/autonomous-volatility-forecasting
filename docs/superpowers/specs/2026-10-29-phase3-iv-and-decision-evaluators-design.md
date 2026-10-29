@@ -350,8 +350,12 @@ Committed literals, not configuration, for the reason D4 gives — every alterna
   honest reason; it is not calibrated to anything in this repository and the implementation
   ruling must say so rather than implying evidence.
 - `POSITION_CAP = 2.0` — leverage ceiling, so a vanishing variance forecast cannot produce
-  unbounded size. Binding rather than decorative: at 10% target a forecast below about 0.25%
-  annualised vol hits it.
+  unbounded size. **Corrected 2026-10-29:** this first said the cap binds below "about 0.25%"
+  annualised vol. Wrong by twentyfold — the position is `target / sigma`, so the cap binds at
+  `TARGET_VOL / POSITION_CAP` = 0.10 / 2.0 = **5% annualised vol**. Caught by task 7's
+  implementer, which tested both sides of the real boundary. At 5% the cap should rarely bind on
+  real SPY data, which nobody has yet measured; task 7 records that as unmeasured rather than
+  assuming it.
 
 ---
 
