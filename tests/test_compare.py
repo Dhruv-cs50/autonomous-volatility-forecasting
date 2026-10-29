@@ -1511,9 +1511,30 @@ def _imports(module: Path) -> set[str]:
     return found
 
 
+def _contestant_modules(names: set[str]) -> set[str]:
+    """Every ``volab.models.<x>`` among ``names`` that is not ``volab.models.base``.
+
+    ``base`` carries the protocol and the ``Cohort`` type, no contestant, and every module that
+    handles a cohort imports it. Anything else under ``volab.models`` is a contestant module, and
+    that is derived from the dotted path, not listed, so a contestant module that does not exist
+    yet is covered by this rule on the day it is created. ``_imports`` records a ``from`` import
+    both as the module and as ``module.name``, so ``from volab.models import iv`` is seen too.
+    """
+    base = "volab.models.base"
+    return {
+        name
+        for name in names
+        if name.startswith("volab.models.") and name != base and not name.startswith(base + ".")
+    }
+
+
 def test_only_cohorts_imports_the_model_modules() -> None:
     """``import volab.compare`` must not pull ``arch``'s GARCH through a side door: the analysis
-    modules know nothing of any contestant, and ``cohorts`` is the one place that names them."""
+    modules know nothing of any contestant, and ``cohorts`` is the one place that names them.
+
+    The rule is derived (any ``volab.models.*`` but ``base``), not a list of the contestant modules
+    there happen to be. For ``cohorts.py`` it is a floor, not an equality: it must import at least
+    the three there are today, and a fourth contestant module does not force this test to change."""
     modules = sorted(COMPARE_SRC.glob("*.py"))
     assert {m.name for m in modules} >= {
         "__init__.py",
@@ -1525,13 +1546,41 @@ def test_only_cohorts_imports_the_model_modules() -> None:
         "sink.py",
     }
     for module in modules:
-        names = _imports(module)
-        garch = "volab.models.garch" in names
-        recalibrated = "volab.models.recalibrated" in names
+        contestants = _contestant_modules(_imports(module))
         if module.name == "cohorts.py":
-            assert garch and recalibrated, "cohorts.py is where the shootout is assembled"
+            assert {
+                "volab.models.garch",
+                "volab.models.iv",
+                "volab.models.recalibrated",
+            } <= contestants, "cohorts.py is where the cohorts are assembled"
         else:
-            assert not garch and not recalibrated, f"{module.name} imports a contestant module"
+            assert not contestants, f"{module.name} imports a contestant module: {contestants}"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("from volab.models.iv import har_rv_iv", {"volab.models.iv"}),
+        ("import volab.models.garch", {"volab.models.garch"}),
+        ("from volab.models import recalibrated", {"volab.models.recalibrated"}),
+        ("from volab.models.future import thing", {"volab.models.future"}),
+        # ``base`` is exempt exactly, not as a prefix: a sibling that merely starts with it is not.
+        ("from volab.models.base import Cohort, Model", set()),
+        ("from volab.models import base", set()),
+        ("import volab.models.base", set()),
+        ("from volab.models.basement import thing", {"volab.models.basement"}),
+        ("from volab.walkforward import Trial", set()),
+    ],
+)
+def test_the_contestant_module_rule_sees_every_import_form_and_exempts_only_base(
+    tmp_path: Path, source: str, expected: set[str]
+) -> None:
+    module = tmp_path / "probe.py"
+    module.write_text(source + "\n", encoding="utf-8")
+    found = _contestant_modules(_imports(module))
+    # The ``from volab.models.X import name`` form also records ``volab.models.X.name``; the
+    # module is what is asserted, so strip to the module level before comparing.
+    assert {name for name in found if name.count(".") == 2} == expected
 
 
 def test_no_monte_carlo_figure_is_invented_for_the_shipped_contestants() -> None:

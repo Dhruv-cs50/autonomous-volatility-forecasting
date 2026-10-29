@@ -3,8 +3,11 @@
 ``volab.walkforward`` never names a contestant it did not define (R85): it is handed a
 :class:`Cohort`. The analysis modules next door import no model either, so ``import volab.compare``
 cannot pull ``arch`` through a side door. Assembling the roster is this module's whole job, and
-``test_only_cohorts_imports_the_model_modules`` is the witness (it checks the GARCH and recalibrated
-modules; the implied-variance module is held to the same rule by this docstring, not by that test).
+``test_only_cohorts_imports_the_model_modules`` is the witness: no other module in this package may
+import any ``volab.models.*`` module but ``volab.models.base`` (which carries the protocol and
+``Cohort``, no contestant), and ``cohorts`` must import at least the GARCH, recalibrated and
+implied-variance modules. The rule is derived from the import path, so a contestant module added
+later is covered without anyone updating a list.
 
 **The shootout** is the three baseline models, the three GARCH specifications (R91) and the
 recalibrated HAR (R96): seven contestants (:data:`MULTISTEP` below drops one for h >= 2).
