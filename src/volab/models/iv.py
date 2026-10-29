@@ -16,11 +16,14 @@ nothing here converts units. Witness:
 ``max_horizon=22``; a cohort holding this contestant is refused at h=66 by ``Cohort.refusal``
 rather than having the contestant dropped from it.
 
-**A null column is a refusal, not a fit around it.** At the origin, or too thin in the training
-window, the contestant raises ``ModelSkip`` naming the column (R87): recorded against this
-contestant, not filed as an unfittable window for the whole cohort. Conformance clause 10 nulls
-the declared column and demands exactly this. There is no fallback to the plain HAR -- that would
-make the contestant become the baseline while still being reported as implied-variance.
+**A null or degenerate column is a refusal, not a fit around it.** Null at the origin, too thin in
+the training window, or singular only because of the column (constant, or collinear with the HAR
+regressors, where the HAR alone would fit), the contestant raises ``ModelSkip`` naming the column
+(R87): recorded against this contestant, not filed as an unfittable window for the whole cohort.
+Conformance clause 10 nulls the declared column and demands this of the first two. A window the
+HAR regressors cannot fit either stays the window's ``SchemaError``. There is no fallback to the
+plain HAR -- that would make the contestant become the baseline while still being reported as
+implied-variance.
 
 The regression is ``volab.walkforward.fit_ols``, reached through the module attribute for the
 reason ``volab.models.recalibrated`` gives, and no numpy, scipy or arch is imported.
@@ -33,7 +36,7 @@ from dataclasses import dataclass
 import pandas as pd
 
 import volab.walkforward as wf
-from volab.errors import ModelSkip
+from volab.errors import ModelSkip, SchemaError
 from volab.models.base import Domain, Forecast, Forecaster, TrainingView
 
 # The horizons with an implied-variance maturity (``IV_SERIES``: VIX1D, VIX9D, VIX) and the column
@@ -99,7 +102,21 @@ class HarRvIv:
                 f"with the HAR regressors and the response, fewer than the "
                 f"{view.minimum_training} required"
             )
-        fit = wf.fit_ols(view.training, regressors, view.response)
+        try:
+            fit = wf.fit_ols(view.training, regressors, view.response)
+        except SchemaError as singular:
+            # Only this contestant reads ``column``, so a singular system it alone causes is its
+            # refusal: a ``SchemaError`` out of ``fit`` skips the origin for the whole cohort (R87).
+            # It is this column's fault only if the HAR regressors alone still fit the window; if
+            # they do not, the window is unfittable for everyone and the error is left to say so.
+            try:
+                wf.fit_ols(view.training, wf.HAR_REGRESSORS, view.response)
+            except SchemaError:
+                raise singular from None
+            raise ModelSkip(
+                f"{self.name}: the regression with {column} at {view.origin} is unfittable "
+                f"although the HAR regressors alone fit: {singular}"
+            ) from singular
         return _IvForecaster(fit.predict(view.row), fit.observations, view.horizon)
 
 

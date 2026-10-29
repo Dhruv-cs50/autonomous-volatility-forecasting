@@ -18,7 +18,7 @@ import pytest
 from model_conformance import conformance_suite, make_toy, views_of
 
 import volab.walkforward as wf
-from volab.errors import ModelSkip
+from volab.errors import ModelSkip, SchemaError
 from volab.models.base import Model, TrainingView
 from volab.models.iv import har_rv_iv
 
@@ -54,6 +54,8 @@ def test_it_is_named_and_fits_the_target_side() -> None:
 
 
 def test_it_skips_an_origin_whose_iv_column_is_null() -> None:
+    """Covers a case conformance cannot: clause 10 nulls the column in the row and the training
+    frame at once, so it cannot tell this check from the thin-training one below."""
     view = _view(1)
     row = view.row.copy()
     row["iv_var_h1"] = float("nan")
@@ -68,8 +70,30 @@ def test_it_skips_when_too_few_training_rows_carry_the_iv_column() -> None:
         har_rv_iv().fit(thin)
 
 
+def test_a_constant_iv_column_is_this_contestants_skip_and_not_the_cohorts_schema_error() -> None:
+    """A constant column is collinear with the intercept, so the system is singular, but the HAR
+    regressors alone fit the same window. ``SchemaError`` would skip the origin for every
+    contestant (R87); the cause is a column only this contestant reads, so it is a ``ModelSkip``."""
+    view = _view(1)
+    constant = dataclasses.replace(view, training=view.training.assign(iv_var_h1=1e-4))
+    wf.fit_ols(constant.training, wf.HAR_REGRESSORS, constant.response)  # the HAR alone fits
+    with pytest.raises(ModelSkip, match="iv_var_h1"):
+        har_rv_iv().fit(constant)
+
+
+def test_a_window_the_har_regressors_cannot_fit_stays_a_schema_error() -> None:
+    """The conversion is not an over-catch: when the HAR alone is singular the window is
+    unfittable for everyone, and that is the window's ``SchemaError`` to raise."""
+    view = _view(1)
+    constant = dataclasses.replace(view, training=view.training.assign(har_d_proxy=1e-4))
+    with pytest.raises(SchemaError):
+        har_rv_iv().fit(constant)
+
+
 def test_it_fits_at_exactly_the_minimum_number_of_carrying_rows() -> None:
-    """The floor is ``minimum_training``, inclusive: one row fewer skips, this many fits."""
+    """The floor is ``minimum_training``, inclusive: one row fewer skips, this many fits. Here the
+    rows carrying the IV column are also the rows usable by ``fit_ols``; the two counts coincide on
+    the toy and that agreement is not a proof they always do."""
     view = _view(1)
     carried = view.minimum_training
     forecast = har_rv_iv().fit(_carrying_only(view, carried)).forecast(1)
