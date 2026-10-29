@@ -134,11 +134,17 @@ committed store, same window (`2021-01-04`), stride 5, `minimum_training=250`, t
 **So the VIX1D trade-off exists at h=1 and nowhere else.** The h=5 and h=22 losses are an artifact
 of one tuple being read at every horizon, and they buy nothing.
 
-This matters beyond tidiness. `Evaluation.comparable()` intersects defined origins across *all*
-contestants (R56, R121), so those 120 and 123 origins would be struck from **every other
+This matters beyond tidiness: those 120 and 123 origins are struck from **every other
 contestant's loss** in the cohort, at horizons where the IV contestant does not need the column at
 all. The flat-tuple design does not merely cost the IV contestant; it degrades everyone it is
 compared against, for nothing.
+
+**By what mechanism, stated precisely** — an earlier draft of this spec said
+`Evaluation.comparable()`, and that was wrong. `comparable` reads `LOSS_DOMAIN` and each model's
+forecasts (`walkforward/__init__.py:757-775`); it never reads `requires`. A declared column costs
+origins in two other places: `evaluate`'s **null-regressor skip** (`walkforward/__init__.py:1010`),
+which drops the origin for everyone before any fit, and `coverage_refusal` for the leading
+boundary. The measured figures are unaffected; only the causal chain was misattributed.
 
 The script that produced the table is to be committed as `tools/measure_iv_requires.py` alongside
 the implementation, so the figures above are reproducible rather than asserted.

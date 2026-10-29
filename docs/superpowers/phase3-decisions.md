@@ -53,10 +53,18 @@ is what an IV contestant would declare, is not a premise an IV contestant has to
 pinned test is unaffected and stays as it is: it pins `iv_h1` at every horizon, which remains a
 true statement about the store.
 
-This is not merely tidiness. `Evaluation.comparable()` intersects defined origins across **all**
-contestants (R56, R121), so a flat declaration strikes those 120 and 123 origins from every other
+This is not merely tidiness: a flat declaration strikes those 120 and 123 origins from every other
 contestant's loss at horizons where the IV contestant does not need the column at all. The flat
 design degrades the field it is being compared against, for nothing.
+
+**Mechanism, corrected 2026-10-29.** As first written this ruling said `Evaluation.comparable()`
+was the route, and so did the spec, the plan and my dispatch to the implementer. Wrong, and caught
+by task 2's review. Verified at source: `comparable` (`walkforward/__init__.py:757-775`) intersects
+origins where each model's forecast is loss-defined, reading `LOSS_DOMAIN` and `scored()`; it never
+touches `requires`. The real routes are `evaluate`'s **null-regressor skip**
+(`walkforward/__init__.py:1010`), which drops the origin for **everyone** before any fit, and
+`coverage_refusal` for the leading boundary. The measured figures and the decision stand; only the
+causal chain was misattributed, in four places at once, because I wrote it once and it propagated.
 
 **Ruling (user decision, 2026-10-29):** `Domain` gains `per_horizon: tuple[tuple[int, str], ...]`
 and `requires_at(horizon)`. A tuple of pairs, not a mapping, so the frozen dataclass stays
@@ -177,8 +185,9 @@ acted on**, which is the standing rule about another agent's report.
   says "R134-R139" and cannot be corrected; this ruling is the correction.
 - `tests/test_compare.py::test_no_module_level_table_in_cohorts_is_keyed_by_a_contestant_and_a_horizon`
   exists. **P3-04 must not add a `dict[tuple[str, int], ...]` to `cohorts.py`.**
-- `cohort.requires` still has **exactly the seven call sites** R136 names; US-3.9b's three-line
-  touch of `base.py` did not move them. R136 stands unamended.
+- `cohort.requires` still had **exactly the seven call sites** R136 names at the time of this
+  ruling; US-3.9b's three-line touch of `base.py` did not move them. *(Superseded by P3-02, which
+  converted all seven and deleted the accessor. The count was true when written.)*
 - `main` is at `b8d11cd` and **does not carry Phase 2 completion**; PR #6 is `BLOCKED` under the
   new branch protection. The session's suggestion to re-cut from `main` was therefore **declined**
   — it would have discarded the `Domain` machinery this whole design is built on. Merging forward

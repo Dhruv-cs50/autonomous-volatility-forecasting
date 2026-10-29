@@ -27,8 +27,11 @@ not a requirement anyone supplied, and each would change the work if corrected.
    `grep` and found short. If the framework can be committed to `docs/`, this plan should be
    re-checked against it before task 1 rather than after task 10.
 2. **The h=1 origin cost is accepted, not avoided.** `har_rv_iv` costs 119 of 251 origins at h=1
-   to VIX1D's 2022-05-13 start, and under `Evaluation.comparable` that cost falls on **every**
-   member of `phase3-iv`. Measured, and paid inside the new cohort only; the registered read is
+   to VIX1D's 2022-05-13 start, and that cost falls on **every** member of `phase3-iv` — through
+   `evaluate`'s null-regressor skip (`walkforward/__init__.py:1010`), which drops the origin for
+   all contestants before any fit, and `coverage_refusal` at the leading boundary. **Not** through
+   `Evaluation.comparable`, which an earlier draft wrongly named and which never reads `requires`.
+   Measured, and paid inside the new cohort only; the registered read is
    untouched. The alternative — deriving h=1 from the 30-day VIX and keeping all 251 origins at
    the price of a horizon mismatch — was offered and declined.
 3. **The decision layer's three methodological choices are defensible, not unique.** Gaussian
