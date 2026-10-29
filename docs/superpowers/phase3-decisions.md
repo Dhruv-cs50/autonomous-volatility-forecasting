@@ -66,6 +66,26 @@ touches `requires`. The real routes are `evaluate`'s **null-regressor skip**
 `coverage_refusal` for the leading boundary. The measured figures and the decision stand; only the
 causal chain was misattributed, in four places at once, because I wrote it once and it propagated.
 
+**Amended again, same day, because the correction above was itself over-broad.** Task 2's
+re-review flagged `coverage_refusal`'s own docstring (`walkforward/__init__.py:1085-1092`) as
+carrying "the same false mechanism". **It does not, and the flag is rejected.** Checked at source:
+`Evaluation.scored` excludes an origin whose forecast is NaN, and a `ModelSkip` writes NaN (R87),
+so a contestant declining on thin training **is** intersected out of every contestant's loss by
+`comparable` — which is precisely the path that docstring describes. There are **three** routes by
+which a declared column costs origins, and conflating them is what produced both errors:
+
+| route | mechanism | who pays |
+|---|---|---|
+| leading boundary | `coverage_refusal` refuses the whole configuration | nobody runs |
+| interior null at an origin | `evaluate`'s null-regressor skip, `walkforward/__init__.py:1010` | every contestant, before any fit |
+| thin training at an origin | contestant raises `ModelSkip` -> NaN -> `Evaluation.comparable` | every contestant, after the fit is attempted |
+
+The original `Domain` docstring was wrong because it attributed the **declared-column** cost to
+`comparable` alone, and the measured 119/120/123 figures come from the first route, not the third.
+Saying `comparable` is "not the route" is right for the null-column path and wrong as a blanket
+claim. Recorded at this length because the first correction was made confidently and was still
+imprecise, and a third swing back would be worse than either.
+
 **Ruling (user decision, 2026-10-29):** `Domain` gains `per_horizon: tuple[tuple[int, str], ...]`
 and `requires_at(horizon)`. A tuple of pairs, not a mapping, so the frozen dataclass stays
 hashable and `eq` keeps value semantics. `requires` keeps its meaning — the columns needed at
