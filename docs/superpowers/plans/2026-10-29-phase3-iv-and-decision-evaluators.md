@@ -318,12 +318,19 @@ def test_the_full_conformance_suite_passes() -> None:
     toy = make_toy(1, minimum_training=20)
     conformance_suite(
         har_rv_iv(), toy=toy, rebuild=lambda _: har_rv_iv(),
-        also_at=(make_toy(5, minimum_training=20),),
+        also_at=(make_toy(5, minimum_training=20), make_toy(22, minimum_training=20)),
     )
 ```
 
-The toy's synthetic panel already carries the whole VIX family, so `iv_var_h{1,5}` exist there and
-`make_toy` needs no change.
+The toy's synthetic panel already carries the whole VIX family, so `iv_var_h{1,5,22}` exist there
+and `make_toy` needs no change.
+
+**Pass all three toys, and do not quietly drop one.** Task 2 made `conformance_suite` run clause
+10 over `(toy, *also_at)`, so a horizon absent from `also_at` has its declared column **silently
+unchecked** — `iv_var_h22` would never be verified. The toy spans about 146 sessions and h=22
+leaves roughly nine stride-6 origins, so it may be too thin to answer. If it is, **report that
+rather than dropping it**: say what you measured and leave the h=22 probe out only with that
+measurement in your report. A declaration no clause exercises is exactly what Task 2 was for.
 
 - [ ] **Step 2: Run to verify they fail**
 
