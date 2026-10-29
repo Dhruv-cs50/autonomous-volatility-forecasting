@@ -233,7 +233,8 @@ class CoverageResult:
     """What ``coverage`` found: the count, what was expected, and the two p-values.
 
     ``kupiec_p`` and ``christoffersen_p`` are ``None`` exactly when ``refusal`` is a reason; the
-    counts are reported either way.
+    counts are reported either way. A ``christoffersen_p`` of ``1.0`` over a sequence with no
+    breach, or only breaches, is uninformative (see ``coverage``), not evidence of independence.
     """
 
     breaches: int
@@ -271,13 +272,18 @@ def coverage(hits: Sequence[bool], alpha: float, *, horizon: int, stride: int) -
       ordinary -- the expectation is 2.5 over 251 origins at ``alpha = 0.01`` -- and the statistic
       is defined there; so it is when every origin breaches.
     * **Christoffersen** (1998), independence only: the indicator is a first-order Markov chain
-      whose breach probability does not depend on the previous origin's outcome. Zero or all
-      breaches leave nothing to compare, the statistic is zero and ``christoffersen_p`` is ``1.0``:
-      the test could not reject, which is not evidence that breaches are independent.
+      whose breach probability does not depend on the previous origin's outcome. **A
+      ``christoffersen_p`` of ``1.0`` from a sequence with no breach, or with only breaches, is
+      uninformative, not reassuring.** There are then no transitions out of one of the two states,
+      so nothing is available to compare, the statistic is zero by construction and the p-value is
+      one whatever the true dependence. That is the ordinary case at ``alpha = 0.01`` over a few
+      hundred origins, so an operator will often see it. Read it as "the test could not reject",
+      never as evidence that breaches are independent; Kupiec's p, which is informative at zero
+      breaches, is the one that speaks to that sequence.
 
     **Both assume independent indicators, so an overlapping window is refused.** An h-day return
     shares ``h - stride`` sessions with the next origin's when ``stride < horizon``, so successive
-    indicators are dependent by construction -- at stride 5 and h=22 each overlaps the next three
+    indicators are dependent by construction -- at stride 5 and h=22 each overlaps the next four
     -- and the tests' p-values would be reported against a null they do not satisfy. Where
     ``stride < horizon`` the result carries a ``refusal`` naming that condition, and no p-value.
     A HAC correction was considered and set aside: its own validity at these sample sizes would
