@@ -619,28 +619,41 @@ marked test to leak, an unmarked test to be refused — *is* the scenario.
 
 ### The suite wall time cannot resolve this, and waiting for a quiet machine would not have helped
 
-The brief asked for full-suite wall time before and after. The honest answer is that **no
-wall-clock measurement can resolve a 0.32s effect on this suite**, and the evidence is CI's own
-replicates rather than a claim about the laptop:
+The brief asked for full-suite wall time before and after. Both are reported, from CI, and
+together they show that **no wall-clock measurement can resolve a 0.32s effect on this suite.**
+Nine runs, on trees whose test content differs by at most four tests:
 
-| tree | CI pytest duration |
-|---|---|
-| `main` `01fcee7` (baseline) | 450.99s |
-| `097610d`, **byte-identical tree** to `01fcee7` | 455.68s |
-| `097610d`, same tree again | **326.56s** |
-| `16584c3` (this branch) | 465.57s |
-| `16584c3` again | 453.31s |
+| tree | tests | event | pytest duration |
+|---|---|---|---|
+| `main` `01fcee7` — **before** | 1731 | push | 450.99s |
+| `097610d`, tree identical to `01fcee7` | 1731 | push | 455.68s |
+| `097610d`, same tree | 1731 | pull_request | 326.56s |
+| `b2cd193` | 1730 | push | 446.37s |
+| `16584c3` | 1731 | push | **465.57s** |
+| `16584c3` | 1731 | pull_request | 453.31s |
+| `199eb11` | 1734 | push | 342.04s |
+| `199eb11` | 1734 | pull_request | 455.77s |
+| `f202724` — **after** | 1734 | pull_request | **237.89s** |
 
-Two runs of **the same tree** on GitHub's own runners differ by **129s** — 29%. The effect being
-measured is 0.32s, roughly 400x smaller than that spread. A local A/B/A/B would have added a
-noisier instrument to an already unresolvable question; the machine here was at load average 126
-on 8 cores when this was written, and identical code has read 232s, 472s and 907s on it.
+Provenance checked rather than assumed, per R150: `gh run view --json headSha,event` on each, and
+`git diff 097610d 01fcee7` is empty, so the three "before" runs executed the same tree — the
+`pull_request` run's merge ref included, since `097610d` already merges `main`.
+
+**The spread is 227.68s, about 710x the effect being measured.** Three runs of the *identical*
+`01fcee7` tree alone span 326.56s to 455.68s.
+
+The sharpest way to see that the instrument is useless here: **the fastest run of all nine, 237.89s,
+is the branch carrying the most tests.** This branch adds three witnesses whose nested
+`runpytest_subprocess` runs cost roughly ten seconds between them, so it is strictly more work than
+`main` and should never be fastest. It was fastest by 89s. A measurement in which the heavier tree
+wins by that margin is reporting the runner, not the code.
 
 **So this phase's practice is kept and sharpened: measure the mechanism, not the suite.** One sweep
-is directly measurable to three digits and its multiplier is a test count, which is why the table
-above is a measurement and a suite duration would have been an anecdote. This also corrects the
-sprint-close note that framed the runtime question as "measure it on a quiet machine or report that
-it could not" — for an effect this size there is no quiet machine, only a smaller instrument.
+is measurable to three digits and its multiplier is a test count, which is why the table above this
+one is a measurement and a suite duration is an anecdote. This also corrects the sprint-close note
+that framed the runtime question as "measure it on a quiet machine or report that it could not" —
+for an effect this size there is no quiet machine, only a smaller instrument. A local A/B/A/B was
+run anyway, on an idle machine, for a bound rather than a reading.
 
 ### The witnesses, and the mutations that prove they bite
 
