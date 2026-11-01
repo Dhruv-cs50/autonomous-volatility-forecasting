@@ -226,8 +226,9 @@ def _forbid_holdout_unlock(
 # Names of the non-function-scoped fixtures being set up right now, outermost first. Fixtures
 # nest (a module fixture pulls in the session fixtures it needs inside its own setup).
 _WIDER_SCOPE_SETUPS: list[str] = []
-# Where ``load_panel`` was bound, and to what, when the refusal was installed.
-_REFUSED_BINDINGS: list[tuple[ModuleType, object]] = []
+# What ``load_panel`` was when the refusal went in, held in a list so that this module's own
+# namespace never holds the function and the sweeps below cannot find it here.
+_REFUSED_ORIGINAL: list[object] = []
 
 
 def _refuse_store_read(*args: object, **kwargs: object) -> object:
@@ -237,29 +238,47 @@ def _refuse_store_read(*args: object, **kwargs: object) -> object:
     )
 
 
+def _names_bound_to(function: object) -> list[tuple[ModuleType, str]]:
+    """Every module-level name, in every imported module, whose value *is* ``function``.
+
+    Matched on identity and not on the name ``load_panel``: an ``import ... as aliased`` and a
+    reference taken before the sweep (``captured = store.load_panel``) are the same function under
+    another name. This module's own namespace is skipped, since it holds the refusal itself.
+    One sweep is a few milliseconds, which is why it runs only around wider-scoped fixtures and
+    not once per test.
+    """
+    found: list[tuple[ModuleType, str]] = []
+    for module in list(sys.modules.values()):
+        try:
+            namespace = vars(module)
+            items = list(namespace.items())
+        except Exception:  # a module object that will not show its namespace has nothing to patch
+            continue
+        if namespace is globals():
+            continue
+        found.extend((module, name) for name, value in items if value is function)
+    return found
+
+
 def _install_store_refusal() -> None:
     # Lazy and unguarded, as in ``_forbid_holdout_unlock``: a guard that fails open on an import
     # error is worse than none.
     import volab.store as store
 
     # Whatever ``load_panel`` is right now: the original, or the per-test police's wrapper if a
-    # fixture is being set up by ``request.getfixturevalue`` from inside a test. Every binding of
-    # it, not only ``volab.store``'s, for the reason given in ``_forbid_holdout_unlock``.
+    # fixture is being set up by ``request.getfixturevalue`` from inside a test.
     current = store.load_panel
-    for module in list(sys.modules.values()):
-        try:
-            bound = getattr(module, "load_panel", None)
-        except Exception:
-            continue
-        if bound is current:
-            _REFUSED_BINDINGS.append((module, current))
-            module.__dict__["load_panel"] = _refuse_store_read
+    _REFUSED_ORIGINAL.append(current)
+    for module, name in _names_bound_to(current):
+        module.__dict__[name] = _refuse_store_read
 
 
 def _remove_store_refusal() -> None:
-    while _REFUSED_BINDINGS:
-        module, original = _REFUSED_BINDINGS.pop()
-        module.__dict__["load_panel"] = original
+    # Swept for, not replayed from a record: a module first imported while the refusal was in
+    # place bound the refusal itself, and was never recorded.
+    original = _REFUSED_ORIGINAL.pop()
+    for module, name in _names_bound_to(_refuse_store_read):
+        module.__dict__[name] = original
 
 
 @pytest.hookimpl(wrapper=True)
@@ -273,14 +292,18 @@ def pytest_fixture_setup(
     fixtures in ``test_walkforward.py`` and ``test_truncation_equivalence.py`` until
     ``tests/real_panel.py`` was written, and nothing noticed.
 
-    The rule watches the read and asks pytest for the scope, so it names no fixture and needs no
-    list of exceptions: ``fixture -> helper -> load_panel`` is caught however deep the helper is,
-    and a new fixture is covered the day it is written. Synthetic-store reads are refused too;
-    nothing needs one at a wider scope, and an exemption is the thing that would rot.
+    The rule asks pytest for the scope and finds ``load_panel`` by identity, so it names no fixture,
+    no import spelling and keeps no list of exceptions: a call to the function is refused whatever
+    it is called in the module that makes it, and however many helpers sit between the fixture and
+    the call. Synthetic-store reads are refused too; nothing needs one at a wider scope, and an
+    exemption is the thing that would rot.
 
     ``load_panel`` is a complete chokepoint for ``volab``: ``test_import_discipline.py`` fails any
-    module under ``src`` other than ``volab.store`` that reads Parquet by another route. What it
-    does not see is a test or fixture that reads files itself, without calling any ``volab`` code.
+    module under ``src`` other than ``volab.store`` that reads Parquet by another route.
+
+    What it does not see: a test or fixture that reads files itself without calling any ``volab``
+    code, and a reference to the function held somewhere other than a module-level name (inside a
+    closure, a default argument or an object's attribute) and taken before the fixture ran.
 
     The refusal is installed only while such a fixture is being set up, and it raises instead of
     calling through. It is therefore never a frame in a successful read, which matters:

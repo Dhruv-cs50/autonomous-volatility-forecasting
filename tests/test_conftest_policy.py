@@ -145,3 +145,102 @@ def test_a_store_read_during_a_wider_scoped_fixture_is_an_error(
     result = pytester.runpytest_subprocess()
     result.assert_outcomes(passed=1, errors=1)
     result.stdout.fnmatch_lines(["*Failed: fixture 'early' (scope module) read the store*"])
+
+
+def _run_nested(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, source: str
+) -> pytest.RunResult:
+    """Run ``source`` as a test module under a copy of this conftest, in a subprocess."""
+    src_dir = str(Path(volab.__file__).resolve().parents[1])
+    existing = os.environ.get("PYTHONPATH", "")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([src_dir, existing]) if existing else src_dir)
+    pytester.makeconftest((Path(__file__).parent / "conftest.py").read_text())
+    pytester.makepyfile(source)
+    return pytester.runpytest_subprocess()
+
+
+def test_the_refusal_follows_the_function_and_not_the_name_it_is_bound_to(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An aliased import, and a reference captured before the fixture ran, are both refused.
+
+    Each fixture would read the real store if the guard matched on the attribute name
+    ``load_panel``; the fixtures' own names are in the expected message.
+    """
+    result = _run_nested(
+        pytester,
+        monkeypatch,
+        """
+        import pytest
+
+        import volab.store as store
+        from volab.config import load_settings
+        from volab.store import load_panel as aliased
+
+        captured = store.load_panel
+
+        def read(function):
+            settings = load_settings()
+            return function("bars_daily", end=settings.splits.dev_end, settings=settings)
+
+        @pytest.fixture(scope="module")
+        def through_an_alias():
+            return read(aliased)
+
+        @pytest.fixture(scope="module")
+        def through_a_capture():
+            return read(captured)
+
+        def test_alias(through_an_alias):
+            raise AssertionError("the aliased read was not refused")
+
+        def test_capture(through_a_capture):
+            raise AssertionError("the captured reference was not refused")
+        """,
+    )
+    result.assert_outcomes(errors=2)
+    result.stdout.fnmatch_lines(
+        [
+            "*Failed: fixture 'through_an_alias' (scope module) read the store*",
+            "*Failed: fixture 'through_a_capture' (scope module) read the store*",
+        ]
+    )
+
+
+def test_a_module_first_imported_during_wider_scope_setup_is_not_left_refusing(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``volab.panel`` binds ``load_panel`` at import. Imported inside a module-scoped fixture, it
+    binds whatever is installed then, and the refusal must not outlive the setup in that binding."""
+    result = _run_nested(
+        pytester,
+        monkeypatch,
+        """
+        import sys
+
+        import pytest
+
+        import volab.store as store
+        from volab.config import load_settings
+        from volab.errors import DatasetNotFound
+
+        @pytest.fixture(scope="module")
+        def lazily_imports():
+            assert "volab.panel" not in sys.modules, "the premise: not yet imported"
+            import volab.panel
+
+        def test_the_binding_is_the_genuine_function_afterwards(lazily_imports):
+            import volab.panel
+
+            assert volab.panel.load_panel is store.load_panel
+            # Behaviour, not the function's name: a refusal wrapped by the police would still be
+            # a refusal. A dataset that does not exist is a store error from the genuine function
+            # and a pytest failure (not an ``Exception``) from the refusal.
+            settings = load_settings()
+            with pytest.raises(DatasetNotFound):
+                volab.panel.load_panel(
+                    "no_such_dataset", end=settings.splits.dev_end, settings=settings
+                )
+        """,
+    )
+    result.assert_outcomes(passed=1)
