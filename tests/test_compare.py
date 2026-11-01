@@ -57,6 +57,7 @@ from volab.compare.dm import (
     harvey_factor,
     newey_west_lag,
     overlap_lag,
+    same_losses,
 )
 from volab.compare.multiple import (
     BOOTSTRAP,
@@ -596,6 +597,42 @@ def test_the_block_length_takes_the_longest_block_across_contestants() -> None:
     assert block_length(series, q=0).politis_white == pytest.approx(max(columns))
 
 
+def test_the_non_finite_block_length_guard_reads_every_column_and_not_just_the_resolved_ones() -> (
+    None
+):
+    """``figures.max()`` was a guard that did not guard.
+
+    ``optimal_block_length`` returns one figure **per column**, and Politis-White divides by the
+    column's own variance: a constant column gets ``NaN`` (measured below, with the
+    ``RuntimeWarning`` arch emits on the way). ``pandas.Series.max()`` **skips** ``NaN``, so the
+    reduction returned the *other* column's perfectly finite figure and ``math.isfinite`` passed
+    on a matrix one of whose columns has no block length at all. ``to_numpy().max()`` propagates
+    it, which is what the guard was written to catch.
+
+    Latent today, because ``_unestimable``'s constant-column check fires first on every path
+    into ``block_length`` -- asserted in the second half, so this test fails if that ordering
+    ever changes rather than leaving the claim in a comment.
+    """
+    from arch.bootstrap import optimal_block_length
+
+    rng = np.random.default_rng(23)
+    levels = np.column_stack([np.ones(40), 10.0 + rng.normal(size=40)])
+    with pytest.warns(RuntimeWarning, match="invalid value"):
+        frame = pd.DataFrame(levels)
+        figures = optimal_block_length(frame)["stationary"]
+        assert math.isnan(figures.iloc[0]), "the constant column must have no block length"
+        assert math.isfinite(figures.iloc[1]), "the other column must have one"
+        assert math.isfinite(figures.max()), "pandas skips the NaN: that was the hole"
+        assert math.isnan(figures.to_numpy().max()), "numpy propagates it: that is the fix"
+        with pytest.raises(ValueError, match="non-finite"):
+            politis_white(levels)
+
+    # And the path through ``block_length`` reaches the earlier, better-worded refusal instead.
+    series = _series({"flat": np.ones(40), "noisy": 10.0 + rng.normal(size=40)}, horizon=1)
+    with pytest.raises(ValueError, match="flat has a constant loss"):
+        block_length(series, q=0)
+
+
 def _contenders(
     n: int, q: int, seed: int = 3, gaps: tuple[float, ...] = (0.0, 0.01, 3.0)
 ) -> LossSeries:
@@ -883,6 +920,137 @@ def test_the_dynamic_range_guard_is_for_the_confidence_set_and_not_for_spa() -> 
     series = _dynamic_range()
     result = superior_predictive_ability(series, "har_levels", q=4, reps=200)
     assert result.refusal is None and result.consistent is not None
+
+
+# The additive shift two **variance-proportional** forecasts produce in the FZ0 loss. Under a
+# Gaussian (VaR, ES) map ``var/es`` is a constant ratio, so an off-breach FZ0 value is
+# ``const + log(sigma)``: scaling a contestant's forecast variance by ``c`` moves its loss by
+# ``0.5 * log(c)`` at every non-breaching origin, and the pair's differential is exactly constant.
+# ``TOY_COHORT``'s ``rw_scaled`` is ``_Scaled(random_walk, 1.3)``, which is this at ``c = 1.3``.
+# Proportional in the *loss* is a different and harmless thing: see the second half of
+# ``test_a_constant_differential_between_two_non_benchmark_series_does_not_refuse_spa``.
+FZ0_SCALE_SHIFT = 0.5 * math.log(1.3)
+
+
+def _shifted_pair(n: int = 60, seed: int = 11) -> LossSeries:
+    """A benchmark plus two contestants whose losses differ by ``FZ0_SCALE_SHIFT`` exactly.
+
+    The degenerate pair deliberately **excludes** the benchmark: that is the whole point. SPA
+    differences every contestant against ``bench``, so a pair among the others carries no
+    information about any SPA statistic.
+    """
+    rng = np.random.default_rng(seed)
+    a = rng.chisquare(2, n)
+    return _series(
+        {"bench": rng.chisquare(2, n), "a": a, "b": a + FZ0_SCALE_SHIFT}, horizon=1, stride=1
+    )
+
+
+def test_a_constant_differential_between_two_non_benchmark_series_does_not_refuse_spa() -> None:
+    """The narrowing at ``superior_predictive_ability`` has to reach ``block_length``.
+
+    ``superior_predictive_ability`` pre-checks ``_unestimable(series, names=(benchmark,))`` --
+    the benchmark's pairs only -- and then called ``block_length``, which re-checked **all**
+    pairs. The caller narrowed and the callee silently re-widened, so a degenerate pair not
+    involving the benchmark passed the pre-check and raised ``ValueError`` inside
+    ``block_length``. Nothing in the suite pinned it: the first caller to reach it was Phase 3's
+    FZ0 losses, and that story moved a test from stride 2 to stride 4 to get around it.
+
+    **The all-pairs check guards nothing here.** Politis-White is a per-column plug-in rule
+    (``optimal_block_length`` returns one figure per column), so inter-column structure never
+    enters the block length -- measured below. And Hansen's SPA compares the benchmark to the
+    best alternative through ``d_k = L_bench - L_k``: two alternatives differing by a constant
+    give two ``d_k`` columns differing by a constant, neither of them constant, both with
+    positive bootstrap variance. arch has no trouble with that.
+    """
+    series = _shifted_pair()
+    assert same_losses(np.asarray(series.values["a"]), np.asarray(series.values["b"])), (
+        "the fixture must hold the constant differential this test is about"
+    )
+
+    result = superior_predictive_ability(series, "bench", q=0, reps=200)
+    assert result.refusal is None, result.refusal
+    assert result.consistent is not None and 0.0 <= result.consistent <= 1.0
+    assert result.lower is not None and result.upper is not None
+    assert result.block is not None
+
+    # The shifted column's own block length, which is what the all-pairs check was costing.
+    columns = {k: np.asarray(v).reshape(-1, 1) for k, v in series.values.items()}
+    figures = {k: politis_white(v) for k, v in columns.items()}
+    assert figures["a"] == pytest.approx(figures["b"], rel=1e-12), (
+        f"a constant shift is a per-column no-op: {figures}"
+    )
+    assert result.block.politis_white == pytest.approx(max(figures.values()))
+
+    # The trap this test exists to avoid restating: proportional in the **loss** is not a
+    # constant differential and was never refused, so it witnesses nothing about this defect.
+    a = np.asarray(series.values["a"])
+    multiplied = _series(
+        {"bench": series.values["bench"], "a": tuple(a), "b": tuple(a * 1.3)},
+        horizon=1,
+        stride=1,
+    )
+    assert not same_losses(a, a * 1.3)
+    assert superior_predictive_ability(multiplied, "bench", q=0, reps=200).refusal is None
+
+
+def test_spa_still_refuses_a_contestant_constant_shifted_from_its_own_benchmark() -> None:
+    """The other direction, so the fix is a narrowing and not a removal.
+
+    arch tolerates it, but ``d_k = L_bench - L_k`` is then a constant: the differential carries
+    no information about which model is better, whatever p-value the bootstrap would print.
+    """
+    rng = np.random.default_rng(12)
+    bench = rng.chisquare(2, 60)
+    series = _series(
+        {"bench": tuple(bench), "a": tuple(bench + FZ0_SCALE_SHIFT), "b": rng.chisquare(2, 60)},
+        horizon=1,
+        stride=1,
+    )
+    result = superior_predictive_ability(series, "bench", q=0, reps=200)
+    assert result.consistent is None and result.block is None
+    assert result.refusal is not None and "identical" in result.refusal
+    assert "bench" in result.refusal and "a" in result.refusal
+
+
+def test_the_all_pairs_check_is_still_the_confidence_sets_and_block_lengths_default() -> None:
+    """Narrowing SPA's call must not narrow MCS's. arch eliminates pairwise there, which is what
+    ``_swamped`` and the identical-pair check exist for, and ``block_length``'s own default is
+    unchanged -- a caller that passes no ``names`` still gets every pair checked."""
+    series = _shifted_pair()
+    result = model_confidence_set(series, q=0, reps=200)
+    assert result.pvalues is None and result.members == {} and result.block is None
+    assert set(result.refusals) == {0.10, 0.25}
+    for reason in result.refusals.values():
+        assert "identical" in reason and "a" in reason and "b" in reason
+    with pytest.raises(ValueError, match="identical"):
+        block_length(series, q=0)
+    with pytest.raises(ValueError, match="identical"):
+        block_length(series, q=0, confidence_set=False)
+
+
+def test_analyse_completes_on_a_series_holding_a_constant_shifted_non_benchmark_pair() -> None:
+    """The acceptance that matters: the crash reached ``cli.main`` through ``analyse``, *after*
+    the run had appended its trial lines. So DM refuses the degenerate pair, MCS refuses the
+    whole set, and SPA reports -- all in one pass, with nothing raised."""
+    base = _shifted_pair()
+    # ``analyse`` runs SPA against ``BENCHMARKS``, so the benchmark column needs one of its names.
+    series = dataclasses.replace(
+        base,
+        values={
+            "har_levels": base.values["bench"],
+            "a": base.values["a"],
+            "b": base.values["b"],
+        },
+    )
+    comparison = analyse(series, reps=200)
+    degenerate = [p for p in comparison.pairs if {p.left, p.right} == {"a", "b"}]
+    assert len(degenerate) == 1
+    assert degenerate[0].dm.headline.refusal is not None
+    assert comparison.mcs.members == {} and set(comparison.mcs.refusals) == {0.10, 0.25}
+    reported = [s for s in comparison.spa if s.benchmark == "har_levels"]
+    assert len(reported) == 1 and reported[0].refusal is None
+    assert reported[0].consistent is not None
 
 
 # ---------------------------------------------------------------------------

@@ -46,6 +46,21 @@ It is a conservative superset of arch's tie and refuses some matrices arch would
 the right direction. Witness, on its own line so it can be grepped:
 ``test_a_contestant_that_dominates_the_loss_scale_makes_the_confidence_set_a_refusal``.
 
+**A narrowed pre-check must narrow the re-check it precedes** (R152). ``_unestimable`` takes
+``names``, which restricts the identical-pair check to pairs involving the benchmark, and SPA uses
+it because SPA only ever differences against that benchmark. ``block_length`` re-checks on its own
+behalf -- it is shared, and a caller that forgot should still be stopped -- but it took no
+``names``, so it silently re-widened to every pair: a degenerate pair *not* involving the
+benchmark passed SPA's pre-check and raised inside ``block_length``. ``names`` is now threaded
+through, so the two checks agree by construction rather than by coincidence, and the defensive
+re-check survives for the next caller. Phase 3's FZ0 losses were the first to reach it -- under a
+Gaussian (VaR, ES) map two variance-proportional forecasts differ by an additive constant in the
+loss, which is exactly what ``same_losses`` tests for. Witness:
+``test_a_constant_differential_between_two_non_benchmark_series_does_not_refuse_spa``, with
+``test_spa_still_refuses_a_contestant_constant_shifted_from_its_own_benchmark`` and
+``test_the_all_pairs_check_is_still_the_confidence_sets_and_block_lengths_default`` holding the
+two edges the narrowing must not cross.
+
 ``reps``, ``seed`` and the bootstrap are fixed and recorded on every result, so membership is
 reproducible from the file (``test_the_bootstrap_is_reproducible_from_the_recorded_seed``).
 """
@@ -100,7 +115,12 @@ def politis_white(levels: np.ndarray) -> float:
     """
     frame = pd.DataFrame(np.asarray(levels, dtype="float64").reshape(len(levels), -1))
     figures = optimal_block_length(frame)["stationary"]
-    value = float(figures.max())
+    # ``to_numpy()`` before ``max()``, because ``pandas.Series.max()`` **skips** NaN: a constant
+    # column has no block length, and the pandas reduction quietly returned another column's
+    # figure instead, so the guard below passed on a matrix it was written to refuse. numpy
+    # propagates it. Witness:
+    # ``test_the_non_finite_block_length_guard_reads_every_column_and_not_just_the_resolved_ones``.
+    value = float(figures.to_numpy().max())
     if not math.isfinite(value):
         raise ValueError("Politis-White returned a non-finite block length")
     return value
@@ -168,12 +188,21 @@ def _unestimable(
     return None
 
 
-def block_length(series: LossSeries, *, q: int, confidence_set: bool = True) -> BlockLength:
+def block_length(
+    series: LossSeries,
+    *,
+    q: int,
+    confidence_set: bool = True,
+    names: tuple[str, ...] | None = None,
+) -> BlockLength:
     """``max(q + 1, ceil(Politis-White on the loss levels))``, from the matrix MCS consumes.
 
-    ``confidence_set=False`` is SPA's: it is refused only for what SPA cannot survive.
+    ``confidence_set=False`` is SPA's: it is refused only for what SPA cannot survive. ``names``
+    is forwarded to :func:`_unestimable` unchanged and carries the same meaning there, so a
+    caller that has already narrowed its own pre-check narrows this one too. Both default to the
+    wider check: a caller that passes nothing still has every pair examined.
     """
-    reason = _unestimable(series, confidence_set=confidence_set)
+    reason = _unestimable(series, names=names, confidence_set=confidence_set)
     if reason is not None:
         raise ValueError(f"no block length can be estimated: {reason}")
     pw = politis_white(_matrix(series).to_numpy())
@@ -295,7 +324,7 @@ def superior_predictive_ability(
     reason = _unestimable(series, names=(benchmark,), confidence_set=False)
     if reason is not None:
         return refused(reason)
-    block = block_length(series, q=q, confidence_set=False)
+    block = block_length(series, q=q, confidence_set=False, names=(benchmark,))
     losses = _matrix(series)
     procedure = SPA(
         losses[benchmark],
