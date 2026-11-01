@@ -7,6 +7,12 @@ reads past the repository's own ``dev_end`` too, however it got there: reaching 
 one way past the seal, and handing ``load_panel`` a ``Settings`` with a later boundary was
 another.
 
+It finds ``load_panel`` by identity, wherever a module holds it and whatever it is called there:
+an alias and a reference captured before the suite started are the same function, and matching on
+the name ``load_panel`` policed neither. The wrapper is installed once per session, since one
+sweep of ``sys.modules`` costs 3.6ms and the answer does not change between tests; each test only
+arms it with the boundary to enforce.
+
 ``pytest_fixture_setup`` below closes the one gap those leave: the police are function-scoped, so
 a fixture of a wider scope is set up before them and its store read goes unwatched. It is refused.
 
@@ -167,9 +173,29 @@ def _forbid_holdout_unlock(
     """Fail any unmarked test that unlocks the holdout, or that reads past it regardless.
 
     Function-scoped, and it must be: it depends on ``monkeypatch``, which is function-scoped.
+
+    Enforcing the *boundary*, though, is not function-scoped work. The wrapper that enforces it
+    is installed once per session by ``_install_holdout_police`` and then left alone; this
+    fixture only arms it, by pushing the boundary it is to enforce onto ``_ACTIVE_DEV_END``.
+    Finding every binding of ``load_panel`` by identity costs one sweep of ``sys.modules``,
+    measured at 3.6ms -- about 6s over this suite if paid per test, for an answer that does not
+    change between tests.
     """
     if request.node.get_closest_marker("holdout") is not None:
-        yield
+        # A marked test may read the holdout, so there is nothing here to police. The wrapper is
+        # *removed* for its duration rather than merely left unarmed: ``store._caller_frame``
+        # names the first frame outside ``volab`` in the audit line, so a wrapper still sitting
+        # in the call chain would become the "caller" that ``test_store_guard`` asserts on. Two
+        # sweeps, for the handful of marked tests in the suite, is the whole price of the
+        # once-per-session install.
+        exempt = bool(_POLICED_ORIGINAL)
+        if exempt:
+            _uninstall_holdout_police()
+        try:
+            yield
+        finally:
+            if exempt:
+                _install_holdout_police()
         return
 
     # Lazy, so importing this conftest does not import the data layer; never guarded, because a
@@ -192,35 +218,17 @@ def _forbid_holdout_unlock(
     # Wrapping ``_unlock_granted`` polices whoever reaches for the keys. It is blind to a test
     # that moves the boundary instead -- passing a hand-built ``Settings`` whose ``dev_end`` is
     # later than the repository's -- because no key is ever asked for. ``volab.store`` refuses
-    # that itself now; this is the suite-side half of the same fix. Judged on what came back
-    # rather than on the argument, so the tests whose whole purpose is to prove a holdout read
-    # is *refused* stay expressible: those raise, and never reach the check.
-    repository_dev_end = load_settings().splits.dev_end
-    original_load_panel = store.load_panel
+    # that itself now; this is the suite-side half of the same fix.
+    if not _POLICED_ORIGINAL:
+        _install_holdout_police()
 
-    def police_holdout_read(*args: object, **kwargs: object) -> object:
-        frame = original_load_panel(*args, **kwargs)  # type: ignore[arg-type]
-        end = kwargs.get("end")
-        if isinstance(end, dt.date) and end > repository_dev_end:
-            pytest.fail(
-                f"test read past the repository's dev_end {repository_dev_end} with end={end} "
-                "and no @pytest.mark.holdout"
-            )
-        return frame
-
-    # Every binding of the function, not only ``volab.store``'s: a test module that did
-    # ``from volab.store import load_panel`` holds its own reference, taken at collection time,
-    # which an attribute patch on the module alone would not reach. The probe is guarded because
-    # a module-level ``__getattr__`` (PEP 562) may raise anything it likes, and one unlucky
-    # third-party module would otherwise break every test at fixture setup.
-    for module in list(sys.modules.values()):
-        try:
-            bound = getattr(module, "load_panel", None)
-        except Exception:
-            continue
-        if bound is original_load_panel:
-            monkeypatch.setattr(module, "load_panel", police_holdout_read)
-    yield
+    # ``load_settings`` is asked per test rather than once at install, so that the boundary the
+    # police enforces is read the same way, and at the same moment, as it always was.
+    _ACTIVE_DEV_END.append(load_settings().splits.dev_end)
+    try:
+        yield
+    finally:
+        _ACTIVE_DEV_END.pop()
 
 
 # Names of the non-function-scoped fixtures being set up right now, outermost first. Fixtures
@@ -243,9 +251,12 @@ def _names_bound_to(function: object) -> list[tuple[ModuleType, str]]:
 
     Matched on identity and not on the name ``load_panel``: an ``import ... as aliased`` and a
     reference taken before the sweep (``captured = store.load_panel``) are the same function under
-    another name. This module's own namespace is skipped, since it holds the refusal itself.
-    One sweep is a few milliseconds, which is why it runs only around wider-scoped fixtures and
-    not once per test.
+    another name. This module's own namespace is skipped, since it holds the refusal and the
+    police themselves.
+
+    One sweep is 3.6ms, so neither caller pays it per test: the fixture-scope refusal sweeps only
+    around a wider-scoped setup, and the holdout police sweeps once per session at install and
+    again around each ``@pytest.mark.holdout`` test.
     """
     found: list[tuple[ModuleType, str]] = []
     for module in list(sys.modules.values()):
@@ -260,13 +271,93 @@ def _names_bound_to(function: object) -> list[tuple[ModuleType, str]]:
     return found
 
 
+# The ``dev_end`` the holdout police is enforcing right now. Empty whenever no unmarked test is
+# running -- during collection, between tests, and for the duration of a marked one -- and the
+# wrapper then calls straight through. A stack, not a scalar, so that pushing and popping is all
+# an unmarked test has to do and no state can be left armed by a test that raised.
+_ACTIVE_DEV_END: list[dt.date] = []
+# What ``load_panel`` was before the police wrapped it, held in a list for the same reason as
+# ``_REFUSED_ORIGINAL`` above: this module's own namespace must never bind the function, or the
+# sweeps would find it here.
+_POLICED_ORIGINAL: list[object] = []
+
+
+def _police_holdout_read(*args: object, **kwargs: object) -> object:
+    """``load_panel``, failing the test if it read past the boundary being enforced right now.
+
+    Judged on what came back rather than on the argument, so the tests whose whole purpose is to
+    prove a holdout read is *refused* stay expressible: those raise, and never reach the check.
+    """
+    original = _POLICED_ORIGINAL[-1]
+    frame = original(*args, **kwargs)  # type: ignore[operator]
+    if not _ACTIVE_DEV_END:
+        return frame
+    boundary = _ACTIVE_DEV_END[-1]
+    end = kwargs.get("end")
+    if isinstance(end, dt.date) and end > boundary:
+        pytest.fail(
+            f"test read past the repository's dev_end {boundary} with end={end} "
+            "and no @pytest.mark.holdout"
+        )
+    return frame
+
+
+def _install_holdout_police() -> None:
+    """Put the boundary check in front of every binding of ``load_panel``, for the session.
+
+    Matching the *name* ``load_panel`` is what this replaced, and it policed nothing bound under
+    another one: ``from volab.store import load_panel as aliased``, and a module-level
+    ``captured = store.load_panel`` taken at collection time, both read the store unwatched.
+    ``_names_bound_to`` matches on identity instead, so the spelling stops mattering.
+
+    Installed once and left in place, because after this ``volab.store.load_panel`` *is* the
+    wrapper: a module imported from here on binds the wrapper by whatever name it chooses, with
+    no second sweep needed, and what changes per test is ``_ACTIVE_DEV_END`` alone.
+
+    What it still does not see is what ``pytest_fixture_setup`` below does not see either: a test
+    that reads Parquet itself without calling any ``volab`` code, and a reference to the function
+    held somewhere other than a module-level name -- inside a closure, a default argument or an
+    object's attribute -- and taken before this ran.
+    """
+    # Lazy and unguarded, as in ``_forbid_holdout_unlock``: policing that fails open on an import
+    # error is worse than none.
+    import volab.store as store
+
+    if _WIDER_SCOPE_SETUPS:
+        # Unreachable as the fixtures stand, since this installs from a function-scoped fixture
+        # that requests nothing wider, and checked anyway because the failure would be silent:
+        # ``store.load_panel`` is ``_refuse_store_read`` while a wider-scoped fixture is being set
+        # up, and wrapping *that* as the original would leave the police guarding the refusal and
+        # the real function unguarded for the rest of the session.
+        pytest.fail(
+            "the holdout police cannot install while the fixture-scope refusal is in place "
+            f"(setting up {_WIDER_SCOPE_SETUPS[-1]})"
+        )
+    original = store.load_panel
+    _POLICED_ORIGINAL.append(original)
+    for module, name in _names_bound_to(original):
+        module.__dict__[name] = _police_holdout_read
+
+
+def _uninstall_holdout_police() -> None:
+    # Swept for, not replayed from a record, for the reason ``_remove_store_refusal`` gives: a
+    # module first imported while the police were installed bound the wrapper, and was never
+    # recorded. There is no uninstall at session end: every nested run in this suite is a
+    # subprocess (``runpytest_subprocess``), so nothing in this process looks at ``load_panel``
+    # after the last test, and an in-process nested run would be wrong for its own reasons.
+    original = _POLICED_ORIGINAL.pop()
+    for module, name in _names_bound_to(_police_holdout_read):
+        module.__dict__[name] = original
+
+
 def _install_store_refusal() -> None:
     # Lazy and unguarded, as in ``_forbid_holdout_unlock``: a guard that fails open on an import
     # error is worse than none.
     import volab.store as store
 
-    # Whatever ``load_panel`` is right now: the original, or the per-test police's wrapper if a
-    # fixture is being set up by ``request.getfixturevalue`` from inside a test.
+    # Whatever ``load_panel`` is right now: the holdout police's wrapper once that has installed,
+    # which is the common case, and the original before the first test and for the duration of a
+    # ``@pytest.mark.holdout`` test.
     current = store.load_panel
     _REFUSED_ORIGINAL.append(current)
     for module, name in _names_bound_to(current):

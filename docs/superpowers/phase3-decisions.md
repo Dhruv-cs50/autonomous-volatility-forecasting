@@ -507,3 +507,90 @@ unsurprising rather than unknown, and it is an argument, not a measurement.
 
 Recording the figures is the point: "unverified" was the honest state of that row, and this is
 what verifying it produced.
+
+---
+
+## R153 — the holdout police match `load_panel` by identity, and pay for it once per session
+
+**Numbered R153**, continuing from R152 under R150's allocation (R150 onward is Phase 3's). Checked
+before claiming it: `## R15[3-9]` appears in no copy of this file on `main`,
+`perf/share-real-panel-loads` or `docs/phase3-sprint-close`, and there were no other open PR
+branches.
+
+### The defect
+
+`_forbid_holdout_unlock` wrapped `load_panel` by matching the binding **name** `"load_panel"`
+across imported modules. A test that read through the same function under another name was
+therefore not wrapped by the police at all:
+
+- `from volab.store import load_panel as aliased`
+- a module-level `captured = store.load_panel`, taken at collection time
+
+This is **the same defect, in the same file, as the one `pytest_fixture_setup` was rewritten to
+fix one change earlier** — there a review reproduced a module-scoped fixture reading the real
+store under an alias and passing. That makes it an instance of R151 rather than a new lesson, and
+it extends R151's scope: the set a test must derive rather than enumerate is not always a set of
+*names in the codebase*. Here it was the set of **bindings of one object**, and the enumeration
+was a single string literal. One literal is still a list.
+
+### How far it actually reached, which is less far than it sounds
+
+Both witnesses have to **move the boundary** to get past the seal; neither can use the keys. That
+is forced, not a convenience: `load_panel` resolves `_unlock_granted` through `volab.store`'s own
+globals, which the fixture patches *by attribute*, so an unmarked test that reaches for the keys
+is caught however it spells its import. Moving the boundary — a hand-built `Settings` with a later
+`dev_end`, with `volab.store`'s own refusal of that neutralised — is the only route an alias could
+take. The hole was real and is closed; it was not a second open door onto the holdout.
+
+The police also still see only reads routed through `volab` code. A test that opens Parquet
+itself is invisible to them, exactly as `pytest_fixture_setup`'s docstring already discloses, and
+so is a reference held in a closure, a default argument or an object's attribute and taken before
+the install.
+
+### Why this was not folded into the performance change that found it
+
+The naive fix is to run the identity sweep in the per-test police too. **Measured there: 3.6ms a
+sweep, about 6s across 1,729 tests** — a fifth of that change's ~30s saving, spent re-deriving an
+answer that does not change between tests. It was deliberately left out, and this change pays for
+itself instead by installing **once per session**.
+
+The once-per-session design works because the install makes `volab.store.load_panel` *be* the
+wrapper. Every later import therefore resolves to the wrapper by whatever name it chooses, with no
+re-sweep, and the only per-test state is the boundary pushed onto `_ACTIVE_DEV_END`. The three
+phases the value passes through are all ones the suite controls: the wrapper normally, the
+original for the duration of a `@pytest.mark.holdout` test, and `_refuse_store_read` while a
+wider-scoped fixture is being set up.
+
+### The one thing that forced a sweep to stay
+
+A marked test gets the wrapper **removed**, not merely disarmed. `store._caller_frame` names the
+first frame outside `volab` in the audit line, so a wrapper left in the call chain becomes the
+"caller", and `test_store_guard.py:280` asserts that caller is `test_store_guard`. That is two
+sweeps for each of a handful of marked tests — about 10 a session against 1,729 — which is why
+the install is still worth having.
+
+`_install_holdout_police` also refuses to install while `_WIDER_SCOPE_SETUPS` is non-empty. That
+is unreachable as the fixtures stand, and checked anyway because the failure mode is silent:
+`store.load_panel` is `_refuse_store_read` during such a setup, and wrapping *that* as the
+original would leave the police guarding the refusal and the real function unguarded for the rest
+of the session.
+
+### The witnesses, and the mutations that prove they bite
+
+Both witnesses were **seen red before the fix**: `2 failed, 5 passed`, with each nested subprocess
+reporting `1 passed` — the sneaking test read 2026-03-02, past the repository's `dev_end` of
+2025-12-31, and nothing fired. Three defects earlier in this phase were witnesses nobody had seen
+red, which is why this is recorded as an observation and not as a claim.
+
+Each piece of the fix was then mutated separately, because a witness that survives the mutation of
+the thing it is supposed to test is not testing it:
+
+| mutation | what went red | what it proves |
+|---|---|---|
+| install patches `store.load_panel` only, no sweep | all **3** boundary witnesses, the pre-existing one included | the sweep is load-bearing, and the pre-captured witness really does test it |
+| sweep matches the **name** `load_panel` (the original bug) | the **2** new witnesses; the pre-existing one stayed green | the new witnesses target the alias blind spot specifically, and nothing else |
+| marked tests leave the wrapper installed | `test_store_guard.py:280`, with `caller_module == 'conftest'` | the uninstall is load-bearing, and :280 is what catches its absence |
+
+The second row is R151's own standard — "the witness for a derived rule is a mutation that the
+listed version passes" — run in reverse: the listed version *fails* the new witnesses and passes
+the old one, which locates the hole rather than asserting it.

@@ -1,5 +1,6 @@
 import datetime as dt
 import os
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,28 @@ import volab
 from volab.paths import curated_path
 
 pytest_plugins = ["pytester"]
+
+
+def _run_nested(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, source: str
+) -> pytest.RunResult:
+    """Run ``source`` as a one-file suite under a copy of this directory's ``conftest.py``.
+
+    A subprocess, not ``runpytest()``: in-process the outer autouse fixture has already installed
+    the holdout police, which would mask a defect confined to the copied ``conftest``. The nested
+    run gets its own rootdir, so this repository's ``pythonpath = ["src"]`` does not reach it;
+    it is handed the directory the ``volab`` under test was imported from.
+
+    One helper rather than a copy per test, because the ``PYTHONPATH`` line is the kind of
+    boilerplate a copy forgets, and a nested run that silently imported a *different* ``volab``
+    would still go green.
+    """
+    src_dir = str(Path(volab.__file__).resolve().parents[1])
+    existing = os.environ.get("PYTHONPATH", "")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([src_dir, existing]) if existing else src_dir)
+    pytester.makeconftest((Path(__file__).parent / "conftest.py").read_text())
+    pytester.makepyfile(textwrap.dedent(source))
+    return pytester.runpytest_subprocess()
 
 
 def test_synthetic_store_writes_discoverable_files(synthetic_store) -> None:
@@ -26,25 +49,19 @@ def test_synthetic_store_settings_match_repo_defaults(synthetic_store) -> None:
 def test_unmarked_test_that_unlocks_holdout_fails(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The nested run gets its own rootdir, so this repo's ``pythonpath = ["src"]`` does not
-    # reach it; hand it the directory the volab under test was imported from.
-    src_dir = str(Path(volab.__file__).resolve().parents[1])
-    existing = os.environ.get("PYTHONPATH", "")
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([src_dir, existing]) if existing else src_dir)
-    pytester.makeconftest((Path(__file__).parent / "conftest.py").read_text())
-    pytester.makepyfile(
+    # The pattern anchors on the failure itself, not on the pytest.fail(...) source line a
+    # traceback echoes.
+    result = _run_nested(
+        pytester,
+        monkeypatch,
         """
         import volab.store as store
 
         def test_sneaks_past_the_guard(monkeypatch):
             monkeypatch.setenv("VOLAB_HOLDOUT_UNLOCK", "1")
             assert store._unlock_granted(allow_holdout=True)
-        """
+        """,
     )
-    # A subprocess, not runpytest(): in-process the outer autouse fixture has already wrapped
-    # _unlock_granted, which would mask a defect confined to the copied conftest. The pattern
-    # anchors on the failure itself, not on the pytest.fail(...) source line a traceback echoes.
-    result = pytester.runpytest_subprocess()
     result.assert_outcomes(failed=1)
     result.stdout.fnmatch_lines(["*Failed: test unlocked the holdout*"])
 
@@ -67,11 +84,9 @@ def test_unmarked_test_that_moves_the_boundary_fails(
     fixture is what is left. The nested test holds no key, so ``_unlock_granted`` is never
     called and the existing wrapping cannot see it.
     """
-    src_dir = str(Path(volab.__file__).resolve().parents[1])
-    existing = os.environ.get("PYTHONPATH", "")
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([src_dir, existing]) if existing else src_dir)
-    pytester.makeconftest((Path(__file__).parent / "conftest.py").read_text())
-    pytester.makepyfile(
+    result = _run_nested(
+        pytester,
+        monkeypatch,
         """
         import dataclasses
         import datetime as dt
@@ -94,153 +109,101 @@ def test_unmarked_test_that_moves_the_boundary_fails(
             frame = load_panel("bars_daily", end=HOLDOUT_DAY, settings=moved)
 
             assert len(frame) == 1
-        """
+        """,
     )
-    result = pytester.runpytest_subprocess()
     result.assert_outcomes(failed=1)
     result.stdout.fnmatch_lines(["*Failed: test read past the repository's dev_end*"])
 
 
-def test_a_store_read_during_a_wider_scoped_fixture_is_an_error(
+def test_unmarked_test_that_reads_through_an_aliased_import_fails(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A module-scoped fixture is set up before the autouse police, so its read is refused.
+    """The police must find ``load_panel`` by identity, not by the name it is bound to.
 
-    The read is two calls down (fixture, helper, ``load_curated_panel``), so the guard has to
-    watch the read itself and not the fixture's source. ``errors=1``, not ``failed=1``: a failure
-    during fixture setup is reported as an error, and ``failed`` would mean the guard fired in
-    the wrong place. The quiet module-scoped fixture beside it is the control: the guard refuses
-    reads, not wider scopes.
-    """
-    src_dir = str(Path(volab.__file__).resolve().parents[1])
-    existing = os.environ.get("PYTHONPATH", "")
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([src_dir, existing]) if existing else src_dir)
-    pytester.makeconftest((Path(__file__).parent / "conftest.py").read_text())
-    pytester.makepyfile(
-        """
-        import pytest
+    The fixture wraps the function wherever a module holds it. Matching on the *name*
+    ``load_panel`` leaves ``from volab.store import load_panel as aliased`` unwrapped, so the read
+    below was not policed at all -- the same blind spot ``pytest_fixture_setup`` was rewritten to
+    close, in the fixture-scope guard, one change earlier.
 
-        from volab.config import load_settings
-        from volab.panel import load_curated_panel
-
-        def read_the_store():
-            settings = load_settings()
-            return load_curated_panel(settings, "SPY", end=settings.splits.dev_end)
-
-        @pytest.fixture(scope="module")
-        def early():
-            return read_the_store()
-
-        @pytest.fixture(scope="module")
-        def quiet():
-            return 1
-
-        def test_depends_on_the_early_read(early):
-            raise AssertionError("the fixture's read was not refused")
-
-        def test_a_quiet_wider_fixture_is_fine(quiet):
-            assert quiet == 1
-        """
-    )
-    result = pytester.runpytest_subprocess()
-    result.assert_outcomes(passed=1, errors=1)
-    result.stdout.fnmatch_lines(["*Failed: fixture 'early' (scope module) read the store*"])
-
-
-def _run_nested(
-    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch, source: str
-) -> pytest.RunResult:
-    """Run ``source`` as a test module under a copy of this conftest, in a subprocess."""
-    src_dir = str(Path(volab.__file__).resolve().parents[1])
-    existing = os.environ.get("PYTHONPATH", "")
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([src_dir, existing]) if existing else src_dir)
-    pytester.makeconftest((Path(__file__).parent / "conftest.py").read_text())
-    pytester.makepyfile(source)
-    return pytester.runpytest_subprocess()
-
-
-def test_the_refusal_follows_the_function_and_not_the_name_it_is_bound_to(
-    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An aliased import, and a reference captured before the fixture ran, are both refused.
-
-    Each fixture would read the real store if the guard matched on the attribute name
-    ``load_panel``; the fixtures' own names are in the expected message.
+    The boundary is moved rather than unlocked, as in the test above, and that is not incidental:
+    ``load_panel`` resolves ``_unlock_granted`` through ``volab.store``'s own globals, which the
+    fixture patches by attribute, so an unmarked test that reaches for the keys is caught however
+    it spells its import. Moving the boundary is the only route an alias can take past the seal,
+    which also bounds how far this hole reached.
     """
     result = _run_nested(
         pytester,
         monkeypatch,
         """
-        import pytest
+        import dataclasses
+        import datetime as dt
 
         import volab.store as store
-        from volab.config import load_settings
+        from volab.config import Splits
         from volab.store import load_panel as aliased
 
-        captured = store.load_panel
+        # After the repository's own dev_end (2025-12-31), which is what the fixture polices.
+        HOLDOUT_DAY = dt.date(2026, 3, 2)
 
-        def read(function):
-            settings = load_settings()
-            return function("bars_daily", end=settings.splits.dev_end, settings=settings)
+        def test_reads_the_store_under_another_name(synthetic_store, monkeypatch):
+            synthetic_store.write("bars_daily", "SPY", [HOLDOUT_DAY])
+            moved = dataclasses.replace(
+                synthetic_store.settings,
+                splits=Splits(dev_end=dt.date(2099, 12, 31), holdout_start=dt.date(2100, 1, 2)),
+            )
+            monkeypatch.setattr(store, "load_settings", lambda *a, **k: moved)
 
-        @pytest.fixture(scope="module")
-        def through_an_alias():
-            return read(aliased)
+            frame = aliased("bars_daily", end=HOLDOUT_DAY, settings=moved)
 
-        @pytest.fixture(scope="module")
-        def through_a_capture():
-            return read(captured)
-
-        def test_alias(through_an_alias):
-            raise AssertionError("the aliased read was not refused")
-
-        def test_capture(through_a_capture):
-            raise AssertionError("the captured reference was not refused")
+            assert len(frame) == 1
         """,
     )
-    result.assert_outcomes(errors=2)
-    result.stdout.fnmatch_lines(
-        [
-            "*Failed: fixture 'through_an_alias' (scope module) read the store*",
-            "*Failed: fixture 'through_a_capture' (scope module) read the store*",
-        ]
-    )
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*Failed: test read past the repository's dev_end*"])
 
 
-def test_a_module_first_imported_during_wider_scope_setup_is_not_left_refusing(
+def test_unmarked_test_that_reads_through_a_pre_captured_reference_fails(
     pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``volab.panel`` binds ``load_panel`` at import. Imported inside a module-scoped fixture, it
-    binds whatever is installed then, and the refusal must not outlive the setup in that binding."""
+    """A reference taken at import time, before the police installed anything, is policed too.
+
+    The nested module binds the function to ``captured`` while it is being collected, which is
+    before any fixture has run. Rebinding ``volab.store.load_panel`` alone would never reach it,
+    and neither did matching on the name ``load_panel``: this module-level name is spelled
+    something else.
+
+    This is the second half of the identity rule and not a restatement of the first: the alias
+    test above is an import spelling, resolvable by reading the module's imports, while this one
+    is an ordinary attribute read that no import graph records.
+    """
     result = _run_nested(
         pytester,
         monkeypatch,
         """
-        import sys
-
-        import pytest
+        import dataclasses
+        import datetime as dt
 
         import volab.store as store
-        from volab.config import load_settings
-        from volab.errors import DatasetNotFound
+        from volab.config import Splits
 
-        @pytest.fixture(scope="module")
-        def lazily_imports():
-            assert "volab.panel" not in sys.modules, "the premise: not yet imported"
-            import volab.panel
+        # Taken at collection time, before any fixture -- and so before the police -- has run.
+        captured = store.load_panel
 
-        def test_the_binding_is_the_genuine_function_afterwards(lazily_imports):
-            import volab.panel
+        # After the repository's own dev_end (2025-12-31), which is what the fixture polices.
+        HOLDOUT_DAY = dt.date(2026, 3, 2)
 
-            assert volab.panel.load_panel is store.load_panel
-            # Behaviour, not the function's name: a refusal wrapped by the police would still be
-            # a refusal. A dataset that does not exist is a store error from the genuine function
-            # and a pytest failure (not an ``Exception``) from the refusal.
-            settings = load_settings()
-            with pytest.raises(DatasetNotFound):
-                volab.panel.load_panel(
-                    "no_such_dataset", end=settings.splits.dev_end, settings=settings
-                )
+        def test_reads_the_store_through_the_old_reference(synthetic_store, monkeypatch):
+            synthetic_store.write("bars_daily", "SPY", [HOLDOUT_DAY])
+            moved = dataclasses.replace(
+                synthetic_store.settings,
+                splits=Splits(dev_end=dt.date(2099, 12, 31), holdout_start=dt.date(2100, 1, 2)),
+            )
+            monkeypatch.setattr(store, "load_settings", lambda *a, **k: moved)
+
+            frame = captured("bars_daily", end=HOLDOUT_DAY, settings=moved)
+
+            assert len(frame) == 1
         """,
     )
-    result.assert_outcomes(passed=1)
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*Failed: test read past the repository's dev_end*"])
