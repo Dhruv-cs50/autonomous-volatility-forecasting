@@ -644,10 +644,21 @@ it could not" — for an effect this size there is no quiet machine, only a smal
 
 ### The witnesses, and the mutations that prove they bite
 
-Both witnesses were **seen red before the fix**: `2 failed, 5 passed`, with each nested subprocess
-reporting `1 passed` — the sneaking test read 2026-03-02, past the repository's `dev_end` of
-2025-12-31, and nothing fired. Three defects earlier in this phase were witnesses nobody had seen
-red, which is why this is recorded as an observation and not as a claim.
+Seen red before the fix. The figure is **`3 failed, 8 passed`**, measured against `main`'s
+`conftest.py` with this branch's test file — each nested subprocess reporting `1 passed` for a read
+of 2026-03-02, past the repository's `dev_end` of 2025-12-31, with nothing firing. Three defects
+earlier in this phase were witnesses nobody had seen red, which is why this is an observation and
+not a claim.
+
+**An earlier draft of this ruling said `2 failed, 5 passed`.** That count was taken in the clobbered
+test file described in R154, which was missing three of `main`'s tests, so it understated both
+columns. Re-measured against the restored file.
+
+**Two of the three witnesses are for the defect; the third is for a hazard this design introduces,
+and they should not be conflated.** The alias and pre-captured witnesses are red against `main`
+because `main` has the bug. The leak witness is red against `main` for the opposite reason: `main`
+re-captures `load_panel` for every test, so a leaked rebinding heals itself and no error is raised,
+which is what that witness asserts must happen *here*. `main` needs no canary. This design does.
 
 Each piece of the fix was then mutated separately, because a witness that survives the mutation of
 the thing it is supposed to test is not testing it:
