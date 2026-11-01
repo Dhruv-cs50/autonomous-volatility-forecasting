@@ -30,8 +30,9 @@ demand.
 |---|---|---|
 | 0 — Skeleton | Parquet layout, config, `load_panel()` and the holdout guard | merged |
 | 1 — Data and targets | Ingestion, realized measures, forward targets, point-in-time evidence | merged |
-| **2 — Walk-forward** | Truncation equivalence, process isolation, walk-forward, HAR baseline, trial ledger | **in review** |
-| 3–6 | Implied-vol contestant, scheduler, agent layer, write-up | not started |
+| 2 — Walk-forward | Truncation equivalence, process isolation, the walk-forward, the baseline shootout and the trial ledger | merged |
+| 3 — Implied vol and evaluators | A horizon-matched IV contestant, and evaluators that score decisions | merged |
+| 4–6 | Scheduler, agent layer, write-up and the sealed reveal | not started |
 
 ## What Phase 1 contains
 
