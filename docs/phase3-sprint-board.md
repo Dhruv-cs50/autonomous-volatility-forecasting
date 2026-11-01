@@ -39,8 +39,11 @@ share a numbering scheme.
 Found by P3-08 and **not** deferred: these must be settled before Phase 3's recorded run, which
 is itself held until the user triggers the holdout reveal (R139).
 
-**Status at 2026-10-31:** the first row is resolved on `fix/spa-block-length-names` (R152) and
-awaits its PR against `main`; the second is open.
+**Status at 2026-11-01:** the first row is **resolved and merged** — PR #9, `bfedef3` on `main`
+(R152), with the fix verified in `src/volab/compare/multiple.py` line by line rather than from a
+report. R152's own measurement then overturned this row's stated consequence; see the row itself.
+The second row is **open and not fixable here** — it is a vendor data gap, not a defect. The third
+is a process gate under R139, not a defect.
 
 | finding | why it blocks |
 |---|---|
@@ -107,3 +110,94 @@ the test body executes — three times in Phase 2 a docstring described a strong
 code performed (R79, R82, R129). Nothing is done on assertion: a story closes when a commit
 exists, its tests pass, and `ruff check`, `ruff format --check`, `mypy --strict` and `pytest` are
 green. Everything through `uv run --locked`.
+
+---
+
+## Sprint close
+
+**Phase 3 is complete as specified. That is deliberately not the same as *exited*, and the
+difference is the first thing any write-up citing this phase must carry.** The framework document
+that defines each phase's exit criterion is not in this repository (R135); the scope here was
+reconstructed from the Phase 2 board's own "Not this phase's to fix" section. The phase met the
+reconstruction. Whether the reconstruction is the requirement, only the framework can say.
+
+**Nine stories done, one withdrawn, one optional and unscheduled.** Closed on an independent
+delivery audit and a whole-branch review rather than on assertion: the audit re-derived every
+acceptance check from code instead of from commit messages, confirmed all 30 cited commits exist
+and are ancestors of `main`, ran the gates itself, and ran `tools/measure_iv_requires.py` to
+reproduce the design's coverage table a third time. It found **no row the repository does not
+support**.
+
+Verified on `main` at the close: **1723 tests passing**, `mypy --strict` clean over 41 source
+files, `ruff check` and `ruff format --check` clean over 97, and `data/trials.jsonl` at 414 lines
+with `data/comparisons.jsonl` at 52 — byte-identical to the phase's merge-base. The count is
+independently the same figure the P3-08 fix session measured on the merged tree.
+
+**No wall-clock figure is recorded here, deliberately.** Every suite run at this close shared the
+machine with another worktree's run, and the same 1723 tests read anywhere from 232s to 907s. A
+duration measured under contention is not a measurement of this suite, and the one place a runtime
+number matters — the shared real-panel loader on `perf/share-real-panel-loads` — must measure it on
+a quiet machine or report that it could not.
+
+**What the phase exits on.** `python -m volab.evaluators` turns a variance forecast into decisions
+and scores them: Gaussian VaR/ES at both alphas; the Fissler-Ziegel joint loss assembled into a
+`LossSeries` and handed to the existing `volab.compare.analyse`, so DM, MCS and SPA apply
+unchanged and `walkforward.LOSSES` stays exactly `{"qlike", "mse"}`; Kupiec and Christoffersen
+with a refusal where the sampling window overlaps and a withheld p-value with its reason wherever
+the independence statistic is zero by construction; vol-target P&L with turnover, an ex-date count
+and a flag saying whether that count means anything; and `data/decisions.jsonl`. Beside it,
+`har_rv_iv` declares the horizon-matched implied-variance column **per horizon** and refuses h=66
+through `Domain`, not through a comment. Merged as PR #7, `b2bd304`.
+
+**What was not done, each deliberately.**
+
+- **No recorded run** (R139, D5). A run appends to `data/trials.jsonl`, whose delta the holdout
+  reveal reports, and the reveal belongs to the user. Both ledgers are byte-identical to the
+  phase's merge-base at 414 and 52 lines.
+- **Carried 3** (`egarch11_skewt` simulating at h=1) is held until the reveal, because R115's
+  withholding is part of what the registered read *reports*.
+- **P3-09 was withdrawn, not skipped.** R129's flag was already discharged by `b04f079`
+  (US-3.14), an ancestor of this branch. The story existed because the Phase 2 board's
+  carried-items text predates US-3.14 and I took it on trust. The implementer returned
+  NEEDS_CONTEXT rather than writing a redundant test, which was right.
+- **P3-11** (making `Sampling` horizon-aware, R134's latent flaw) is the user's call and no
+  Phase 3 story needs it. `har_rv_iv` is OLS and declares no `Sampling`.
+
+**What the phase found out about itself, which is the part worth inheriting.** **Eleven** separate
+instances of a test or docstring claiming more than its code performs — the same defect R79, R82
+and R129 each recorded in Phase 2. Every one was caught by a review seat, never by the author who
+wrote it. Several were introduced *by the correction for an earlier one*: R136 was wrong three
+times in three different ways before settling at a four-route table, each version closer, each
+error found by someone reading the code rather than the ruling. Two rules were promoted into the
+plan's Global Constraints mid-phase as a result: every `pytest.raises(match=...)` must be specific
+to the branch it names, and a test asserting a numeric consequence witnesses nothing unless the
+consequence actually follows.
+
+The sharpest instance: a test named "wrong variance loses" passed while the FZ0 formula was
+broken, because it only tested under-forecasting — with the `log(ES)` term dropped, the
+over-forecast margin was exactly **zero**. And a withholding guard had no witness in the
+over-withholding direction until one row was added; mutating the condition had passed all 1,644
+tests.
+
+**Seven errors of the orchestrator's, recorded because the pattern matters more than the count.**
+The `Evaluation.comparable` mechanism; the rescale-hazard framing (OLS is scale-equivariant, so
+the test written for it could never fail); a "roughly nine origins" estimate against a measured
+five; the Gaussian ES multiplier, wrong by 8.8e-9 and so failing the `rel=1e-9` its own assertion
+stated; the overlap count (four, not three); the position-cap boundary, wrong twentyfold; and the
+stale board line that invented P3-09 from nothing. Four were caught by reviewers, three by
+implementers. **The pattern: the hard claims were verified and the easy ones were trusted.** The
+full list of 45 process rulings is in `docs/superpowers/phase3-controller-rulings.md`.
+
+**Rulings.** R135-R141 (the phase's design decisions), R150 (the numbering allocation and a
+standing rule never to re-cut a branch on another session's report of its state), R151 (derive a
+set the codebase will extend; do not list it), R152 (the SPA fix, and the measurement that
+overturned this board's own stated consequence). R142-R149 belong to the Phase 2 completion
+session, which used only R142; the gap is deliberate.
+
+**Still open, and none of it blocks the merge.** Fifteen deferred findings in the table above, each
+with why it was deferred. One blocker that cannot be fixed here: SPY's and IWM's dividend bias is
+unquantifiable because the vendor serves distributions for QQQ only — the run says it does not
+know, which is honest, but it is not a measurement. And the standing ask, unchanged since the
+phase began: **commit the framework document into `docs/`**, so the next boundary does not rest on
+a reconstruction. This one did, and the clearest evidence that it matters is that a stale board
+line produced an entire story that had to be withdrawn.
