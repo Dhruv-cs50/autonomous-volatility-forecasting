@@ -648,12 +648,34 @@ is the branch carrying the most tests.** This branch adds three witnesses whose 
 `main` and should never be fastest. It was fastest by 89s. A measurement in which the heavier tree
 wins by that margin is reporting the runner, not the code.
 
+**The local A/B/A/B was run anyway, started on an idle machine, and says the same thing.** All four
+runs passed with the right counts and nothing skipped — the real store was present, so local
+coverage matched CI's:
+
+| run | tree | tests | pytest time | 1-min load before → after |
+|---|---|---|---|---|
+| A1 | `01fcee7` | 1731 | **525.38s** | 6.69 → 9.46 |
+| B1 | `f202724` | 1734 | 455.32s | 9.46 → **235.42** |
+| A2 | `01fcee7` | 1731 | **253.61s** | 235.42 → 11.59 |
+| B2 | `f202724` | 1734 | 260.41s | 11.59 → 8.76 |
+
+`main` measured against *itself* spans 253.61s to 525.38s — a **2.07x spread**, and 8.6x the 31.6s
+between the two conditions' means. The machine went from load 6.69 to 235 and back inside four
+runs, unprompted. B2's wrapper also recorded 1328s of wall time against pytest's own 260.41s, so
+roughly 1068s went somewhere outside the test session entirely.
+
+**The plain statement the brief asked for: no reading here is trustworthy, and the before/after
+figures above are reported as a bound, not a measurement.** What they do bound is useful. This
+branch runs three *extra* witnesses whose nested `runpytest_subprocess` runs cost about ten seconds
+between them, and it was still not measurably slower than `main` in either pairing — consistent
+with a small net saving that roughly offsets the tests it adds, and inconsistent with any
+regression large enough to matter.
+
 **So this phase's practice is kept and sharpened: measure the mechanism, not the suite.** One sweep
-is measurable to three digits and its multiplier is a test count, which is why the table above this
-one is a measurement and a suite duration is an anecdote. This also corrects the sprint-close note
-that framed the runtime question as "measure it on a quiet machine or report that it could not" —
-for an effect this size there is no quiet machine, only a smaller instrument. A local A/B/A/B was
-run anyway, on an idle machine, for a bound rather than a reading.
+is measurable to three digits and its multiplier is a test count, which is why the table above is a
+measurement and a suite duration is an anecdote. This also corrects the sprint-close note that
+framed the runtime question as "measure it on a quiet machine or report that it could not" — for an
+effect this size there is no quiet machine, only a smaller instrument.
 
 ### The witnesses, and the mutations that prove they bite
 
