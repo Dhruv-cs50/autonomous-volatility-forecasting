@@ -886,17 +886,15 @@ def test_a_run_writes_strict_json_with_the_p_values_and_their_reasons(run: _Run,
 
 
 def test_coverage_at_a_short_stride_is_refused_in_the_written_line(run: _Run, capsys) -> None:
-    # Stride 4, and not 2, which is where this test began: the toy cohort holds ``rw_scaled``, an
-    # exactly proportional copy of ``random_walk``, and off a breach their FZ0 values differ by a
-    # constant. Once a run reaches the 11 origins the bootstrap needs, that pair has no spread and
-    # ``block_length`` raises ``ValueError`` -- out of ``cli.main``, after the trials were
-    # appended. ``WINDOW`` keeps stride 4 under 11 origins (7), so ``analyse`` only refuses here;
-    # every stride tried that reaches 11 on this cohort raised (h=1 at 1, 2, 3; h=5 at 3, 4 over
-    # Feb-Aug 2024), so widening the window under stride 4 lands on the crash. The defect
-    # is ``volab.compare.multiple`` (``superior_predictive_ability`` pre-checks the benchmark's
-    # pairs only), recorded under "Blocks the recorded run" in ``docs/phase3-sprint-board.md`` and
-    # not fixed by this story. The statistics are computed, on a cohort without the pair, in
-    # ``test_a_run_that_reaches_the_bootstrap_computes_every_statistic``.
+    # Stride 4 keeps this run under the 11 origins the bootstrap needs (7 on ``WINDOW``), which
+    # is the point: the refusal below is the one this test is about. It began at stride 2 for a
+    # different reason -- the toy cohort holds ``rw_scaled``, a variance-proportional copy of
+    # ``random_walk`` whose FZ0 losses differ from it by a constant off a breach, and
+    # ``block_length`` re-widened SPA's narrowed pre-check to all pairs and raised ``ValueError``
+    # out of ``cli.main``, *after* the trials were appended. That defect is fixed (R152), and
+    # ``test_a_run_on_the_proportional_toy_cohort_reaches_the_bootstrap_and_does_not_raise`` now
+    # runs this very cohort at stride 2 to 22 origins. The stride here is left at 4 because 4 is
+    # what this test needs, not because 2 is unsafe.
     assert run.main("--symbol", "SPY", "--horizon", "5", "--every", "4", *WINDOW) == 0
     capsys.readouterr()
     for line in run.lines(DECISION_LEDGER):
@@ -911,9 +909,10 @@ def test_a_run_that_reaches_the_bootstrap_computes_every_statistic(run: _Run, ca
     22 comparable origins (h=1, stride 2, nothing overlaps) on ``TOY_WIDE`` -- the toy cohort
     without ``rw_scaled`` -- so the statistics are computed for both decision series.
 
-    ``TOY`` cannot do this: it holds a proportional pair, and every configuration of it that
-    reaches 11 origins raises in the bootstrap (see the comment on
-    ``test_coverage_at_a_short_stride_is_refused_in_the_written_line``)."""
+    ``TOY`` could not do this when this test was written: it holds a variance-proportional pair,
+    and every configuration of it that reached 11 origins raised in the bootstrap. R152 fixed
+    that, and the test below is the same run on ``TOY``; this one is kept as the reading without
+    the degenerate pair, which is what makes the two a pair of witnesses rather than one."""
     run.monkeypatch.setattr(cli, "COHORTS", {TOY_WIDE.name: TOY_WIDE})
     window = ["--from", "2024-02-01", "--to", "2024-12-31", "--minimum-training", "20"]
     argv = ["run", "--cohort", TOY_WIDE.name, "--symbol", "SPY", "--horizon", "1", "--every", "2"]
@@ -950,6 +949,70 @@ def test_a_run_that_reaches_the_bootstrap_computes_every_statistic(run: _Run, ca
             assert spa["refusal"] is None and spa["block"] is not None, spa
             assert 0.0 <= spa["lower"] <= spa["consistent"] <= spa["upper"] <= 1.0, spa
     assert len(run.lines(TRIAL_LEDGER)) == len(LOSSES) * len(TOY_WIDE.models)
+
+
+def test_a_run_on_the_proportional_toy_cohort_reaches_the_bootstrap_and_does_not_raise(
+    run: _Run, capsys
+) -> None:
+    """The configuration Phase 3 could not run, run (R152).
+
+    ``TOY`` holds ``rw_scaled``, ``_Scaled(random_walk, 1.3)``: a **variance**-proportional copy,
+    whose FZ0 loss differs from ``random_walk``'s by an additive ``0.5 * log(1.3)`` at every
+    non-breaching origin. Neither is the SPA benchmark, so SPA's pre-check -- the benchmark's
+    pairs only -- passed and ``block_length`` then re-checked all pairs and raised ``ValueError``
+    from inside ``cli.main``, after ``run_configuration`` had already appended its trial lines to
+    an append-only ledger. That is why this is an end-to-end test and not a unit one: the cost of
+    the defect was where it raised, not that it raised.
+
+    What must still happen on this cohort: DM refuses the degenerate pair, the MCS refuses the
+    whole set (arch eliminates pairwise there, so the all-pairs check is right for it), and SPA
+    reports -- in one pass, writing a complete line.
+
+    **Both edges of the narrowing appear in this one run**, which is why it is the witness the
+    others are checked against. ``BENCHMARKS`` is ``("har_levels", "random_walk")``:
+    against ``har_levels`` the degenerate pair is two *other* contestants and SPA reports its
+    three p-values; against ``random_walk`` the benchmark is itself half of that pair, its own
+    ``d_k`` against ``rw_scaled`` is a constant, and SPA is still refused with its reason.
+    """
+    run.monkeypatch.setattr(cli, "COHORTS", {TOY.name: TOY})
+    window = ["--from", "2024-02-01", "--to", "2024-12-31", "--minimum-training", "20"]
+    argv = ["run", "--cohort", TOY.name, "--symbol", "SPY", "--horizon", "1", "--every", "2"]
+    assert cli.main([*argv, *window]) == 0
+    printed = capsys.readouterr().out
+    assert "no block length can be estimated" not in printed
+
+    lines = run.lines(DECISION_LEDGER)
+    assert [line["alpha"] for line in lines] == list(ALPHAS)
+    for line in lines:
+        fz0 = line["fz0"]
+        assert fz0["origins"] == 22 and fz0["refusal"] is None
+
+        degenerate = [
+            test
+            for test in fz0["dm"]
+            if {test["left"], test["right"]} == {"random_walk", "rw_scaled"}
+        ]
+        assert len(degenerate) == 1, "the proportional pair must be among the DM tests"
+        assert degenerate[0]["headline"]["refusal"] is not None
+
+        # The MCS keeps the all-pairs check and so refuses the set, with its reason recorded.
+        assert fz0["mcs"]["pvalues"] is None
+        sizes = fz0["mcs"]["sizes"]
+        assert sizes and all("identical" in size["refused"] for size in sizes.values())
+
+        # SPA is the statistic that now reports, which is the whole point of the fix.
+        by_benchmark = {spa["benchmark"]: spa for spa in fz0["spa"]}
+        assert set(by_benchmark) == {"har_levels", "random_walk"}
+
+        reported = by_benchmark["har_levels"]
+        assert reported["refusal"] is None and reported["block"] is not None, reported
+        assert 0.0 <= reported["lower"] <= reported["consistent"] <= reported["upper"] <= 1.0
+
+        # The other edge: this benchmark *is* half of the degenerate pair, so it stays refused.
+        refused = by_benchmark["random_walk"]
+        assert refused["consistent"] is None and refused["block"] is None
+        assert "rw_scaled" in refused["refusal"] and "identical" in refused["refusal"]
+    assert len(run.lines(TRIAL_LEDGER)) == len(LOSSES) * len(TOY.models)
 
 
 def test_a_single_origin_run_writes_null_statistics_not_zeros(run: _Run, capsys) -> None:

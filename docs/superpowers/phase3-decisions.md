@@ -363,3 +363,134 @@ it did.
 The cost is paid where the derivation has edge cases, and those get pinned: `base` is exempt
 **exactly**, so `volab.models.basement` is still flagged, and there is a parametrised test over
 nine import forms saying so.
+
+---
+
+## R152 — a narrowed pre-check must narrow the re-check it precedes, and a skipna reduction is no guard
+
+Two defects in `src/volab/compare/multiple.py`, one reached and one latent, fixed together
+because they are the same mistake at two scales: a check written to refuse something, placed
+where it cannot see the thing it refuses.
+
+**Numbered R152, not R143.** R150's allocation reserved **R142-R149** for the Phase 2 completion
+session and gave **R150 onward** to Phase 3; R150 and R151 are taken. The gap R143-R149 is left
+open even though that session finished without using it, for R150's own reason: a gap costs a
+reader one sentence, a collision costs a renumber, and this project has already paid that once.
+Verified by `grep -rn 'R15[0-9]' docs/`, which finds only R150, R151 and this one, and against
+the uncommitted `phase2-decisions.md` in the shared checkout, whose diff claims no number at or
+above R142.
+
+### The reached defect
+
+`superior_predictive_ability` pre-checked `_unestimable(series, names=(benchmark,),
+confidence_set=False)` — the benchmark's pairs only, which is right, because SPA differences every
+contestant against that one benchmark and a degenerate pair among the *others* says nothing about
+any SPA statistic. It then called `block_length`, which re-checked on its own behalf with **no
+`names`**: every pair again. The caller narrowed and the callee silently re-widened, so a
+degenerate pair not involving the benchmark passed the pre-check and raised `ValueError` from
+inside `block_length`.
+
+**Why Phase 3's losses were the first to reach it, and the substitution that hides it.** Under
+the Gaussian `(VaR, ES)` map of `volab.evaluators`, `var/es` is a constant ratio, so an
+off-breach FZ0 value is `const + log(sigma)`: scaling a contestant's forecast **variance** by `c`
+shifts its loss by an **additive** `0.5 * log(c)` at every non-breaching origin, and
+`same_losses` (`dm.py`) tests exactly that — `ptp(left - right)`, a constant additive
+differential. QLIKE and MSE never produced one. `TOY_COHORT`'s `rw_scaled` is
+`_Scaled(random_walk, 1.3)`, and `0.5 * log(1.3) = 0.131182`.
+
+The trap, recorded because a first reproduction attempt fell into it: "proportional" here means
+proportional in the forecast **variance**, which is additive in the **loss**. Two series whose
+*losses* are multiplicatively proportional are not caught, and reproducing with `a` and `a * 1.3`
+shows no crash. The test asserts both halves, so the distinction cannot be lost again.
+
+**Ruling: a function that re-checks what its caller already checked takes the caller's narrowing
+as a parameter.** `block_length(series, *, q, confidence_set=True, names=None)`, forwarded to
+`_unestimable` unchanged, with SPA passing `names=(benchmark,)`. Chosen over deleting the
+re-check, which was the smaller diff: the re-check earns its place — `block_length` is shared, and
+a future caller that forgets its own pre-check should still be stopped — and threading the
+parameter makes the two checks agree **by construction** rather than by coincidence. `None` and
+not `()` as the default, to match `_unestimable`'s existing signature exactly, which is the point:
+two identical signatures cannot drift apart the way these two did.
+
+**The all-pairs check guarded nothing on SPA's path**, established two ways rather than assumed.
+Politis-White is a per-column plug-in rule — `arch.bootstrap.optimal_block_length` returns one
+figure per column, so no inter-column structure can enter it, and measured here a column and the
+same column plus a constant get block lengths agreeing to 4e-16 relative. And Hansen's SPA
+compares the benchmark to the best alternative through `d_k = L_bench - L_k`: two alternatives
+differing by a constant give two `d_k` columns differing by a constant, neither of them constant,
+both with positive bootstrap variance. What stays refused is unchanged: a constant loss column,
+the benchmark itself constant-shifted from an alternative, and the whole all-pairs check for the
+**MCS**, where arch eliminates pairwise and `_swamped` exists for that family.
+
+### The latent defect, and why `.max()` is the wrong reduction here
+
+`politis_white` guarded with `math.isfinite(figures.max())` on a **pandas Series**, and
+`Series.max()` **skips NaN**. A constant column has no Politis-White block length — arch divides
+by its variance and returns `NaN`, with a `RuntimeWarning` on the way — so the reduction returned
+*another* column's perfectly finite figure and the guard passed on a matrix it was written to
+refuse. Measured: `{0: nan, 1: 3.569}` reduces to `3.569` under pandas and to `nan` under
+`to_numpy().max()`. Fixed to `figures.to_numpy().max()`.
+
+Unreachable today, because `_unestimable`'s constant-column check fires first on every path into
+`block_length`. It is fixed anyway, and its test asserts **both** the hole and that ordering, so
+the claim "unreachable" is a failing test rather than a comment if the ordering ever changes.
+
+**Ruling: a guard against a non-finite value is written on the array, not on the pandas object
+that may drop it.** The skipna default is right for a statistic over observations and wrong for a
+reduction whose purpose is to notice that one entry is missing.
+
+### What the cost was, and where the witness had to live
+
+The crash reached `cli.main` **after** `run_configuration` had appended its trial lines, so a real
+recorded run would have left `data/trials.jsonl` — append-only, git-tracked, and a line count the
+write-up reports — carrying a run that produced no comparison. That is why the acceptance witness
+is end-to-end and not a unit test:
+`test_a_run_on_the_proportional_toy_cohort_reaches_the_bootstrap_and_does_not_raise` runs the
+evaluators CLI on `TOY` (the cohort *with* `rw_scaled`) at h=1 stride 2 to 22 origins — the exact
+configuration the P3-08 implementer moved to stride 4 to avoid — and asserts both edges in one
+run: SPA against `har_levels` reports three p-values, SPA against `random_walk` (itself half of
+the degenerate pair) is still refused, DM refuses that pair and the MCS refuses the whole set.
+
+**Nothing pinned this defect before.** The suite was green and the hole was invisible, because the
+story that hit it worked around it in the test rather than reporting it as a test gap. Two records
+asserting the defect still exists are corrected here rather than left: the stride-4 comment in
+`tests/test_evaluators_cli.py` and the `TOY_WIDE` docstring's "`TOY` cannot do this".
+
+### Measured: on the real panel this was a toy-only hazard
+
+Stated rather than assumed, because the board recorded the condition as **unverified**. Built the
+FZ0 series for `phase3-iv` on the real SPY panel through `run_configuration` with a no-op `append`
+(so no ledger count moved) and compared every pair's `ptp(L_a - L_b)` against `same_losses`' own
+`4 * eps * max|L|`:
+
+| configuration | n | closest pair | its ratio to the threshold |
+|---|---|---|---|
+| SPY h=1, alpha=0.01 | 126 | `garch11_skewt` / `gjr11_skewt` | 2.4e14 |
+| SPY h=1, alpha=0.025 | 126 | `garch11_skewt` / `gjr11_skewt` | 2.9e14 |
+| SPY h=5, alpha=0.01 | 249 | `har_semilog` / `har_levels_mz` | 2.5e14 |
+| SPY h=5, alpha=0.025 | 249 | `har_semilog` / `har_levels_mz` | 2.7e14 |
+| SPY h=22, alpha=0.01 | 246 | `garch11_skewt` / `gjr11_skewt` | 2.9e14 |
+| SPY h=22, alpha=0.025 | 246 | `har_levels` / `har_semilog` | 5.8e14 |
+| QQQ h=1, alpha=0.01 | 119 | `har_levels` / `har_rv_iv` | 2.0e14 |
+| QQQ h=1, alpha=0.025 | 119 | `har_levels` / `har_semilog` | 1.8e14 |
+| IWM h=1, alpha=0.01 | 131 | `garch11_skewt` / `gjr11_skewt` | 1.3e14 |
+| IWM h=1, alpha=0.025 | 131 | `garch11_skewt` / `gjr11_skewt` | 2.1e14 |
+
+All at stride 5 over 2021-01-04 to `dev_end`, which is the recorded run's own window: **every
+horizon `phase3-iv` answers** on SPY, and h=1 across the **whole configured universe**. The
+closest pair anywhere is 1.3e14 times the tolerance — fourteen orders of magnitude clear — and no
+column is constant in any configuration.
+
+**The one plausible real candidate was `har_levels_mz`**, a Mincer-Zarnowitz recalibration of
+`har_levels`: a **fixed** slope `b` would be exactly the variance-proportional case. Its `b` is
+refitted per origin by an inner walk-forward, so its differential against `har_levels` is not
+constant — and the structural reading is the general one, because **no member of `phase3-iv` is a
+fixed-scale transform of another**. That is a property of the models, not of the data, which is
+why it is not surprising that three symbols agree; the figures are given because measuring was
+the point.
+
+**So the crash was a toy-cohort hazard, present in `TOY_COHORT` by construction and not reachable
+on the real panel in any configuration measured.** That changes its priority, not its correctness: it
+blocked the recorded run through the toy-cohort tests either way, the defect is real the moment a
+fixed-scale contestant is added, and the fix is the same. Recording the figures is the point —
+"unverified" was the honest state of that row, and this is what verifying it produced.
