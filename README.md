@@ -30,10 +30,13 @@ demand.
 |---|---|---|
 | 0 — Skeleton | Parquet layout, config, `load_panel()` and the holdout guard | merged |
 | 1 — Data and targets | Ingestion, realized measures, forward targets, point-in-time evidence | merged |
-| **2 — Walk-forward** | Truncation equivalence, process isolation, walk-forward, HAR baseline, trial ledger | **in review** |
-| 3–6 | Implied-vol contestant, scheduler, agent layer, write-up | not started |
+| 2 — Walk-forward | Truncation equivalence, process isolation, the walk-forward, the baseline shootout and the trial ledger | merged |
+| 3 — Implied vol and evaluators | A horizon-matched IV contestant, and evaluators that score decisions | merged |
+| 4–6 | Scheduler, agent layer, write-up and the sealed reveal | not started |
 
-## What Phase 1 contains
+## What the harness contains
+
+### Phase 1 — the data layer
 
 **Ingestion** (`src/volab/ingest/`) — three keyless sources, no API key and no account:
 
@@ -61,6 +64,50 @@ other.
 session on which its horizon completes. Because `load_panel` filters on `as_of`, the store
 **cannot return a target that has not yet realised**. No model code has to remember to exclude
 one.
+
+### Phase 2 — the walk-forward and the baseline shootout
+
+**The walk-forward** (`src/volab/walkforward/`) refits and forecasts at every origin, each from
+the panel the store would have handed over *at that origin* — one build per origin, serving both
+the training rows and the origin's own row, so it does not lean on its own test result. Training
+targets are sliced on `as_of` (the session a target's horizon completes), never on `ts` (the base
+session it is *for*): the difference is up to `h - 1` sessions of realized future, which at h=66
+is the whole forecast.
+
+**The model zoo** (`src/volab/models/`) expresses every contestant through one `Model` /
+`Forecaster` seam, with a conformance suite a contestant must pass — including clauses that catch
+one holding the target frame, or reaching the store directly past its own origin. Seven are
+registered: HAR in levels, HAR semi-log, a Mincer-Zarnowitz recalibrated HAR, GARCH(1,1), GJR(1,1)
+and EGARCH(1,1) with skew-t innovations, and a horizon-matched IV contestant.
+
+**The trial ledger** (`data/trials.jsonl`) is append-only and git-tracked, one line per evaluated
+configuration — contestant x symbol x horizon x loss — each carrying the git sha of the tree that
+produced it *and a dirty flag*, the origin stride, and how many origins were requested, scored,
+dropped and skipped. A harness that reports a winner without saying how many candidates it
+considered is the thing this project refuses.
+
+### Phase 3 — comparison, and scoring the decision
+
+**The comparison layer** (`src/volab/compare/`) is Diebold-Mariano, the **model confidence set**
+and **SPA**, over named cohorts rather than ad-hoc pairs, written to `data/comparisons.jsonl`. It
+reports a confidence *set* instead of a single winner, which is the honest output when 1-2% loss
+differences sit inside the sampling error.
+
+**Decision evaluators** (`src/volab/evaluators/`) score what a forecast *licenses*, not only the
+forecast: the Gaussian VaR and Expected Shortfall it implies, judged by the Fissler-Ziegel joint
+loss, which is strictly consistent for the pair. That makes it admissible to the same DM/MCS/SPA
+machinery, so the question becomes which forecaster makes better *decisions*.
+
+**The leaderboard** (`python -m volab.leaderboard`) computes nothing of its own. It reads the two
+ledgers and prints every contestant ranked per symbol, horizon and loss, with the trial count
+beside it and MCS membership — so the leaderboard cannot disagree with what it reports, and a
+trial whose tree was dirty is shown as such rather than silently ranked.
+
+**The holdout is pre-registered.** `docs/holdout-preregistration.md` was registered on 2026-10-28,
+while the window was still open (`holdout_end` 2026-10-30), and is binding from that commit: the
+contestants, the losses and the ledger's line count were fixed *before* the window they will be
+judged on closed. A change means a new registration and a new look, both counted.
+
 
 ## The split
 
@@ -164,7 +211,16 @@ uv sync
 uv run --locked pytest                          # the full suite
 uv run --locked python -m volab.ingest backfill # fetch, archive, build raw, curate
 uv run --locked python -m volab.features build  # the feature table and the four target sets
+uv run --locked python -m volab.walkforward run  # refit per origin; appends to the trial ledger
+uv run --locked python -m volab.compare          # DM, the model confidence set and SPA
+uv run --locked python -m volab.evaluators --cohort phase3-iv   # VaR and ES, scored jointly
+uv run --locked python -m volab.leaderboard      # rank what the two ledgers already hold
 ```
+
+The pipeline order is the order above: `compare` reads what `walkforward` wrote, and
+`leaderboard` computes nothing of its own. Everything stops at `dev_end`; none of these commands
+takes an `--end`, and the walk-forward refuses a `--to` past the boundary loudly rather than
+clamping it silently.
 
 Gates, all of which CI enforces:
 
@@ -181,19 +237,29 @@ and a bare `uv run` re-locks silently.
 ```
 src/volab/
   store.py       the ONLY module that touches Parquet, in either direction
+  identity.py    the ONE byte-exact table comparator; no tolerance anywhere
+  panel.py       panel assembly, and truncate(): the panel as of a cutoff
   config.py      typed settings; five validation rules define the split
   paths.py       pure path algebra, no I/O
   sessions.py    trading-session arithmetic, tolerant of non-session dates
   ingest/        fetchers, the payload archive, raw -> curated
   features/      realized measures, HAR, forward targets, the feature table
+  walkforward/   refit and forecast per origin; the trial ledger
+  models/        the Model/Forecaster seam and the seven contestants
+  compare/       Diebold-Mariano, the model confidence set, SPA, cohorts
+  evaluators/    VaR and ES, scored by the Fissler-Ziegel joint loss
+  leaderboard/   reads the ledgers and ranks; computes nothing itself
 data/
-  vendor_payloads/   committed: the untouched vendor responses
+  vendor_payloads/          committed: the untouched vendor responses
+  trials.jsonl              committed: one line per evaluated configuration
+  comparisons.jsonl         committed: what DM, the MCS and SPA concluded
+  holdout_access.jsonl      committed from the moment a sealed read happens
   raw/ curated/ features/   gitignored: derivable from the payloads
 docs/
-  sprint-board.md            delivery state, story by story
-  superpowers/specs/         the design, with every decision's reasoning
-  superpowers/plans/         the implementation plan
-  superpowers/phase1-decisions.md   29 rulings, each with what it costs if wrong
+  holdout-preregistration.md   binding, registered before the window closed
+  *-sprint-board.md            delivery state, story by story, per phase
+  superpowers/specs/           the design, with every decision's reasoning
+  superpowers/phase*-decisions.md   every ruling, with what it costs if wrong
 ```
 
 ## Enforced invariants
@@ -209,6 +275,17 @@ docs/
 - **No tolerance in a leakage test.** Exact comparison only: a 1e-9 leak reads as floating-point
   noise, which is the most dangerous size for one to be.
 - **Trailing windows only**, outside the one module that owns forward quantities.
+- **No numeric library in the sealed point-in-time path.** `panel.py`, `store.py`,
+  `walkforward/__init__.py`, `models/base.py` and everything under `features/` may not import
+  numpy, scipy or `arch`, whatever is installed — because those are the modules whose output
+  truncation equivalence and the byte-exact comparator compare, and an upstream version change
+  there could move a number this project claims is stable. The libraries *are* declared, for the
+  model zoo and the comparison layer; the ban is enforced by module rather than by convention.
+- **A contestant cannot reach the store.** The conformance suite fails one that reads past its
+  own origin or holds the target frame, so "the model only sees what it should" is a property of
+  the data each contestant is handed rather than a claim about its code.
+- **Every trial is counted.** A run of N configurations appends exactly N ledger lines, and the
+  ledger is append-only.
 
 ## Known limitations, stated rather than discovered later
 
@@ -224,4 +301,12 @@ docs/
   publication dates are modelled as a conservative one-session lag rather than observed.
 - **The 200-session holdout is thin at long horizons.** At 22 and 66 sessions it yields few
   non-overlapping blocks, so the final confirmatory check will be weak there. Phase 6 must report
-  that rather than discover it.
+  that rather than discover it, and the pre-registration fixes the claim before the look.
+- **Nine leakage escapes have been found in this harness so far**, every one by running something
+  rather than by reading it, and two of them inside code written to close a previous one. They are
+  recorded with their measurements in the phase decisions logs. The useful reading is not that the
+  harness is now finished but that this is the rate: a new mechanical claim here should be assumed
+  to have a hole until a plant has been run against it.
+- **The holdout has not been read.** The window closed on 2026-10-30 and the reveal is deliberately
+  still held. `data/holdout_access.jsonl` is the audit trail and will show it the moment it
+  happens.
