@@ -45,11 +45,13 @@ MINIMUM = 250
 
 
 def real(horizon: int) -> tuple[Settings, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Settings, curated panel, targets and the persisted feature table, one copy per call.
+    """Settings, curated panel, targets and the persisted feature table.
+
+    The three frames are the caller's own copies; ``settings`` is the one shared instance, which
+    is frozen.
 
     The reads are shared through ``real_panel``, which is called from here, inside a test body, and
-    not from a module-scoped fixture, which would run before the autouse holdout police. Each
-    call returns frames of its own.
+    not from a module-scoped fixture, which would run before the autouse holdout police.
     """
     try:
         panel, targets = real_panel.load_for(SYMBOL, horizon)

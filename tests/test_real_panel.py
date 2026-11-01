@@ -1,8 +1,14 @@
 """``real_panel``: what its accessors hand out, and the one thing it must never become.
 
 None of these reads the store. The loaders are exercised through a fake ``load_curated_panel``
-under a symbol no real run uses, so the process-wide cache the other test modules share is neither
-cleared nor filled by anything here.
+under a symbol no real run uses. They do add ``T<uuid>`` entries to the loaders' caches (and fill
+``_settings`` if nothing has yet), but no real symbol's entry is filled and the store is not read,
+so the other test modules still pay for their own first load.
+
+What these tests do not show: that the copies are *deep*. A ``copy(deep=False)`` passes all of
+them, because under pandas copy-on-write (pandas 3) a shallow copy isolates assignment too. Deep
+is correct by inspection, and is kept because it does not depend on that behaviour; it is not
+verified here.
 """
 
 from __future__ import annotations
@@ -12,6 +18,10 @@ import uuid
 import pandas as pd
 import pytest
 import real_panel
+
+# Private pytest API: the type pytest 9 gives a function decorated with ``@pytest.fixture``. It has
+# been renamed before, so a pytest upgrade that breaks this import is a reason to find the new
+# spelling, not to delete the test.
 from _pytest.fixtures import FixtureFunctionDefinition
 
 
@@ -83,8 +93,13 @@ def test_a_missing_feature_table_is_none_and_not_an_error(monkeypatch: pytest.Mo
 
 
 def test_the_module_defines_no_pytest_fixture() -> None:
-    """The reason is in the module docstring: a fixture of a higher scope than the function
-    would load before the autouse holdout police, and this is the check that holds the line."""
+    """``real_panel`` itself defines no fixture, which is all this checks.
+
+    The reason is in its docstring. What actually keeps a wider-scoped fixture from reading the
+    store before the holdout police are active is ``pytest_fixture_setup`` in ``conftest.py``,
+    which refuses the read wherever the fixture is defined; a fixture in another test module that
+    called ``real_panel.curated_panel`` would pass this test and be stopped there.
+    """
     fixtures = [
         name
         for name, value in vars(real_panel).items()

@@ -7,8 +7,10 @@ is set up before it, so a load made there happens before the police are watching
 unpoliced. Called from a test body, the first read in the process is made while they are. That is
 the whole of what is policed: later calls are cache lookups and reach the store not at all, so
 the guarantee covers the one read, which is the only one that touches the store.
-``test_real_panel.py`` asserts this module defines no fixture. A fixture that wants a frame from
-here must be function-scoped, and so runs inside the police too.
+``pytest_fixture_setup`` in ``conftest.py`` is what enforces the rule, for fixtures defined
+anywhere: it refuses a store read during the setup of a non-function-scoped fixture. A fixture
+that wants a frame from here must therefore be function-scoped. ``test_real_panel.py`` also
+asserts that this module defines no fixture of its own.
 
 **Why the accessors copy.** Each loader is cached, so every caller in the process would otherwise
 hold the same frame object. The modules this replaced each did that behind a comment saying
@@ -18,7 +20,9 @@ would turn that within-file convention into a coupling between files. Each acces
 edits it in place changes its own copy and no one else's. That is all the copy protects against.
 It duplicates the frame's arrays and index, not the Python objects an object-dtype cell might
 refer to, so mutating such an object in place would still be shared. Nothing here checks that the
-cached frames themselves stay untouched: only this module holds them.
+cached frames themselves stay untouched: only this module holds them. That the copies isolate
+callers from one another is tested; that they need to be *deep* rather than shallow is not (under
+pandas copy-on-write a shallow copy isolates assignment as well). Deep is correct by inspection.
 
 ``settings`` is the exception: ``Settings`` is a frozen dataclass of immutable fields, so the one
 cached instance is returned as it is.

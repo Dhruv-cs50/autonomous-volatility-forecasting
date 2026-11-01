@@ -99,3 +99,49 @@ def test_unmarked_test_that_moves_the_boundary_fails(
     result = pytester.runpytest_subprocess()
     result.assert_outcomes(failed=1)
     result.stdout.fnmatch_lines(["*Failed: test read past the repository's dev_end*"])
+
+
+def test_a_store_read_during_a_wider_scoped_fixture_is_an_error(
+    pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A module-scoped fixture is set up before the autouse police, so its read is refused.
+
+    The read is two calls down (fixture, helper, ``load_curated_panel``), so the guard has to
+    watch the read itself and not the fixture's source. ``errors=1``, not ``failed=1``: a failure
+    during fixture setup is reported as an error, and ``failed`` would mean the guard fired in
+    the wrong place. The quiet module-scoped fixture beside it is the control: the guard refuses
+    reads, not wider scopes.
+    """
+    src_dir = str(Path(volab.__file__).resolve().parents[1])
+    existing = os.environ.get("PYTHONPATH", "")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([src_dir, existing]) if existing else src_dir)
+    pytester.makeconftest((Path(__file__).parent / "conftest.py").read_text())
+    pytester.makepyfile(
+        """
+        import pytest
+
+        from volab.config import load_settings
+        from volab.panel import load_curated_panel
+
+        def read_the_store():
+            settings = load_settings()
+            return load_curated_panel(settings, "SPY", end=settings.splits.dev_end)
+
+        @pytest.fixture(scope="module")
+        def early():
+            return read_the_store()
+
+        @pytest.fixture(scope="module")
+        def quiet():
+            return 1
+
+        def test_depends_on_the_early_read(early):
+            raise AssertionError("the fixture's read was not refused")
+
+        def test_a_quiet_wider_fixture_is_fine(quiet):
+            assert quiet == 1
+        """
+    )
+    result = pytester.runpytest_subprocess()
+    result.assert_outcomes(passed=1, errors=1)
+    result.stdout.fnmatch_lines(["*Failed: fixture 'early' (scope module) read the store*"])

@@ -7,6 +7,9 @@ reads past the repository's own ``dev_end`` too, however it got there: reaching 
 one way past the seal, and handing ``load_panel`` a ``Settings`` with a later boundary was
 another.
 
+``pytest_fixture_setup`` below closes the one gap those leave: the police are function-scoped, so
+a fixture of a wider scope is set up before them and its store read goes unwatched. It is refused.
+
 ``_clean_volab_environment`` is the other half of that: the police asks ``load_settings`` where
 the boundary is, so the boundary must not be settable from outside the suite.
 """
@@ -15,9 +18,10 @@ from __future__ import annotations
 
 import datetime as dt
 import sys
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 import pandas as pd
 import pyarrow as pa
@@ -217,3 +221,81 @@ def _forbid_holdout_unlock(
         if bound is original_load_panel:
             monkeypatch.setattr(module, "load_panel", police_holdout_read)
     yield
+
+
+# Names of the non-function-scoped fixtures being set up right now, outermost first. Fixtures
+# nest (a module fixture pulls in the session fixtures it needs inside its own setup).
+_WIDER_SCOPE_SETUPS: list[str] = []
+# Where ``load_panel`` was bound, and to what, when the refusal was installed.
+_REFUSED_BINDINGS: list[tuple[ModuleType, object]] = []
+
+
+def _refuse_store_read(*args: object, **kwargs: object) -> object:
+    pytest.fail(
+        f"fixture {_WIDER_SCOPE_SETUPS[-1]} read the store during setup, before the autouse "
+        "holdout police are active; read from inside the test body (see tests/real_panel.py)"
+    )
+
+
+def _install_store_refusal() -> None:
+    # Lazy and unguarded, as in ``_forbid_holdout_unlock``: a guard that fails open on an import
+    # error is worse than none.
+    import volab.store as store
+
+    # Whatever ``load_panel`` is right now: the original, or the per-test police's wrapper if a
+    # fixture is being set up by ``request.getfixturevalue`` from inside a test. Every binding of
+    # it, not only ``volab.store``'s, for the reason given in ``_forbid_holdout_unlock``.
+    current = store.load_panel
+    for module in list(sys.modules.values()):
+        try:
+            bound = getattr(module, "load_panel", None)
+        except Exception:
+            continue
+        if bound is current:
+            _REFUSED_BINDINGS.append((module, current))
+            module.__dict__["load_panel"] = _refuse_store_read
+
+
+def _remove_store_refusal() -> None:
+    while _REFUSED_BINDINGS:
+        module, original = _REFUSED_BINDINGS.pop()
+        module.__dict__["load_panel"] = original
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_fixture_setup(
+    fixturedef: pytest.FixtureDef[object], request: pytest.FixtureRequest
+) -> Generator[None, object, object]:
+    """Refuse any ``volab.store.load_panel`` call made while a non-function fixture is set up.
+
+    Higher-scoped fixtures are set up before the function-scoped autouse ``_forbid_holdout_unlock``,
+    so a read made there is never checked against ``dev_end``. This was the case for the ``real``
+    fixtures in ``test_walkforward.py`` and ``test_truncation_equivalence.py`` until
+    ``tests/real_panel.py`` was written, and nothing noticed.
+
+    The rule watches the read and asks pytest for the scope, so it names no fixture and needs no
+    list of exceptions: ``fixture -> helper -> load_panel`` is caught however deep the helper is,
+    and a new fixture is covered the day it is written. Synthetic-store reads are refused too;
+    nothing needs one at a wider scope, and an exemption is the thing that would rot.
+
+    ``load_panel`` is a complete chokepoint for ``volab``: ``test_import_discipline.py`` fails any
+    module under ``src`` other than ``volab.store`` that reads Parquet by another route. What it
+    does not see is a test or fixture that reads files itself, without calling any ``volab`` code.
+
+    The refusal is installed only while such a fixture is being set up, and it raises instead of
+    calling through. It is therefore never a frame in a successful read, which matters:
+    ``store._caller_frame`` names the first frame outside ``volab`` in the audit line, and a
+    permanent wrapper here would become the "caller" ``test_store_guard`` asserts on.
+    """
+    if fixturedef.scope == "function":
+        return (yield)
+    label = f"{fixturedef.argname!r} (scope {fixturedef.scope})"
+    if not _WIDER_SCOPE_SETUPS:
+        _install_store_refusal()
+    _WIDER_SCOPE_SETUPS.append(label)
+    try:
+        return (yield)
+    finally:
+        _WIDER_SCOPE_SETUPS.pop()
+        if not _WIDER_SCOPE_SETUPS:
+            _remove_store_refusal()

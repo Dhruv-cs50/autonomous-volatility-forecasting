@@ -484,7 +484,9 @@ class Real:
 def real() -> Real:
     """Function-scoped on purpose: the first read in the process must run inside a test, where the
     autouse holdout police are active, and a module-scoped fixture is set up before them. The
-    panel comes from ``real_panel`` as a copy, so the scope costs a copy per test and no read."""
+    panel comes from ``real_panel`` as a copy, so the scope costs a copy per test and no store read.
+    The body also re-derives the session list for every test (``get_calendar``, ``as_of_dates``,
+    ``sessions_between``); that is cheap beside a load but is not free."""
     settings = real_panel.settings()
     try:
         panel = real_panel.curated_panel("SPY")

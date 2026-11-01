@@ -483,7 +483,7 @@ class Real:
 def real() -> Real:
     """Function-scoped on purpose: the first read in the process must run inside a test, where the
     autouse holdout police are active, and a module-scoped fixture is set up before them. The
-    frames come from ``real_panel`` as copies, so the scope costs a copy per test and no read."""
+    frames come from ``real_panel`` as copies: the scope costs a copy per test, no store read."""
     try:
         panel, targets = real_panel.load_for("SPY", HORIZON)
     except DatasetNotFound as absent:

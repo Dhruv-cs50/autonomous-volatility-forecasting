@@ -650,7 +650,7 @@ RECORDED_STRIDE = 5
 
 
 def real_frames(horizon: int) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """The curated panel and targets for ``REAL_SYMBOL``, one copy per call.
+    """The curated panel and targets for ``REAL_SYMBOL``, as the caller's own copies.
 
     The read is shared through ``real_panel`` and made from inside a test body, not a module-scoped
     fixture: a higher-scoped fixture runs before the autouse ones, so the read would escape the
