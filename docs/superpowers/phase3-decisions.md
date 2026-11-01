@@ -549,10 +549,27 @@ the install.
 
 ### Why this was not folded into the performance change that found it
 
-The naive fix is to run the identity sweep in the per-test police too. **Measured there: 3.6ms a
-sweep, about 6s across 1,729 tests** — a fifth of that change's ~30s saving, spent re-deriving an
-answer that does not change between tests. It was deliberately left out, and this change pays for
-itself instead by installing **once per session**.
+The naive fix is to run the identity sweep in the per-test police too. #12 measured 3.6ms a
+sweep, about 6s across the suite — a fifth of its own ~30s saving, spent re-deriving an answer that
+does not change between tests. It was deliberately left out, and this change pays for itself
+instead by installing **once per session**.
+
+**Re-measured here rather than inherited**, in a process with the whole suite collected (1845
+modules in `sys.modules`), timing both sweeps side by side:
+
+| sweep | median | min | over 1,731 tests |
+|---|---|---|---|
+| identity, `_names_bound_to` | 3.249ms | 2.768ms | **≈ 5.6s** — the naive fix |
+| name, `getattr(module, "load_panel")` — what this replaced did per test | 0.198ms | 0.188ms | ≈ 0.34s |
+| this design: 1 install + 2 per marked test = 7 sweeps | — | — | **≈ 23ms** |
+
+#12's figure is confirmed: 3.249ms against its 3.6ms, and 5.6s against its ~6s.
+
+**But the saving against the code this replaces is ≈ 0.32s, not 6s, and that distinction matters.**
+The 6s was always the cost of the *naive fix*, never of `main`. `main` paid a *name* sweep per test,
+which is 16x cheaper than the identity sweep because `getattr` on one attribute does not walk a
+module's whole namespace. So the right way to state this change's performance is: it avoids the 5.6s
+the correct-by-identity fix would have cost, and incidentally returns about 0.32s.
 
 The once-per-session design works because the install makes `volab.store.load_panel` *be* the
 wrapper. Every later import therefore resolves to the wrapper by whatever name it chooses, with no
@@ -600,6 +617,31 @@ corrupted: the nested run went green for the boring reason, not the interesting 
 only the mutation check that exposed the difference. The order — an unmarked test to install, the
 marked test to leak, an unmarked test to be refused — *is* the scenario.
 
+### The suite wall time cannot resolve this, and waiting for a quiet machine would not have helped
+
+The brief asked for full-suite wall time before and after. The honest answer is that **no
+wall-clock measurement can resolve a 0.32s effect on this suite**, and the evidence is CI's own
+replicates rather than a claim about the laptop:
+
+| tree | CI pytest duration |
+|---|---|
+| `main` `01fcee7` (baseline) | 450.99s |
+| `097610d`, **byte-identical tree** to `01fcee7` | 455.68s |
+| `097610d`, same tree again | **326.56s** |
+| `16584c3` (this branch) | 465.57s |
+| `16584c3` again | 453.31s |
+
+Two runs of **the same tree** on GitHub's own runners differ by **129s** — 29%. The effect being
+measured is 0.32s, roughly 400x smaller than that spread. A local A/B/A/B would have added a
+noisier instrument to an already unresolvable question; the machine here was at load average 126
+on 8 cores when this was written, and identical code has read 232s, 472s and 907s on it.
+
+**So this phase's practice is kept and sharpened: measure the mechanism, not the suite.** One sweep
+is directly measurable to three digits and its multiplier is a test count, which is why the table
+above is a measurement and a suite duration would have been an anecdote. This also corrects the
+sprint-close note that framed the runtime question as "measure it on a quiet machine or report that
+it could not" — for an effect this size there is no quiet machine, only a smaller instrument.
+
 ### The witnesses, and the mutations that prove they bite
 
 Both witnesses were **seen red before the fix**: `2 failed, 5 passed`, with each nested subprocess
@@ -620,3 +662,54 @@ the thing it is supposed to test is not testing it:
 The second row is R151's own standard — "the witness for a derived rule is a mutation that the
 listed version passes" — run in reverse: the listed version *fails* the new witnesses and passes
 the old one, which locates the hole rather than asserting it.
+
+---
+
+## R154 — a deleted test is invisible to every gate this project has
+
+While fixing the alias blind spot I **silently deleted three tests** that PR #12 had added, in
+`tests/test_conftest_policy.py`:
+
+- `test_a_store_read_during_a_wider_scoped_fixture_is_an_error`
+- `test_the_refusal_follows_the_function_and_not_the_name_it_is_bound_to`
+- `test_a_module_first_imported_during_wider_scope_setup_is_not_left_refusing`
+
+The second is **the review's own witness that the fixture-scope guard matches by identity and not
+by name** — the nearest relative of the very defect the change was written to fix. I deleted the
+test for the bug while fixing the same bug one layer down.
+
+### The mechanism, which is duller than the irony
+
+I read the file with `cat` from the **shared checkout** while it sat on `docs/phase3-sprint-close`,
+a branch that predates #12, and then wrote the whole file into a worktree based on `main`, which
+carries #12. The content was a faithful copy — of the wrong branch. `tests/conftest.py` came
+through untouched because it was patched in place with targeted replacements that assert a single
+match; the one file rewritten whole is the one file that lost work.
+
+**Ruling: never write a whole file from content read earlier in the session.** Edit in place, or
+re-read the file from the tree being edited immediately before writing it. This generalises past
+branches: the same hazard exists between worktrees, and between a file read before a rebase and
+written after one.
+
+### Why nothing caught it, which is the part worth inheriting
+
+Every gate this repository has passed on both commits. They cannot do otherwise: **deleting a test
+removes a check without breaking one.** `pytest` was green, `ruff` and `mypy` were green, and CI
+was green twice. A reviewer reading the diff would have seen it; no automated gate could.
+
+What caught it was a **test count that moved the wrong way** — CI reported 1731 on `main` and 1730
+on a commit that *added two tests* — and it was noticed only while chasing an unrelated question
+about whether CI exercises the real-panel paths. Three tests were already gone and pushed by then.
+
+**Ruling: a test count is a gate.** A change that adds tests must raise the collected count by
+exactly what it added, and the number belongs in the commit message where the next reader can check
+it, as this branch's now does (1734 = `main`'s 1731 + 3). Where a diff against the base should add
+and never remove, say so and check it: `git diff <base> -- <path>` showing no removed lines is one
+command and it is now part of this branch's evidence.
+
+### The related correction
+
+The same rewrite reinvented `_run_nested`, which #12 had already introduced, and the commit message
+claimed credit for factoring out boilerplate that already existed. Both the deletion and the false
+claim are corrected in `10a03fc` rather than rebased away, because a branch that hid this would be
+the wrong artefact to inherit — R152's standard, applied to my own error instead of a board row.
