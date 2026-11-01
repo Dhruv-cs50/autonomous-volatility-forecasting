@@ -459,7 +459,7 @@ asserting the defect still exists are corrected here rather than left: the strid
 ### Measured: on the real panel this was a toy-only hazard
 
 Stated rather than assumed, because the board recorded the condition as **unverified**. Built the
-FZ0 series for `phase3-iv` on the real SPY panel through `run_configuration` with a no-op `append`
+FZ0 series for `phase3-iv` on the real panel through `run_configuration` with a no-op `append`
 (so no ledger count moved) and compared every pair's `ptp(L_a - L_b)` against `same_losses`' own
 `4 * eps * max|L|`:
 
@@ -490,7 +490,20 @@ why it is not surprising that three symbols agree; the figures are given because
 the point.
 
 **So the crash was a toy-cohort hazard, present in `TOY_COHORT` by construction and not reachable
-on the real panel in any configuration measured.** That changes its priority, not its correctness: it
-blocked the recorded run through the toy-cohort tests either way, the defect is real the moment a
-fixed-scale contestant is added, and the fix is the same. Recording the figures is the point —
-"unverified" was the honest state of that row, and this is what verifying it produced.
+on the real panel in any configuration measured.** That changes its priority, not its correctness.
+The defect was real, and real the moment a fixed-scale contestant is added; the fix is the same
+either way.
+
+**What the measurement overturns, said plainly, because "RESOLVED" is the wrong thing for a future
+reader to generalise from.** The board's row claimed "a real run dies *after* trials were
+appended". For the ten configurations above that claim does **not** hold: the recorded run would
+have completed, and no ledger line would have been orphaned. What genuinely blocked the run was
+the row itself — an unverified claim about the recorded run's own path is not something to run a
+phase on, which is why the row was right to block even though its stated consequence was wrong.
+Two configurations remain unmeasured (QQQ and IWM at h=5 and h=22), so the honest statement is
+"not reachable in any configuration measured", not "never at risk". The structural reading above —
+no member of `phase3-iv` is a fixed-scale transform of another — is what makes the unmeasured two
+unsurprising rather than unknown, and it is an argument, not a measurement.
+
+Recording the figures is the point: "unverified" was the honest state of that row, and this is
+what verifying it produced.
