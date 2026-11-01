@@ -221,6 +221,19 @@ def _forbid_holdout_unlock(
     # that itself now; this is the suite-side half of the same fix.
     if not _POLICED_ORIGINAL:
         _install_holdout_police()
+    elif store.load_panel is not _police_holdout_read:
+        # Installing once per session buys the speed and costs this check. The per-test wrapping
+        # this replaced re-captured whatever ``store.load_panel`` was for every test, so a
+        # rebinding that escaped its test healed itself on the next one; nothing re-captures now.
+        # The reachable route is a *marked* test that monkeypatches ``store.load_panel``: this
+        # fixture requests ``monkeypatch``, so it is finalised first, its re-install captures the
+        # test's stand-in as the original, and monkeypatch then restores the real function out
+        # from under the police. One identity comparison per test rather than a sweep, and it
+        # fails closed: a test does not run on police that cannot be vouched for.
+        pytest.fail(
+            "volab.store.load_panel is no longer the holdout police: something rebound it and "
+            "the rebinding outlived the test that made it, so the holdout seal is unpoliced"
+        )
 
     # ``load_settings`` is asked per test rather than once at install, so that the boundary the
     # police enforces is read the same way, and at the same moment, as it always was.

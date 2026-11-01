@@ -566,14 +566,39 @@ wider-scoped fixture is being set up.
 A marked test gets the wrapper **removed**, not merely disarmed. `store._caller_frame` names the
 first frame outside `volab` in the audit line, so a wrapper left in the call chain becomes the
 "caller", and `test_store_guard.py:280` asserts that caller is `test_store_guard`. That is two
-sweeps for each of a handful of marked tests — about 10 a session against 1,729 — which is why
-the install is still worth having.
+sweeps for each marked test, and `pytest --collect-only -m holdout` counts **3** of them, so **6
+sweeps a session against 1,730 tests** — which is why the install is still worth having.
 
 `_install_holdout_police` also refuses to install while `_WIDER_SCOPE_SETUPS` is non-empty. That
 is unreachable as the fixtures stand, and checked anyway because the failure mode is silent:
 `store.load_panel` is `_refuse_store_read` during such a setup, and wrapping *that* as the
 original would leave the police guarding the refusal and the real function unguarded for the rest
 of the session.
+
+### Installing once per session has to be made fail-closed, and was not at first
+
+The per-test version re-captured whatever `store.load_panel` was for every test. That made it
+robust to a leak by accident: a rebinding which escaped the test that made it was simply wrapped
+again by the next test. **Nothing re-captures now**, and a reviewer found the hole that opens.
+
+A **marked** test that does `monkeypatch.setattr(store, "load_panel", fake)` corrupts the police
+permanently. `_forbid_holdout_unlock` requests `monkeypatch`, so it is finalised *first*: its
+re-install captures `fake` as the original, and monkeypatch then restores the real function out
+from under it. What is left is a wrapper delegating to a stand-in, a `volab.store.load_panel`
+that nothing wraps, and every later import binding the unwrapped function — silently, for the
+rest of the session. Reproduced: the test after the marked one runs green and unpoliced.
+
+Nothing in the suite rebinds `load_panel` from a marked test today — `grep` finds five rebindings,
+all of them in unmarked tests and all restored by monkeypatch — so this was **latent, not
+reached**. It is closed by comparing `store.load_panel` against the wrapper by identity at each
+unmarked setup: one pointer comparison, not a sweep, and it fails closed, because a test must not
+run on police that cannot be vouched for.
+
+**The first version of this witness was vacuous, and that is worth recording.** It put the marked
+test first, where `_POLICED_ORIGINAL` is still empty, so no re-install happens and nothing is
+corrupted: the nested run went green for the boring reason, not the interesting one, and it was
+only the mutation check that exposed the difference. The order — an unmarked test to install, the
+marked test to leak, an unmarked test to be refused — *is* the scenario.
 
 ### The witnesses, and the mutations that prove they bite
 
@@ -590,6 +615,7 @@ the thing it is supposed to test is not testing it:
 | install patches `store.load_panel` only, no sweep | all **3** boundary witnesses, the pre-existing one included | the sweep is load-bearing, and the pre-captured witness really does test it |
 | sweep matches the **name** `load_panel` (the original bug) | the **2** new witnesses; the pre-existing one stayed green | the new witnesses target the alias blind spot specifically, and nothing else |
 | marked tests leave the wrapper installed | `test_store_guard.py:280`, with `caller_module == 'conftest'` | the uninstall is load-bearing, and :280 is what catches its absence |
+| the drift canary removed | the leak witness: `3 passed` where the fix gives `passed=2, errors=1` | the police really do go silently dead after a marked test's leak |
 
 The second row is R151's own standard — "the witness for a derived rule is a mutation that the
 listed version passes" — run in reverse: the listed version *fails* the new witnesses and passes
