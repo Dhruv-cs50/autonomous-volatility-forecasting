@@ -118,14 +118,47 @@ class Domain:
     only; ``answers`` is its single reader, so a non-prefix domain changes one method. ``requires``
     names **feature columns**, the names ``volab.features.build`` writes, because a contestant
     sees columns and never the panel.
+
+    ``requires`` is read at **every** horizon; ``per_horizon`` pairs a horizon with a column read
+    only there, for a contestant whose input differs by horizon (the implied-variance model reads
+    ``iv_var_h1`` at h=1 and ``iv_var_h5`` at h=5). The distinction is quantitative, not tidy: a
+    column declared at a horizon where it is not read costs **every** contestant its origins, by
+    three routes in ``volab.walkforward``, each of which reads ``cohort.requires_at``. ``evaluate``
+    drops an origin for the whole cohort, before any fit, when a declared column is null at it;
+    it also skips the origin for the whole cohort when too few training rows carry the column
+    (the thin-training skip, which counts non-null rows of ``requires_at(horizon)``); and
+    ``coverage_refusal`` refuses a window that begins before the column has enough history.
+    (``Evaluation.comparable`` is not a route that reads the declaration: it intersects origins
+    where each forecast is loss-defined and never reads ``requires``. A contestant's own
+    ``ModelSkip`` reaches it as a NaN, but that is the contestant's choice and not a cost the
+    declaration imposes.) The skip is witnessed by
+    ``test_the_thin_training_skip_counts_the_columns_of_the_horizon_being_run``.
+    A tuple of pairs rather than a mapping, so ``Domain`` stays frozen and hashable and ``==``
+    keeps value semantics. ``requires_at`` is the single reader of both for the harness;
+    ``__post_init__`` also reads ``per_horizon``, to refuse a column for a horizon not answered.
     """
 
     max_horizon: int | None = None
     requires: tuple[str, ...] = ()
+    per_horizon: tuple[tuple[int, str], ...] = ()
     sampling: Sampling | None = None
+
+    def __post_init__(self) -> None:
+        # A column declared for a horizon the contestant refuses could never be read, so it is a
+        # mistake in the declaration and not a harmless extra.
+        for horizon, column in self.per_horizon:
+            if not self.answers(horizon):
+                raise ValueError(
+                    f"{column!r} is declared for h={horizon}, which this domain does not answer "
+                    f"(it answers h<={self.max_horizon})"
+                )
 
     def answers(self, horizon: int) -> bool:
         return self.max_horizon is None or horizon <= self.max_horizon
+
+    def requires_at(self, horizon: int) -> tuple[str, ...]:
+        """The feature columns read at ``horizon``: ``requires``, then this horizon's own."""
+        return (*self.requires, *(column for at, column in self.per_horizon if at == horizon))
 
 
 UNRESTRICTED = Domain()
@@ -211,9 +244,14 @@ class Cohort:
         """
         return tuple(horizon for horizon in configured if self.refusal(horizon) is None)
 
-    @property
-    def requires(self) -> tuple[str, ...]:
-        """Every feature column some member declares it needs, de-duplicated, first seen first."""
+    def requires_at(self, horizon: int) -> tuple[str, ...]:
+        """Every feature column some member reads at ``horizon``, de-duplicated, first seen first.
+
+        There is no horizon-blind form: one would answer for the union across horizons, which is
+        the over-declaration ``Domain.per_horizon`` exists to prevent.
+        """
         return tuple(
-            dict.fromkeys(column for model in self.models for column in model.domain.requires)
+            dict.fromkeys(
+                column for model in self.models for column in model.domain.requires_at(horizon)
+            )
         )

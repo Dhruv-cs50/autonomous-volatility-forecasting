@@ -1,9 +1,13 @@
-"""The named cohorts. This is the only module that imports both contestant modules.
+"""The named cohorts. The only module in ``volab.compare`` that imports a contestant module.
 
 ``volab.walkforward`` never names a contestant it did not define (R85): it is handed a
 :class:`Cohort`. The analysis modules next door import no model either, so ``import volab.compare``
 cannot pull ``arch`` through a side door. Assembling the roster is this module's whole job, and
-``test_only_cohorts_imports_the_model_modules`` is the witness.
+``test_only_cohorts_imports_the_model_modules`` is the witness: no other module in this package may
+import any ``volab.models.*`` module but ``volab.models.base`` (which carries the protocol and
+``Cohort``, no contestant), and ``cohorts`` must import at least the GARCH, recalibrated and
+implied-variance modules. The rule is derived from the import path, so a contestant module added
+later is covered without anyone updating a list.
 
 **The shootout** is the three baseline models, the three GARCH specifications (R91) and the
 recalibrated HAR (R96): seven contestants (:data:`MULTISTEP` below drops one for h >= 2).
@@ -22,6 +26,12 @@ and takes no expectation. The refusal is therefore available a priori from the m
 law alone, with no draw and no target -- which is what separates it from a threshold on the
 forecast's size (look-ahead, selecting on the random draw, and unworkable because
 ``Evaluation.comparable`` intersects origins across contestants).
+
+**The Phase 3 cohort** (``phase3-iv``, P3-04) is the multistep cohort's six plus ``har_rv_iv``, the
+HAR with the matched implied variance: seven. It is built **beside** the two above, which are the
+contestant set of the holdout pre-registration (R130) and are never added to; they keep their
+names, members and order. ``har_levels`` is first (R87). ``har_rv_iv`` has no three-month implied
+variance to read, so the cohort answers h = 1, 5 and 22 and is refused at 66.
 
 **The pairing is enforced, and derived (US-3.9).** Each contestant declares a
 :class:`~volab.models.base.Domain`; ``GarchModel`` derives EGARCH's bound (``max_horizon=1``) from
@@ -72,6 +82,7 @@ from volab.compare import NO_MEASUREMENT
 from volab.features.targets import HORIZONS
 from volab.models.base import Cohort, Model
 from volab.models.garch import GARCH_MODELS
+from volab.models.iv import har_rv_iv
 from volab.models.recalibrated import har_levels_mz
 from volab.walkforward import BASELINE_COHORT
 
@@ -96,10 +107,23 @@ def multistep_members(models: tuple[Model, ...]) -> tuple[Model, ...]:
 
 MULTISTEP = Cohort("phase2-shootout-multistep", multistep_members(SHOOTOUT.models))
 
+# Phase 3's cohort (P3-04): the multistep members plus the HAR with implied variance, built beside
+# the two registered cohorts above and leaving both untouched. Those two are the contestant set of
+# the holdout pre-registration (R130, section 5), which forbids adding a Phase 3 contestant to that
+# window after the fact; ``tests/test_preregistration_fence.py`` pins them. ``har_levels`` stays
+# first (R87). ``har_rv_iv`` answers h <= 22 (``IV_SERIES`` has no three-month entry), so
+# ``PHASE3_IV.horizons(HORIZONS)`` is ``(1, 5, 22)`` and the cohort is refused at h=66 rather than
+# narrowed. It declares no ``Sampling``, so ``monte_carlo_error`` has nothing to collect for it.
+PHASE3_IV = Cohort("phase3-iv", (*multistep_members(SHOOTOUT.models), har_rv_iv()))
+
 # Resolved by name from the command line. The baseline is deliberately absent: its run is the
 # walk-forward CLI's, and a second path to producing lines under that name is a second way for the
 # recorded run to be confused with something else.
-COHORTS: dict[str, Cohort] = {SHOOTOUT.name: SHOOTOUT, MULTISTEP.name: MULTISTEP}
+COHORTS: dict[str, Cohort] = {
+    SHOOTOUT.name: SHOOTOUT,
+    MULTISTEP.name: MULTISTEP,
+    PHASE3_IV.name: PHASE3_IV,
+}
 
 
 def answering(horizon: int, registry: Mapping[str, Cohort] | None = None) -> tuple[str, ...]:
