@@ -55,6 +55,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 import pytest
+import real_panel
 from forward_scan import _forward_looks
 
 import volab.features.build as build_module
@@ -62,7 +63,7 @@ from volab.config import Settings, load_settings
 from volab.errors import DatasetNotFound
 from volab.features.build import build_features
 from volab.identity import first_difference
-from volab.panel import as_of_dates, load_curated_panel, truncate
+from volab.panel import as_of_dates, truncate
 from volab.sessions import get_calendar, session_close_utc, sessions_between
 
 # The longest trailing window the engine uses, so a cutoff below it compares two tables of
@@ -479,11 +480,16 @@ class Real:
     settings: Settings
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def real() -> Real:
-    settings = load_settings()
+    """Function-scoped on purpose: the first read in the process must run inside a test, where the
+    autouse holdout police are active, and a module-scoped fixture is set up before them. The
+    panel comes from ``real_panel`` as a copy, so the scope costs a copy per test and no store read.
+    The body also re-derives the session list for every test (``get_calendar``, ``as_of_dates``,
+    ``sessions_between``); that is cheap beside a load but is not free."""
+    settings = real_panel.settings()
     try:
-        panel = load_curated_panel(settings, "SPY", end=settings.splits.dev_end)
+        panel = real_panel.curated_panel("SPY")
     except DatasetNotFound as absent:
         pytest.skip(f"the curated store holds no panel to sweep: {absent}")
     bars = panel[panel["symbol"] == "SPY"]
@@ -656,7 +662,7 @@ def test_the_span_fix_did_not_move_the_persisted_feature_table(real: Real) -> No
     # all three symbols cost ~57s; the three builds are the same code over the same shape, so the
     # extra 38s buys repetition rather than coverage. Measured when it was written, not guessed.
     for symbol in real.settings.universe[:1]:
-        panel = load_curated_panel(real.settings, symbol, end=real.settings.splits.dev_end)
+        panel = real_panel.curated_panel(symbol)
         fresh = build_features(panel, through=real.settings.splits.dev_end, calendar=calendar)
         stored = (
             load_panel(

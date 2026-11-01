@@ -31,13 +31,14 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+import real_panel
 from test_truncation_equivalence import Synthetic, _synthetic
 
 from volab.config import Settings, load_settings
 from volab.errors import DatasetNotFound, SchemaError
 from volab.features.targets import build_targets, target_column
 from volab.identity import first_difference
-from volab.panel import as_of_dates, load_curated_panel
+from volab.panel import as_of_dates
 from volab.sessions import get_calendar, sessions_between
 from volab.walkforward import (
     HAR_REGRESSORS,
@@ -51,7 +52,6 @@ from volab.walkforward import (
     evaluate,
     fit_ols,
     git_state,
-    load_targets,
     origins_in,
     qlike,
     scoreable_origins,
@@ -479,15 +479,16 @@ class Real:
     settings: Settings
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def real() -> Real:
-    settings = load_settings()
+    """Function-scoped on purpose: the first read in the process must run inside a test, where the
+    autouse holdout police are active, and a module-scoped fixture is set up before them. The
+    frames come from ``real_panel`` as copies: the scope costs a copy per test, no store read."""
     try:
-        panel = load_curated_panel(settings, "SPY", end=settings.splits.dev_end)
-        targets = load_targets(settings, "SPY", HORIZON, end=settings.splits.dev_end)
+        panel, targets = real_panel.load_for("SPY", HORIZON)
     except DatasetNotFound as absent:
         pytest.skip(f"the curated store holds no panel to walk forward over: {absent}")
-    return Real(panel=panel, targets=targets, settings=settings)
+    return Real(panel=panel, targets=targets, settings=real_panel.settings())
 
 
 def test_the_per_origin_rows_are_byte_identical_to_the_persisted_table(real: Real) -> None:
