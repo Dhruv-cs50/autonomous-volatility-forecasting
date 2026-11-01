@@ -14,23 +14,23 @@ one place the figures *are* pinned is ``test_the_designs_measured_figures_still_
 exactly that: a one-time agreement between the design's script and this code, expected to be
 re-measured, not re-edited, when the store changes.
 
-Reads go through ``wf.load_for`` and the CLI's own persisted-table read, both of which stop at
-``dev_end``; they run from inside test bodies so the autouse holdout fixture polices them.
+Reads go through ``real_panel``, which calls ``wf.load_for`` and the CLI's own persisted-table
+read, both of which stop at ``dev_end``; they run from inside test bodies so the autouse holdout
+fixture polices the read, and ``real_panel`` shares it across modules and copies it per caller.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-import functools
 import re
 
 import pandas as pd
 import pytest
+import real_panel
 from model_conformance import Spy
 
-import volab.compare.__main__ as compare_cli
 import volab.walkforward as wf
-from volab.config import Settings, load_settings
+from volab.config import Settings
 from volab.errors import DatasetNotFound
 from volab.features.targets import HORIZONS
 from volab.models.base import Cohort, Domain
@@ -44,17 +44,16 @@ EVERY = 5
 MINIMUM = 250
 
 
-@functools.cache
 def real(horizon: int) -> tuple[Settings, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Settings, curated panel, targets and the persisted feature table, read once per horizon.
+    """Settings, curated panel, targets and the persisted feature table, one copy per call.
 
-    Cached here and not in a module-scoped fixture, which would run before the autouse holdout
-    police. Callers must not mutate the frames.
+    The reads are shared through ``real_panel``, which is called from here, inside a test body, and
+    not from a module-scoped fixture, which would run before the autouse holdout police. Each
+    call returns frames of its own.
     """
-    settings = load_settings()
     try:
-        panel, targets = wf.load_for(settings, SYMBOL, horizon)
-        stored = compare_cli._persisted(settings, SYMBOL)
+        panel, targets = real_panel.load_for(SYMBOL, horizon)
+        stored = real_panel.persisted(SYMBOL)
     except DatasetNotFound as missing:
         pytest.fail(
             f"the curated store is incomplete ({missing}); rebuild it with "
@@ -63,7 +62,7 @@ def real(horizon: int) -> tuple[Settings, pd.DataFrame, pd.DataFrame, pd.DataFra
         )
     if stored is None:
         pytest.fail("the store holds no built feature table; run `python -m volab.features build`")
-    return settings, panel, targets, stored
+    return real_panel.settings(), panel, targets, stored
 
 
 def origins_for(horizon: int, first: dt.date = WINDOW_FIRST) -> list[dt.date]:

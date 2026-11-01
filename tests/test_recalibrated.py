@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
-import functools
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
 import pandas as pd
 import pytest
+import real_panel
 from model_conformance import (
     Toy,
     alone,
@@ -649,17 +649,15 @@ REAL_SYMBOL = "SPY"
 RECORDED_STRIDE = 5
 
 
-@functools.cache
 def real_frames(horizon: int) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """The curated panel and targets for ``REAL_SYMBOL``, read once per horizon (about 3 s each).
+    """The curated panel and targets for ``REAL_SYMBOL``, one copy per call.
 
-    Cached here and not in a module-scoped fixture: a higher-scoped fixture runs before the
-    autouse ones, so the read would escape the holdout police. The first call is made from inside
-    a test body and is policed; ``load_for`` takes no ``end`` of its own and stops at ``dev_end``.
-    Callers must not mutate the frames.
+    The read is shared through ``real_panel`` and made from inside a test body, not a module-scoped
+    fixture: a higher-scoped fixture runs before the autouse ones, so the read would escape the
+    holdout police. ``load_for`` takes no ``end`` of its own and stops at ``dev_end``.
     """
     try:
-        return wf.load_for(load_settings(), REAL_SYMBOL, horizon)
+        return real_panel.load_for(REAL_SYMBOL, horizon)
     except DatasetNotFound as missing:
         pytest.fail(
             f"the curated store holds no {REAL_SYMBOL} data ({missing}); rebuild it with "
