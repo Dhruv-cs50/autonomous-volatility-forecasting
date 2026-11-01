@@ -154,7 +154,10 @@ by being run, which is how the driver's own first-run defect was found.
   historical and not reproducible on HEAD. Verified from a tree with no derived data: the
   committed payloads rebuild the store in 68.7s with no network and the probes then print the
   same numbers. R79–R81.
-- **The real-data tiers skip silently on a clean checkout.** `data/**` is gitignored and
+- ~~**The real-data tiers skip silently on a clean checkout.**~~ **Closed by `f75dacc`**, which
+  made CI rebuild the store from the committed vendor payloads before the suite runs, so the
+  real-data tiers execute there instead of skipping. The original note follows, because the
+  reasoning is still why that CI step exists: `data/**` is gitignored and
   derivable, so `test_truncation_equivalence.py` and `test_walkforward.py` skip their real-data
   fixtures where the curated store is absent — which means a fresh clone's green suite has not
   checked them. The synthetic tiers always run and carry the red cases, so a leak is still caught
@@ -170,10 +173,11 @@ by being run, which is how the driver's own first-run defect was found.
   QLIKE for every model. Both are on the ledger rather than in a footnote.
 - **The 200-session holdout is thin at the 22- and 66-session horizons.** Unchanged by anything
   here, and Phase 6 remains the only confirmatory read.
-- **The model set is deliberately three.** HAR in levels, HAR semi-log and a random walk. The
-  GARCH family and the recalibrated HAR of the framework's Phase 2 row are **not** in this
-  branch; what is here is the harness they will be run through, plus the baseline. Said plainly
-  rather than left to be inferred from the ledger.
+- ~~**The model set is deliberately three.**~~ **Superseded.** It was three in this branch — HAR
+  in levels, HAR semi-log and a random walk — and the GARCH family and recalibrated HAR were
+  explicitly out of scope, named here so nobody had to infer it from the ledger. Phase 2
+  completion then built them through the model-zoo seam, and there are seven contestants now.
+  The claim was true when written and is kept for that reason.
 
 ## Found by the delivery audit, and not Phase 2's to fix
 
@@ -191,3 +195,42 @@ deleted — the spec's named test list never matched the suite it was describing
 are covered. The citations are not, which makes §11's list unusable as a checklist and is one
 more instance of the pattern §11 itself names: prose in that section that nobody ran against an
 interpreter.
+
+
+---
+
+## Phase 2 is closed
+
+`main` carries it, merged as [PR #3](https://github.com/Dhruv-cs50/autonomous-volatility-forecasting/pull/3) on 2026-10-24, with the
+measurement artefacts (PRs #4 and #5) and Phase 2 completion behind it.
+
+**What it delivered, against what it was asked for.** All five items: truncation equivalence as
+the primary point-in-time test; E2's class closed by subprocess isolation; the perturbation suite
+and AST scan kept but demoted; §9's *"the store cannot help"* retracted; and the walk-forward
+with every trial counted.
+
+**What it cost to get there, which is the part worth carrying forward.** Three more escapes, two
+of them in code written to close a previous one, taking this project's record to **nine** — and
+each one found by running something rather than by reading it. The two independent review seats
+dispatched at the sprint boundary found seven further defects that this phase's own tests passed,
+including a forecast biased **4x** low that no test looked for, and an import-ratchet violation
+the ratchet itself caught. The native-only execution shape was a mistake; Phase 1's R9 was right.
+
+**Three things this phase said that later work corrected, recorded because being wrong on the
+record is the point of the record:**
+
+1. **"The suite catches leakage"** — narrowed to a sampled ratchet with a stated power of 2.2%
+   per cutoff, with the exhaustive sweep as the dev-window proof.
+2. **"Exhaustive coverage comes from the walk-forward"** — true of the code at `--every 1`, false
+   of every run anyone had made. The same adjacent-truth shape as Phase 1's C1.
+3. **"`solve()` is hand-rolled for no reason now that numpy is declared"** — **wrong**, and
+   corrected by R57 and R82 rather than by me. It has a reason: the walk-forward's fit sits in
+   the *sealed* point-in-time path, so keeping it free of numeric libraries means no upstream
+   version change can move a number the byte-exact comparator compares. The numpy ban was lifted
+   where it was costing something (the model zoo, the comparison layer) and kept where it is
+   load-bearing, with a witness in `tests/test_import_discipline.py` enforcing the boundary.
+   That is a better resolution than the blanket retraction this session proposed.
+
+**What remains open belongs to later phases**, not here: the holdout reveal (Phase 6's single
+confirmatory read, now possible since the window closed on 2026-10-30, and deliberately still
+held), and the open items on `phase2-completion-sprint-board.md` and Phase 3's board.

@@ -1139,3 +1139,36 @@ this project exists to withhold.
 - **The semi-log specification's scale mismatch** (R54, R73): it fits a log scale while the
   loss is on the variance scale, and it still under-forecasts at h=1 (0.623 of realized) after
   the smearing correction. `har_levels` is closer at 0.775 and is not positive by construction.
+
+
+---
+
+## Closing note (2026-10-31): the no-numpy rule, resolved against this log
+
+This log defended Phase 1's R4 — no numpy, the realized measures on `pd.Series`, the
+walk-forward's OLS hand-rolled — and R57 cited it as the reason `solve()` exists. Later work
+revisited it, and the resolution is better than what this log argued for. Recorded here because
+R4's reasoning is quoted throughout this file.
+
+**What was right.** numpy was never absent from the environment: it is a transitive dependency of
+pandas, and this project has used it all along through `Series.to_numpy()` — including in
+`volab/identity.py`, the byte-exact comparator the whole leakage guarantee rests on. The rule only
+ever forbade *declaring* it. So "no numpy" described the import list, not the dependency tree.
+
+**What this session got wrong.** Asked whether `solve()` was now pointless, this session said yes
+— that with numpy declared, the hand-rolled elimination was cost without benefit, pointing at the
+three attempts its singularity threshold took and the calm windows it silently refused in
+between. That is a fair account of the cost and the wrong conclusion. R82 and R57 found the
+reason it should stay: the walk-forward's fit sits in the **sealed point-in-time path**, the set of
+modules whose output truncation equivalence and the byte-exact comparator compare. A numeric
+library there means an upstream version change can move a number this project claims is stable.
+So the ban was lifted where it cost something — the model zoo and the comparison layer, which
+need `arch` and scipy — and kept where it is load-bearing, with
+`tests/test_import_discipline.py` enforcing the boundary by module rather than by convention.
+
+**The general lesson, which is this project's own.** "Why is this rule here?" has two answers —
+the one the log gives and the one the code needs — and they can differ. R4's stated reason (the
+lockfile, the no-new-dependencies constraint) had expired. Its *real* value, insulating the
+sealed path, was never written down, so dropping the rule on its stated reason alone would have
+thrown that away silently. A ruling that records what it costs if wrong, as these do, is
+still only as good as its account of what it is *for*.
