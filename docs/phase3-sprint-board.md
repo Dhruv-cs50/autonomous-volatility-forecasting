@@ -39,12 +39,15 @@ share a numbering scheme.
 Found by P3-08 and **not** deferred: these must be settled before Phase 3's recorded run, which
 is itself held until the user triggers the holdout reveal (R139).
 
-**Status at 2026-10-31:** the first row is resolved on `fix/spa-block-length-names` (R152) and
-awaits its PR against `main`; the second is open.
+**Status at 2026-11-01:** the first row is **resolved and merged** — PR #9, `bfedef3` on `main`
+(R152), with the fix verified in `src/volab/compare/multiple.py` line by line rather than from a
+report. R152's own measurement then overturned this row's stated consequence; see the row itself.
+The second row is **open and not fixable here** — it is a vendor data gap, not a defect. The third
+is a process gate under R139, not a defect.
 
 | finding | why it blocks |
 |---|---|
-| **`superior_predictive_ability` crashes on proportional non-benchmark series, with certainty.** `src/volab/compare/multiple.py:295-298` pre-checks only the benchmark's pairs; `block_length` then re-checks **all** pairs and raises `ValueError`. Mechanism: under a Gaussian (VaR, ES) map `var/es` is constant, so an off-breach FZ0 value is `const + log(sigma)` and a **proportional** pair's differential is exactly constant — which is what `same_losses` (`dm.py:130-140`) tests for. So **an exactly proportional pair (within a few eps) trips it at any alpha where no origin breaches**, which at alpha=1% is usually. Pre-existing Phase 2 code; Phase 3's losses are its first caller. **Condition stated rather than assumed:** whether `phase3-iv` actually contains such a pair on the real panel is **unverified** — `TOY_COHORT` does, by construction (`_Scaled(models[2], 1.3)`), which is how it was found | **a real run dies *after* trials were appended**, leaving `trials.jsonl` carrying lines for a run that produced no comparison. **The crash itself is still unpinned** — the P3-08 implementer moved a test from stride 2 to stride 4 to get around it. *(Updated at sprint close: the FZ0 statistical path now **is** tested, by a `TOY_WIDE` cohort at h=1 stride 2 reaching 22 comparable origins, and the stride-4 test carries a comment recording the mechanism. But no test reproduces the crash — that belongs to the session fixing `multiple.py`, and on the toy panel every configuration reaching 11+ origins hits it.)* Its own session is proposed. **RESOLVED (R152)**, branch `fix/spa-block-length-names`. `names` is threaded through `block_length` and forwarded to `_unestimable`, so SPA's narrowed pre-check and the shared re-check agree by construction; the re-check is kept for the next caller. The crash is now pinned by `test_a_constant_differential_between_two_non_benchmark_series_does_not_refuse_spa` and, end to end on the cohort that holds the pair, by `test_a_run_on_the_proportional_toy_cohort_reaches_the_bootstrap_and_does_not_raise` (`TOY` at h=1 stride 2, 22 origins — the configuration P3-08 moved to stride 4 to avoid). A second, latent defect was fixed alongside: `politis_white` guarded with `figures.max()` on a pandas Series, which skips NaN, so a constant column's missing block length was replaced by another column's. **The unverified condition is now measured:** on the real panel at stride 5 over the recorded run's own window — every horizon `phase3-iv` answers on SPY (h=1, 5, 22) and h=1 on all three universe symbols, both alphas throughout — the closest FZ0 pair is 1.3e14 to 5.8e14 times `same_losses`' tolerance and no column is constant anywhere; `har_levels_mz`, the one plausible real candidate, refits its Mincer-Zarnowitz slope per origin, and no member of the cohort is a fixed-scale transform of another. So this was a toy-cohort hazard, not reachable on the real panel — priority changed, correctness not. Figures in R152 |
+| **`superior_predictive_ability` crashes on proportional non-benchmark series, with certainty.** `src/volab/compare/multiple.py:295-298` pre-checks only the benchmark's pairs; `block_length` then re-checks **all** pairs and raises `ValueError`. Mechanism: under a Gaussian (VaR, ES) map `var/es` is constant, so an off-breach FZ0 value is `const + log(sigma)` and a **proportional** pair's differential is exactly constant — which is what `same_losses` (`dm.py:130-140`) tests for. So **an exactly proportional pair (within a few eps) trips it at any alpha where no origin breaches**, which at alpha=1% is usually. Pre-existing Phase 2 code; Phase 3's losses are its first caller. **Condition stated rather than assumed:** whether `phase3-iv` actually contains such a pair on the real panel is **unverified** — `TOY_COHORT` does, by construction (`_Scaled(models[2], 1.3)`), which is how it was found | **a real run would die *after* trials were appended **if the crash were reachable** — R152 measured that it is not, in any of the ten configurations tested, so this stated consequence did **not** hold for the recorded run; what genuinely blocked the run was the unverified claim itself**, leaving `trials.jsonl` carrying lines for a run that produced no comparison. **The crash itself is still unpinned** — the P3-08 implementer moved a test from stride 2 to stride 4 to get around it. *(Updated at sprint close: the FZ0 statistical path now **is** tested, by a `TOY_WIDE` cohort at h=1 stride 2 reaching 22 comparable origins, and the stride-4 test carries a comment recording the mechanism. But no test reproduces the crash — that belongs to the session fixing `multiple.py`, and on the toy panel every configuration reaching 11+ origins hits it.)* Its own session is proposed. **RESOLVED (R152)**, branch `fix/spa-block-length-names`. `names` is threaded through `block_length` and forwarded to `_unestimable`, so SPA's narrowed pre-check and the shared re-check agree by construction; the re-check is kept for the next caller. The crash is now pinned by `test_a_constant_differential_between_two_non_benchmark_series_does_not_refuse_spa` and, end to end on the cohort that holds the pair, by `test_a_run_on_the_proportional_toy_cohort_reaches_the_bootstrap_and_does_not_raise` (`TOY` at h=1 stride 2, 22 origins — the configuration P3-08 moved to stride 4 to avoid). A second, latent defect was fixed alongside: `politis_white` guarded with `figures.max()` on a pandas Series, which skips NaN, so a constant column's missing block length was replaced by another column's. **The unverified condition is now measured:** on the real panel at stride 5 over the recorded run's own window — every horizon `phase3-iv` answers on SPY (h=1, 5, 22) and h=1 on all three universe symbols, both alphas throughout — the closest FZ0 pair is 1.3e14 to 5.8e14 times `same_losses`' tolerance and no column is constant anywhere; `har_levels_mz`, the one plausible real candidate, refits its Mincer-Zarnowitz slope per origin, and no member of the cohort is a fixed-scale transform of another. So this was a toy-cohort hazard, not reachable on the real panel — priority changed, correctness not. Figures in R152 |
 | **SPY's and IWM's dividend bias cannot be quantified.** The vendor serves distributions for QQQ only, so their `has_distribution` flags are uniformly `False` *(**row corrected at sprint close:** it previously described the hollow **disclosure**, which `1817f8c` already fixed via `distribution_flags_known` and the NOT KNOWN line. What remains is not a reporting defect but a data one.)* | the vol-target P&L for those symbols is wrong on every ex-date and **no number on the record says by how much** — the run can say it does not know, which is honest, but cannot bound the error |
 | **The first real evaluator run moves `data/trials.jsonl` off 414**, which is a reported number, and the only guard is that `--cohort` is required | R139 holds the recorded run until the user triggers the reveal; until then no one may run the CLI against the real store |
 
@@ -107,3 +110,94 @@ the test body executes — three times in Phase 2 a docstring described a strong
 code performed (R79, R82, R129). Nothing is done on assertion: a story closes when a commit
 exists, its tests pass, and `ruff check`, `ruff format --check`, `mypy --strict` and `pytest` are
 green. Everything through `uv run --locked`.
+
+---
+
+## Sprint close
+
+**Phase 3 is complete as specified. That is deliberately not the same as *exited*, and the
+difference is the first thing any write-up citing this phase must carry.** The framework document
+that defines each phase's exit criterion is not in this repository (R135); the scope here was
+reconstructed from the Phase 2 board's own "Not this phase's to fix" section. The phase met the
+reconstruction. Whether the reconstruction is the requirement, only the framework can say.
+
+**Nine stories done, one withdrawn, one optional and unscheduled.** Closed on an independent
+delivery audit and a whole-branch review rather than on assertion: the audit re-derived every
+acceptance check from code instead of from commit messages, confirmed all 30 cited commits exist
+and are ancestors of `main`, ran the gates itself, and ran `tools/measure_iv_requires.py` to
+reproduce the design's coverage table a third time. It found **no row the repository does not
+support**.
+
+Verified on `main` at the close: **1723 tests passing**, `mypy --strict` clean over 41 source
+files, `ruff check` and `ruff format --check` clean over 97, and `data/trials.jsonl` at 414 lines
+with `data/comparisons.jsonl` at 52 — byte-identical to the phase's merge-base. The count is
+independently the same figure the P3-08 fix session measured on the merged tree.
+
+**No wall-clock figure is recorded here, deliberately.** Every suite run at this close shared the
+machine with another worktree's run, and the same 1723 tests read anywhere from 232s to 907s. A
+duration measured under contention is not a measurement of this suite, and the one place a runtime
+number matters — the shared real-panel loader on `perf/share-real-panel-loads` — must measure it on
+a quiet machine or report that it could not.
+
+**What the phase exits on.** `python -m volab.evaluators` turns a variance forecast into decisions
+and scores them: Gaussian VaR/ES at both alphas; the Fissler-Ziegel joint loss assembled into a
+`LossSeries` and handed to the existing `volab.compare.analyse`, so DM, MCS and SPA apply
+unchanged and `walkforward.LOSSES` stays exactly `{"qlike", "mse"}`; Kupiec and Christoffersen
+with a refusal where the sampling window overlaps and a withheld p-value with its reason wherever
+the independence statistic is zero by construction; vol-target P&L with turnover, an ex-date count
+and a flag saying whether that count means anything; and `data/decisions.jsonl`. Beside it,
+`har_rv_iv` declares the horizon-matched implied-variance column **per horizon** and refuses h=66
+through `Domain`, not through a comment. Merged as PR #7, `b2bd304`.
+
+**What was not done, each deliberately.**
+
+- **No recorded run** (R139, D5). A run appends to `data/trials.jsonl`, whose delta the holdout
+  reveal reports, and the reveal belongs to the user. Both ledgers are byte-identical to the
+  phase's merge-base at 414 and 52 lines.
+- **Carried 3** (`egarch11_skewt` simulating at h=1) is held until the reveal, because R115's
+  withholding is part of what the registered read *reports*.
+- **P3-09 was withdrawn, not skipped.** R129's flag was already discharged by `b04f079`
+  (US-3.14), an ancestor of this branch. The story existed because the Phase 2 board's
+  carried-items text predates US-3.14 and I took it on trust. The implementer returned
+  NEEDS_CONTEXT rather than writing a redundant test, which was right.
+- **P3-11** (making `Sampling` horizon-aware, R134's latent flaw) is the user's call and no
+  Phase 3 story needs it. `har_rv_iv` is OLS and declares no `Sampling`.
+
+**What the phase found out about itself, which is the part worth inheriting.** **Eleven** separate
+instances of a test or docstring claiming more than its code performs — the same defect R79, R82
+and R129 each recorded in Phase 2. Every one was caught by a review seat, never by the author who
+wrote it. Several were introduced *by the correction for an earlier one*: R136 was wrong three
+times in three different ways before settling at a four-route table, each version closer, each
+error found by someone reading the code rather than the ruling. Two rules were promoted into the
+plan's Global Constraints mid-phase as a result: every `pytest.raises(match=...)` must be specific
+to the branch it names, and a test asserting a numeric consequence witnesses nothing unless the
+consequence actually follows.
+
+The sharpest instance: a test named "wrong variance loses" passed while the FZ0 formula was
+broken, because it only tested under-forecasting — with the `log(ES)` term dropped, the
+over-forecast margin was exactly **zero**. And a withholding guard had no witness in the
+over-withholding direction until one row was added; mutating the condition had passed all 1,644
+tests.
+
+**Seven errors of the orchestrator's, recorded because the pattern matters more than the count.**
+The `Evaluation.comparable` mechanism; the rescale-hazard framing (OLS is scale-equivariant, so
+the test written for it could never fail); a "roughly nine origins" estimate against a measured
+five; the Gaussian ES multiplier, wrong by 8.8e-9 and so failing the `rel=1e-9` its own assertion
+stated; the overlap count (four, not three); the position-cap boundary, wrong twentyfold; and the
+stale board line that invented P3-09 from nothing. Four were caught by reviewers, three by
+implementers. **The pattern: the hard claims were verified and the easy ones were trusted.** The
+full list of 45 process rulings is in `docs/superpowers/phase3-controller-rulings.md`.
+
+**Rulings.** R135-R141 (the phase's design decisions), R150 (the numbering allocation and a
+standing rule never to re-cut a branch on another session's report of its state), R151 (derive a
+set the codebase will extend; do not list it), R152 (the SPA fix, and the measurement that
+overturned this board's own stated consequence). R142-R149 belong to the Phase 2 completion
+session, which used only R142; the gap is deliberate.
+
+**Still open, and none of it blocks the merge.** Fifteen deferred findings in the table above, each
+with why it was deferred. One blocker that cannot be fixed here: SPY's and IWM's dividend bias is
+unquantifiable because the vendor serves distributions for QQQ only — the run says it does not
+know, which is honest, but it is not a measurement. And the standing ask, unchanged since the
+phase began: **commit the framework document into `docs/`**, so the next boundary does not rest on
+a reconstruction. This one did, and the clearest evidence that it matters is that a stale board
+line produced an entire story that had to be withdrawn.
