@@ -127,3 +127,98 @@ Q1 and Q2 are the two that would be expensive to reverse: Q1 puts config validat
 holdout seal depends on inside a phase whose exit criterion is a reconstruction, and Q2 creates a
 second kind of forecast record before the registered read has happened. Both were put to the user
 with their alternatives and both are recorded here as theirs, not as the orchestrator's calls.
+
+---
+
+## R159 — a derived guard is only as good as its exclusions, and two of this slice's three guards
+needed one it did not have
+
+R151 rules that where a test enumerates a set the codebase will extend, it must derive the set.
+P4-01 needed three such guards — no planned stage may write a reported ledger, no module under
+`src/volab/daily/` may use a holdout key, and the clock may be called in exactly one place.
+**Two of the three were wrong on their first run, and between them they needed three separate
+exclusions.** (The clock guard was right first time, which is worth saying so the count here is
+not inflated: it is an AST scan over a package with one clock call, and there was nothing to
+exclude.) In none of the three failures was the derivation's *idea* wrong; all three were about
+what it must leave out — and a fourth, found afterwards by the probe rather than by reading, was
+about how loosely it matched.
+
+| guard | first version | what it did | the exclusion it needed |
+|---|---|---|---|
+| ledger writers | a package whose source **names** `trials.jsonl`, `comparisons.jsonl` or `decisions.jsonl` | flagged **`volab.leaderboard`**, whose whole design is that it "computes nothing of its own" and only *reads* the two ledgers. Reading them is the opposite of the hazard, and the leaderboard is a planned daily stage | the rule is a **conjunction**: names a ledger **and** opens a file in append mode, by AST. Pinned by `test_the_derived_writer_set_excludes_the_reader` |
+| holdout keys | a substring match for `allow_holdout` and `VOLAB_HOLDOUT_UNLOCK` | flagged **`volab.daily`'s own module docstring**, which names both keys in order to state that it never uses them | the scan reads **code, not prose**: identifiers, attributes, keyword arguments and non-docstring string literals, by AST. A key spelled as a string still fires, which is the route a determined author would take. Pinned in both directions |
+| holdout keys, again | the parameter name from `inspect.signature(load_panel)` | returned **no parameters at all**, because `conftest`'s holdout police replace `volab.store.load_panel` with a `(*args, **kwargs)` wrapper for the whole session (R153). The signature at runtime is the police's | read the name from `store.py`'s own `def load_panel` by AST. The `assert parameters, …` line is what turned a silently vacuous guard into a loud failure, and it was written before the failure rather than after it |
+| ledger writers, again | `stage.module in writers`, an equality test | would have waved through `volab.walkforward.__main__` and `volab.evaluators.sink`, both runnable module names that write the same ledgers. Found by a reviewer reading the guard, not by running it | prefix matching, with a red witness planting the submodule spelling. The derivation's remaining limit is now stated in the docstring: it is **not transitive**, so a package that imports `append_trials` without naming a ledger or opening one for appending is not in the set — handed to P4-04's import check |
+
+### Ruling
+
+**A derived guard ships with a test for each exclusion it makes, a test that the derivation is not
+empty, and a red witness for each way the thing it compares can be spelled.** The second clause is
+the one that nearly got away: the holdout-key guard with an empty
+derived set would have passed over a package that used the key on every line, and it would have
+passed quietly, forever. R151's own closing paragraph says the cost of deriving is paid where the
+derivation has edge cases and those get pinned; this records what that costs in practice — three
+edge cases in three guards, found by running them and not by reading them, in one story.
+
+**And the direction of each failure is worth keeping.** Two (the leaderboard, the docstring) were
+**too strict** and failed loudly, which is the cheap kind. The third would have been **vacuous**,
+which is the kind R154 is about — a check that removes itself breaks nothing — and the only reason
+it failed loudly instead is the one line asserting the derived set was non-empty. The fourth was
+**too loose** and green, and no assertion in the guard could have found it: a reviewer reading the
+comparison did.
+
+**What this costs if it is wrong:** the exclusion tests are six short tests whose subject is the
+test harness rather than the product. The alternative — a guard trusted because it is green — is
+what this project has now found nine leakage escapes behind.
+
+---
+
+## R160 — the review seat earned its place on the first slice of code in this phase
+
+P4-01 and P4-02 were written test-first where they could be, with nine planted mutants each
+failing exactly its own witness, three derived guards each with a red witness, and all four gates
+green. An independent review seat then read the diff with one instruction first — **read every
+docstring and every board row against what the code and the test bodies execute** — and found
+**four claims stronger than the tree and four guards that did not bite as described.**
+
+Recorded because the ratio is the point: the author had already run a mutation probe over his own
+tests, and the probe could not see any of these, because a mutation probe checks that the tests
+notice a change in the *code* and says nothing about whether the *prose* is true.
+
+### The four overclaims
+
+| claim | what the tree held |
+|---|---|
+| `volab.daily`'s module docstring described `python -m volab.daily run --plan-only` in the present tense | the only verb is `plan`; that command exits with an argparse error. The `__main__` docstring was accurate, so the two contradicted each other |
+| the board's "written, flushed and `fsync`ed" | true of the code and **witnessed by nothing**. Deleting both calls left all 29 tests green, and no mutant removed them |
+| the board's "a date whose completed record exists is a no-op" | true of `plan_for`, which a test fed a hand-built `frozenset`. `main` never read the run log, so `python -m volab.daily plan` printed `work` for a date the log said was finished. **True of the library, false of the shipped verb** |
+| the timezone test's "bites at any hour" | its strong half asserted the string `_EXCHANGE_TZ` appeared in `inspect.getsource(_today)`, which a comment defeats; its other half agreed with a UTC implementation except in the evening. And the test was named for the CLI default while never calling `main` |
+
+### The four guards that did not bite
+
+| guard | the spelling that walked through |
+|---|---|
+| holdout keys | `from volab.config import HOLDOUT_UNLOCK_ENV; os.environ[HOLDOUT_UNLOCK_ENV] = "1"` — the constant's **name**, which is neither key. Also `"VOLAB_" + "HOLDOUT_UNLOCK"` and `["env", "VOLAB_HOLDOUT_UNLOCK=1", …]` |
+| the clock seam | `clock = dt.datetime.now` (a reference, not a call), `getattr(dt.datetime, "now")()`, `import time`, and a **second function also named `_today`**, which the exact-map assertion accepted |
+| append detection | a mode in a variable (`open(p, MODE)`), `os.open(…, os.O_APPEND)`, `logging.FileHandler`, `to_csv(mode="a")` — and a false positive on `open("archive.csv")`, since any string starting with "a" counted |
+| ledger-writing stages | `volab.walkforward.__main__`, found by the same reviewer against an equality test, and already fixed before the review landed |
+
+### What changed, and the ruling
+
+Every one is fixed with a test of its own, the mutant count went from nine to thirteen, and the
+guards now judge identifiers loosely and string literals strictly — so a refusal *message* may say
+the holdout is sealed while a key *used* in code cannot hide in a string. Each guard's remaining
+reach is written into its own docstring: the writer derivation is **not transitive**, an AST clock
+scan cannot see a call assembled at runtime, and the holdout scan reads this package's source and
+not the environment that launches it.
+
+**Ruling: a review seat reads prose against execution, and that is a different job from a mutation
+probe, which cannot do it.** Both are required on every story in this phase. The probe proves the
+tests bite; the seat proves the sentences are true. Phase 3 found eleven instances of a test or
+docstring claiming more than its code performed, every one caught by a review seat and never by
+the author — this slice is the twelfth through fifteenth, and the author who planted nine mutants
+over his own work still did not see them.
+
+**What this costs if it is wrong:** a review dispatch per story. Against it: three of the four
+overclaims were in the board, which is the document the next agent will work from, and one of them
+("already_done") would have shipped a scheduler that re-ran a day it had already completed.

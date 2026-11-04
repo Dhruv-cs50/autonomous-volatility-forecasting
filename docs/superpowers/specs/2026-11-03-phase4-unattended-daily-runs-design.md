@@ -183,14 +183,21 @@ stage runner, the run log, the CLI) and because the import-discipline test is pe
 
 ```
 src/volab/daily/
-  __init__.py   the plan: what today's work is, as data. No I/O.
-  runner.py     executes a plan's stages. Owns subprocesses and timing.
+  __init__.py   the plan: what today's work is, as data. No I/O but the calendar.
+  runner.py     executes a plan's stages. Owns subprocesses and timing.   (P4-03)
   runlog.py     the two-line append-only run record.
-  __main__.py   the CLI: python -m volab.daily run [--as-of DATE] [--plan-only]
+  __main__.py   the CLI
 ```
 
-**The plan is data, computed before anything runs, and printable without running.** `--plan-only`
-prints exactly what would happen and touches nothing — this is how an operator inspects an
+**The CLI's verbs arrive with the slices that can honour them.** P4-01 and P4-02 ship
+`python -m volab.daily plan [--as-of DATE]`, which prints the plan and writes nothing at all;
+`run`, which executes the stages and writes the run record, arrives with the stage runner in
+P4-03. A `run` verb that recorded a completed run having executed no stage would be a record that
+lies, which is worse than a missing verb. The verb is an `argparse` `choices` tuple, as every
+other CLI in this project uses, so adding it is a one-line change.
+
+**The plan is data, computed before anything runs, and printable without running.** The `plan`
+verb (and later `run --plan-only`) prints exactly what would happen and touches nothing — this is how an operator inspects an
 unattended job, and how a test asserts the refusal without executing a stage.
 
 This is not a `--dry-run` that disables a safety. The refusals in §4.1 fire inside the plan, so
@@ -233,13 +240,17 @@ record, so a `return 1` from any of the six CLIs is a recorded stage failure, no
   evidence that the job ran.
 - **No count from this file is a reported number**, stated here so it never becomes one by
   accident.
+- **Only a completion whose `outcome` is `done` finishes a date.** A completion recorded as
+  `failed` or `refused` closes the *attempt* and leaves the *date* available, because the work was
+  not done — treating any completion as finished would skip a failed morning politely instead of
+  by crashing, which is the same lost day.
 
 ### 3.4 Idempotence
 
 A plan for a date whose **completed** run record already exists is a no-op with reason
 `already_done`. Keyed on `as_of`, not on wall-clock time, so a run at 09:00 and a retry at 11:00
-on the same date are one run. An **incomplete** record (start with no completion) does **not**
-block a retry — that is the reveal design's call #1 applied here: attempts are counted, not
+on the same date are one run. An **incomplete** record (start with no completion), and a completion whose outcome is
+not `done`, do **not** block a retry — that is the reveal design's call #1 applied here: attempts are counted, not
 forbidden, and a transient failure must not brick tomorrow.
 
 ---
@@ -254,7 +265,7 @@ escapes by running something rather than by reading it.
 | A1 | **The scheduler reaches for `allow_holdout` or `VOLAB_HOLDOUT_UNLOCK`.** `phase2-completion-sprint-board.md:225` predicted this exact failure: *"an agent asked to make dailies work is exactly who would reach for `allow_holdout`"* | it is the one line of code that turns an honest harness into a leaky one, and an unattended job is where nobody is watching | a derived scan (R151) over `src/volab/daily/**` asserting neither name appears, plus a behavioural test: an `--as-of` past `dev_end` is refused and **no** audit line is written |
 | A2 | **A new ledger line in `trials.jsonl`, `comparisons.jsonl` or `decisions.jsonl`** | they are reported numbers and the reveal reports a delta against the first (R139) | the daily run executed against a `tmp_path` root, with the real ledgers' md5 asserted unchanged either side; **and** a derived import check that `volab.daily` imports neither sink module |
 | A3 | **The clock inside a boundary.** Anything that computes `dev_end`, `holdout_start` or a cutoff from `date.today()` | the README's invariant: *"nothing computes a boundary from the clock"*. A scheduler is the first module here with a clock, so it is the first that could break it | a test passing `as_of` = a date past `dev_end` and asserting refusal, and a derived scan asserting no `date.today()`/`datetime.now()` call outside the one injection seam |
-| A4 | **A flag that disables a guard** — a `--force`, a `--no-check`, a rehearsal mode inside the real path | the reveal design's anti-goal #1 in another hat. A seal a flag can lift was never a seal | `--plan-only` asserted to refuse identically to a real run; the rehearsal exercised by pointing at another storage root, never by a mode flag |
+| A4 | **A flag that disables a guard** — a `--force`, a `--no-check`, a rehearsal mode inside the real path | the reveal design's anti-goal #1 in another hat. A seal a flag can lift was never a seal | the refusal is decided inside the plan, so the `plan` verb and a later `run` cannot diverge, and the ordering test pins that a sealed date is refused for being sealed and not for being a closed day; the rehearsal is exercised by pointing at another storage root, never by a mode flag |
 | A5 | **An unattended job installed by this work** — a crontab line, a launchd plist loaded, a GitHub Actions schedule enabled | the brief's constraint is to build it so it *can* run and leave it unrun; and a persistent trigger on this machine is the user's to create | the install snippet ships as documentation and a committed template only; no test and no code loads it, and §4.5 says so |
 | A6 | **A run that cannot be attributed.** A record without a sha, a dirty flag, or a completion line | an unattended record nobody can attribute is worse than none, because it looks like evidence (the reveal design's anti-goal #4, same argument) | a test that kills a run mid-stage and asserts the start line survives with no completion, and that the next run is permitted |
 
