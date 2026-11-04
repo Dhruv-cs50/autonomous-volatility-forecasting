@@ -759,3 +759,82 @@ The same rewrite reinvented `_run_nested`, which #12 had already introduced, and
 claimed credit for factoring out boilerplate that already existed. Both the deletion and the false
 claim are corrected in `10a03fc` rather than rebased away, because a branch that hid this would be
 the wrong artefact to inherit — R152's standard, applied to my own error instead of a board row.
+
+---
+
+## R155 — a board used as a work queue decays, and the decay is not uniform
+
+The "Deferred findings" table in `docs/phase3-sprint-board.md` carried fifteen rows, each a finding
+a reviewer raised and a reason it was deferred. It was tracked in git deliberately, because the SDD
+ledger under `.superpowers/` is gitignored and is deleted when a plan finishes, so a finding
+recorded only there disappears exactly when someone would want to triage it. That decision was
+right and is not what this ruling revisits. What it revisits is the second job the table drifted
+into: being read as a queue of work to do.
+
+**Every row was re-derived from the working tree at `01fcee7`, from the code the row names and
+never from the row's own wording or from a commit message. Seven of fifteen did not state what the
+repository contained.** The table had been reviewed, audited and closed on an independent delivery
+audit six weeks of commits earlier, and it still decayed.
+
+### The four ways a row went wrong, which are not one failure
+
+Lumping them together as "stale" hides the only part worth inheriting: they have different causes
+and call for different defences.
+
+| rows | how it failed | what it costs a reader |
+|---|---|---|
+| 8, 9, 15 | **discharged after the row was written.** The evidence is *not* an ancestor of the row's own birth commit | work re-done from scratch — P3-09's exact cost |
+| 4 | **half-discharged.** The overclaiming docstring was fixed; the gap behind it survived, now disclosed | either the whole row is dropped and a live gap leaves the queue, or it is kept and a fixed defect is re-fixed |
+| 5 | **wrong when it was written.** The assertions it said were absent landed in `04479bb` and `fbbf8be`, **both ancestors of `210a3e4`, the commit that wrote the row** | the same cost, and no amount of re-checking *later* finds it, because nothing changed |
+| 3, 13 | **still true, pointing at the wrong lines.** `tests/test_evaluators.py:872` is now an unrelated test | a reader checks the cited line, finds something else, and must decide whether the finding moved or evaporated |
+
+The eight remaining rows were accurate. Three of those eight had never been *measured* either — row
+14's "no relative import exists in the package" and row 12's arithmetic were both assertions that
+happened to hold. They are now checked, which is a different state from being asserted.
+
+**The test that separates these is one command**, and it is the one thing this re-derivation could
+not have been done without:
+
+```
+git log -S '<fragment of the row>' -- docs/phase3-sprint-board.md   # when the row was written
+git merge-base --is-ancestor <evidence commit> <row commit>         # did the evidence come first?
+```
+
+If the evidence predates the row, the row was never stale: it was **wrong on arrival**, and that is
+a review failure, not a bookkeeping one. Row 5 reads exactly like rows 8, 9 and 15 — "evidenced
+only by that round's passing run, not from the diff" — and only the ancestry check tells them
+apart. Without it this pass would have reported five clean discharges and quietly repeated P3-09.
+
+### Ruling
+
+**A finding is a claim with a date, and a queue entry is a claim about now. One row cannot be
+both.** Concretely, for any table of findings that anyone may later work from:
+
+1. **A row states the commit it was verified at.** The table header now carries `01fcee7`. A row
+   whose evidence has no sha is a claim about a tree nobody can identify.
+2. **A row cites a file and a line, and a line number is treated as perishable.** Rows 3, 13 and 15
+   all drifted. Prefer a test or symbol name, which `grep` relocates, over a bare line.
+3. **Before acting on a row, run the ancestry check above.** R150 already says another agent's
+   report is evidence to check and never a fact; this extends it to the project's own board,
+   including rows this orchestrator wrote. A board is a report, and it is one with no author
+   present to question.
+4. **Re-derivation and repair are separate passes.** Nothing in this table was fixed in the pass
+   that verified it, deliberately. A pass that does both starts recording its own intentions in the
+   column where the tree's state belongs — which is how row 5 came to describe a diff it had.
+5. **No bare suite count in a row.** Row 5 cited 553, was "fixed" by appending "(the suite is now
+   1716)", and both figures were stale by the time anyone read them; the suite is **1731** at
+   `01fcee7`. A count is a gate (R154) and a gate's reading needs the sha it was taken at.
+
+**Numbered R155, not R153.** R150's allocation gives R150 onward to Phase 3 and reserves R142-R149
+for the Phase 2 completion session, which used only R142. **R153 and R154 are taken, on the open PR
+#13 branch `guard/police-aliased-load-panel`, and not on `main`** — checked with
+`git show <branch>:docs/superpowers/phase3-decisions.md` across every local and remote branch, not
+by reading `main` alone, which would have reported R152 as the high-water mark and produced a
+collision. That is R150's rule applied to the ledger's own numbering. Both that PR and this one
+append to this file, so whichever merges second resolves an append conflict; the two blocks are
+independent.
+
+**What this ruling does not claim.** It does not say the eleven rows still open should be fixed, or
+in what order. The `verdict` column is a recommendation (`now`, `before the reveal`, `cosmetic`) and
+one row's worth of judgement each; acting on any of them is the user's call, and the two rows that
+propose deleting a test (3 and 6) are held by R154 regardless.
