@@ -75,7 +75,10 @@ The remaining nine were accurate. Ruling: R155, **corrected after the fact: this
 first classified row 5 as "wrong when it was written", on the reasoning that its evidence
 predates it. That was a misreading of the row, which never claimed the assertions were absent —
 see row 5 and R155's own correction note.** **Rows are numbered here so they can be cited; the
-order is unchanged.**
+order is unchanged.** **Every file-and-line cite below was then re-checked against `56bf9e2`
+(`main`, PRs #13-#15 merged) and seven had drifted; they are corrected and were taken from `grep`,
+not retyped. So the *findings* were derived at `01fcee7` and the *cites* point into `56bf9e2`,
+where the suite is **1734 passing** — 1731 at `01fcee7` plus the three tests R154 restored.**
 
 **The `verdict` column is a recommendation only. Nothing in this table was fixed in the pass that
 verified it**, deliberately: re-deriving a queue and working it are different jobs, and mixing
