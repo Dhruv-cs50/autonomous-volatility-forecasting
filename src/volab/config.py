@@ -1,21 +1,26 @@
 """Typed configuration and the validation that defines the holdout boundary.
 
-``splits.dev_end`` is the last date development code may observe and ``holdout_start`` is the
-first date of the sealed window. The guarded read path compares a caller's requested ``end``
-against ``dev_end``, so an inconsistent split here would make that guard meaningless. A bad
-configuration is never repaired or clipped.
+``splits.dev_end`` is the last date development code may observe, ``holdout_start`` is the
+first date of the sealed window and ``holdout_end`` its last. The dates after ``holdout_end``
+are ``live`` (see ``Region``): unreachable until the holdout is revealed, and no read path here
+or in ``store`` is any more open for them than for the holdout. The guarded read path compares
+a caller's requested ``end`` against ``dev_end``, so an inconsistent split here would make that
+guard meaningless. A bad configuration is never repaired or clipped.
 
 ``load_settings`` reads YAML, applies the explicit environment overrides in ``_ENV_OVERRIDES``
 (any other ``VOLAB_*`` variable is ignored), then validates. Almost every failure is a
 ``ConfigError``. The one exception is ``HoldoutViolation``: an environment that moves
 ``splits.dev_end`` *later* than the file's own literal is not a mistyped setting, it is the
 seal being moved from outside the file, and it is refused here because here is where the value
-is accepted. See ``_refuse_a_later_dev_end``.
+is accepted. See ``_refuse_a_later_dev_end``. ``splits.holdout_end`` is refused in the
+opposite direction, *earlier* than the file's literal, because that shrinks the sealed window;
+see ``_refuse_an_earlier_holdout_end``.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import enum
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +61,7 @@ _ENV_OVERRIDES: dict[str, str] = {
     "calendar": "VOLAB_CALENDAR",
     "splits.dev_end": "VOLAB_SPLITS_DEV_END",
     "splits.holdout_start": "VOLAB_SPLITS_HOLDOUT_START",
+    "splits.holdout_end": "VOLAB_SPLITS_HOLDOUT_END",
     "storage.root": "VOLAB_STORAGE_ROOT",
 }
 # The second of the two keys ``store.load_panel`` requires to read the sealed window. Defined
@@ -68,10 +74,39 @@ _SECTIONS = frozenset({"splits", "storage"})
 _SYMBOL_LISTS = frozenset({"universe", "exogenous"})
 
 
+class Region(enum.Enum):
+    """Which of the three regions of the calendar a date falls in."""
+
+    DEV = "dev"
+    HOLDOUT = "holdout"
+    LIVE = "live"
+
+
 @dataclass(frozen=True)
 class Splits:
     dev_end: dt.date
     holdout_start: dt.date
+    # The default exists for hand-built values (tests construct ``Splits`` directly) and keeps
+    # the meaning ``Splits`` had before it had an end: a holdout with no end, so no ``live``
+    # region. It fails closed. ``load_settings`` never relies on it; it always passes the file's.
+    holdout_end: dt.date = dt.date.max
+
+    def region_of(self, day: dt.date) -> Region:
+        """The region ``day`` falls in; total over every date, and pure.
+
+        ``dev`` is ``day <= dev_end``, the test ``store.load_panel`` applies to a read's ``end``.
+        ``holdout`` is everything after that up to ``holdout_end``, so a date in the seam between
+        ``dev_end`` and ``holdout_start`` -- session-free by ``_validate_splits``, but still a
+        date -- is ``holdout``: calling it ``dev`` would name as free a date the guard refuses.
+        ``live`` is ``day > holdout_end``.
+
+        Naming ``live`` opens nothing: the guard asks only about ``dev_end``.
+        """
+        if day <= self.dev_end:
+            return Region.DEV
+        if day <= self.holdout_end:
+            return Region.HOLDOUT
+        return Region.LIVE
 
 
 @dataclass(frozen=True)
@@ -196,12 +231,16 @@ def _load_calendar(value: object) -> tuple[str, xcals.ExchangeCalendar]:
 
 
 def _validate_splits(
-    calendar: xcals.ExchangeCalendar, dev_end: dt.date, holdout_start: dt.date
+    calendar: xcals.ExchangeCalendar,
+    dev_end: dt.date,
+    holdout_start: dt.date,
+    holdout_end: dt.date,
 ) -> Splits:
     """Require a clean seam: holdout after dev, with no trading session between them.
 
     Neither endpoint need be a session (the default ``dev_end`` is a Sunday); what matters is
-    that no session exists that belongs to neither window.
+    that no session exists that belongs to neither window. The holdout must also end after it
+    starts. That is checked last, so a seam that cannot be verified is reported as that.
     """
     if holdout_start <= dev_end:
         raise ConfigError(
@@ -222,7 +261,11 @@ def _validate_splits(
                 f"holdout_start {holdout_start}, first {sessions[0].date()}: they would belong "
                 "to neither window"
             )
-    return Splits(dev_end=dev_end, holdout_start=holdout_start)
+    if holdout_end <= holdout_start:
+        raise ConfigError(
+            f"splits.holdout_end must be after holdout_start, got {holdout_end} <= {holdout_start}"
+        )
+    return Splits(dev_end=dev_end, holdout_start=holdout_start, holdout_end=holdout_end)
 
 
 def _refuse_a_later_dev_end(literal: object, effective: dt.date, config_path: Path) -> None:
@@ -268,6 +311,43 @@ def _refuse_a_later_dev_end(literal: object, effective: dt.date, config_path: Pa
         )
 
 
+def _refuse_an_earlier_holdout_end(literal: object, effective: dt.date, config_path: Path) -> None:
+    """Refuse an environment that moves ``splits.holdout_end`` earlier than the file's literal.
+
+    The opposite direction to ``_refuse_a_later_dev_end``, and that is the whole point of it.
+    ``holdout_end`` is the last sealed date and everything after it is ``live``, which the
+    reveal will make freely readable. Moving it *later* only lengthens the sealed window, so it
+    withholds more and stays open. Moving it *earlier* shrinks the window: days the committed
+    file seals become ``live`` without anything having been revealed. Copying the ``dev_end``
+    rule as it stands would refuse the harmless direction and allow this one.
+
+    Not a ``ConfigError``, for the reason ``_refuse_a_later_dev_end`` gives: this is the seal
+    being moved from outside the file, not a setting someone mistyped. What is compared is the
+    file on disk, with the same reach and the same limits that function describes.
+
+    A file pinning no literal is refused too, so the rule is total rather than "no earlier than
+    the literal, when there is one" -- otherwise deleting the key would sidestep it. That is a
+    different case from the key being absent with no variable set, which ``load_settings``
+    answers with a ``ConfigError`` for a missing setting.
+    """
+    if os.environ.get(_ENV_OVERRIDES["splits.holdout_end"]) is None:
+        return
+    variable = _ENV_OVERRIDES["splits.holdout_end"]
+    if literal is None:
+        raise HoldoutViolation(
+            f"{variable} sets splits.holdout_end to {effective}, but {config_path} pins no "
+            f"splits.holdout_end of its own to be no earlier than: the end of the sealed window "
+            f"is a committed literal, not an environment variable."
+        )
+    pinned = _parse_date("splits.holdout_end", literal)
+    if effective < pinned:
+        raise HoldoutViolation(
+            f"{variable} sets splits.holdout_end to {effective}, earlier than the {pinned} "
+            f"pinned in {config_path}: dates the file seals would become live. A later "
+            f"holdout_end is allowed, because it only withholds data."
+        )
+
+
 def _validate_storage_root(value: object) -> Path:
     """Resolve against the repository root and require a location strictly inside it.
 
@@ -299,6 +379,7 @@ def load_settings(path: Path | None = None) -> Settings:
     flat = _read_settings_file(config_path)
     # Read before the override, because the override is what it has to be compared against.
     literal_dev_end = flat.get("splits.dev_end")
+    literal_holdout_end = flat.get("splits.holdout_end")
     _apply_env_overrides(flat)
     for name in _ENV_OVERRIDES:
         if name not in flat:
@@ -316,7 +397,9 @@ def load_settings(path: Path | None = None) -> Settings:
     dev_end = _parse_date("splits.dev_end", flat["splits.dev_end"])
     _refuse_a_later_dev_end(literal_dev_end, dev_end, config_path)
     holdout_start = _parse_date("splits.holdout_start", flat["splits.holdout_start"])
-    splits = _validate_splits(calendar, dev_end, holdout_start)
+    holdout_end = _parse_date("splits.holdout_end", flat["splits.holdout_end"])
+    _refuse_an_earlier_holdout_end(literal_holdout_end, holdout_end, config_path)
+    splits = _validate_splits(calendar, dev_end, holdout_start, holdout_end)
     storage_root = _validate_storage_root(flat["storage.root"])
     return Settings(
         universe=universe,
