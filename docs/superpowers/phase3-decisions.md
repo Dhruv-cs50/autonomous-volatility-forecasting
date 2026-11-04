@@ -834,7 +834,20 @@ collision. That is R150's rule applied to the ledger's own numbering. Both that 
 append to this file, so whichever merges second resolves an append conflict; the two blocks are
 independent.
 
-**What this ruling does not claim.** It does not say the eleven rows still open should be fixed, or
+**What this ruling does not claim.** It does not say the twelve rows still open should be fixed, or
 in what order. The `verdict` column is a recommendation (`now`, `before the reveal`, `cosmetic`) and
 one row's worth of judgement each; acting on any of them is the user's call, and the two rows that
 propose deleting a test (3 and 6) are held by R154 regardless.
+
+**Twelve, not eleven — corrected after the fact, and written to be checkable rather than counted
+again.** Three of the fifteen rows are `closed` (8, 9 and 15), which leaves one `now` (14), four
+`before the reveal` (1, 2, 10 and 13) and seven `cosmetic` (3, 4, 5, 6, 7, 11 and 12): 1 + 4 + 7 =
+12. Row 9 is `closed` with a caveat about its evidence being a recorded measurement rather than a
+gate, and is counted among the three on either reading, so the figure is twelve whichever way that
+caveat is taken.
+
+Everything else in this ruling's arithmetic holds — fifteen rows, seven misstating the tree, eight
+accurate. What did not was a closing tally that disagreed by one with the table it summarised, in
+the very ruling about a board whose rows stopped matching the thing they described. That is R129's
+pattern: a small untrue number is the kind that survives by being small, and it survived two
+sprints last time.
