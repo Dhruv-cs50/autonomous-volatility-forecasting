@@ -508,6 +508,260 @@ unsurprising rather than unknown, and it is an argument, not a measurement.
 Recording the figures is the point: "unverified" was the honest state of that row, and this is
 what verifying it produced.
 
+---
+
+## R153 — the holdout police match `load_panel` by identity, and pay for it once per session
+
+**Numbered R153**, continuing from R152 under R150's allocation (R150 onward is Phase 3's). Checked
+before claiming it: `## R15[3-9]` appears in no copy of this file on `main`,
+`perf/share-real-panel-loads` or `docs/phase3-sprint-close`, and there were no other open PR
+branches.
+
+### The defect
+
+`_forbid_holdout_unlock` wrapped `load_panel` by matching the binding **name** `"load_panel"`
+across imported modules. A test that read through the same function under another name was
+therefore not wrapped by the police at all:
+
+- `from volab.store import load_panel as aliased`
+- a module-level `captured = store.load_panel`, taken at collection time
+
+This is **the same defect, in the same file, as the one `pytest_fixture_setup` was rewritten to
+fix one change earlier** — there a review reproduced a module-scoped fixture reading the real
+store under an alias and passing. That makes it an instance of R151 rather than a new lesson, and
+it extends R151's scope: the set a test must derive rather than enumerate is not always a set of
+*names in the codebase*. Here it was the set of **bindings of one object**, and the enumeration
+was a single string literal. One literal is still a list.
+
+### How far it actually reached, which is less far than it sounds
+
+Both witnesses have to **move the boundary** to get past the seal; neither can use the keys. That
+is forced, not a convenience: `load_panel` resolves `_unlock_granted` through `volab.store`'s own
+globals, which the fixture patches *by attribute*, so an unmarked test that reaches for the keys
+is caught however it spells its import. Moving the boundary — a hand-built `Settings` with a later
+`dev_end`, with `volab.store`'s own refusal of that neutralised — is the only route an alias could
+take. The hole was real and is closed; it was not a second open door onto the holdout.
+
+The police also still see only reads routed through `volab` code. A test that opens Parquet
+itself is invisible to them, exactly as `pytest_fixture_setup`'s docstring already discloses, and
+so is a reference held in a closure, a default argument or an object's attribute and taken before
+the install.
+
+### Why this was not folded into the performance change that found it
+
+The naive fix is to run the identity sweep in the per-test police too. #12 measured 3.6ms a
+sweep, about 6s across the suite — a fifth of its own ~30s saving, spent re-deriving an answer that
+does not change between tests. It was deliberately left out, and this change pays for itself
+instead by installing **once per session**.
+
+**Re-measured here rather than inherited**, in a process with the whole suite collected (1845
+modules in `sys.modules`), timing both sweeps side by side:
+
+| sweep | median | min | over 1,731 tests |
+|---|---|---|---|
+| identity, `_names_bound_to` | 3.249ms | 2.768ms | **≈ 5.6s** — the naive fix |
+| name, `getattr(module, "load_panel")` — what this replaced did per test | 0.198ms | 0.188ms | ≈ 0.34s |
+| this design: 1 install + 2 per marked test = 7 sweeps | — | — | **≈ 23ms** |
+
+#12's figure is confirmed: 3.249ms against its 3.6ms, and 5.6s against its ~6s.
+
+**But the saving against the code this replaces is ≈ 0.32s, not 6s, and that distinction matters.**
+The 6s was always the cost of the *naive fix*, never of `main`. `main` paid a *name* sweep per test,
+which is 16x cheaper than the identity sweep because `getattr` on one attribute does not walk a
+module's whole namespace. So the right way to state this change's performance is: it avoids the 5.6s
+the correct-by-identity fix would have cost, and incidentally returns about 0.32s.
+
+The once-per-session design works because the install makes `volab.store.load_panel` *be* the
+wrapper. Every later import therefore resolves to the wrapper by whatever name it chooses, with no
+re-sweep, and the only per-test state is the boundary pushed onto `_ACTIVE_DEV_END`. The three
+phases the value passes through are all ones the suite controls: the wrapper normally, the
+original for the duration of a `@pytest.mark.holdout` test, and `_refuse_store_read` while a
+wider-scoped fixture is being set up.
+
+### The one thing that forced a sweep to stay
+
+A marked test gets the wrapper **removed**, not merely disarmed. `store._caller_frame` names the
+first frame outside `volab` in the audit line, so a wrapper left in the call chain becomes the
+"caller", and `test_store_guard.py:280` asserts that caller is `test_store_guard`. That is two
+sweeps for each marked test, and `pytest --collect-only -m holdout` counts **3** of them, so **6
+sweeps a session against 1,730 tests** — which is why the install is still worth having.
+
+`_install_holdout_police` also refuses to install while `_WIDER_SCOPE_SETUPS` is non-empty. That
+is unreachable as the fixtures stand, and checked anyway because the failure mode is silent:
+`store.load_panel` is `_refuse_store_read` during such a setup, and wrapping *that* as the
+original would leave the police guarding the refusal and the real function unguarded for the rest
+of the session.
+
+### Installing once per session has to be made fail-closed, and was not at first
+
+The per-test version re-captured whatever `store.load_panel` was for every test. That made it
+robust to a leak by accident: a rebinding which escaped the test that made it was simply wrapped
+again by the next test. **Nothing re-captures now**, and a reviewer found the hole that opens.
+
+A **marked** test that does `monkeypatch.setattr(store, "load_panel", fake)` corrupts the police
+permanently. `_forbid_holdout_unlock` requests `monkeypatch`, so it is finalised *first*: its
+re-install captures `fake` as the original, and monkeypatch then restores the real function out
+from under it. What is left is a wrapper delegating to a stand-in, a `volab.store.load_panel`
+that nothing wraps, and every later import binding the unwrapped function — silently, for the
+rest of the session. Reproduced: the test after the marked one runs green and unpoliced.
+
+Nothing in the suite rebinds `load_panel` from a marked test today — `grep` finds five rebindings,
+all of them in unmarked tests and all restored by monkeypatch — so this was **latent, not
+reached**. It is closed by comparing `store.load_panel` against the wrapper by identity at each
+unmarked setup: one pointer comparison, not a sweep, and it fails closed, because a test must not
+run on police that cannot be vouched for.
+
+**The first version of this witness was vacuous, and that is worth recording.** It put the marked
+test first, where `_POLICED_ORIGINAL` is still empty, so no re-install happens and nothing is
+corrupted: the nested run went green for the boring reason, not the interesting one, and it was
+only the mutation check that exposed the difference. The order — an unmarked test to install, the
+marked test to leak, an unmarked test to be refused — *is* the scenario.
+
+### The suite wall time cannot resolve this, and waiting for a quiet machine would not have helped
+
+The brief asked for full-suite wall time before and after. Both are reported, from CI, and
+together they show that **no wall-clock measurement can resolve a 0.32s effect on this suite.**
+Nine runs, on trees whose test content differs by at most four tests:
+
+| tree | tests | event | pytest duration |
+|---|---|---|---|
+| `main` `01fcee7` — **before** | 1731 | push | 450.99s |
+| `097610d`, tree identical to `01fcee7` | 1731 | push | 455.68s |
+| `097610d`, same tree | 1731 | pull_request | 326.56s |
+| `b2cd193` | 1730 | push | 446.37s |
+| `16584c3` | 1731 | push | **465.57s** |
+| `16584c3` | 1731 | pull_request | 453.31s |
+| `199eb11` | 1734 | push | 342.04s |
+| `199eb11` | 1734 | pull_request | 455.77s |
+| `f202724` — **after** | 1734 | pull_request | **237.89s** |
+
+Provenance checked rather than assumed, per R150: `gh run view --json headSha,event` on each, and
+`git diff 097610d 01fcee7` is empty, so the three "before" runs executed the same tree — the
+`pull_request` run's merge ref included, since `097610d` already merges `main`.
+
+**The spread is 227.68s, about 710x the effect being measured.** Three runs of the *identical*
+`01fcee7` tree alone span 326.56s to 455.68s.
+
+The sharpest way to see that the instrument is useless here: **the fastest run of all nine, 237.89s,
+is the branch carrying the most tests.** This branch adds three witnesses whose nested
+`runpytest_subprocess` runs cost roughly ten seconds between them, so it is strictly more work than
+`main` and should never be fastest. It was fastest by 89s. A measurement in which the heavier tree
+wins by that margin is reporting the runner, not the code.
+
+**The local A/B/A/B was run anyway, started on an idle machine, and says the same thing.** All four
+runs passed with the right counts and nothing skipped — the real store was present, so local
+coverage matched CI's:
+
+| run | tree | tests | pytest time | 1-min load before → after |
+|---|---|---|---|---|
+| A1 | `01fcee7` | 1731 | **525.38s** | 6.69 → 9.46 |
+| B1 | `f202724` | 1734 | 455.32s | 9.46 → **235.42** |
+| A2 | `01fcee7` | 1731 | **253.61s** | 235.42 → 11.59 |
+| B2 | `f202724` | 1734 | 260.41s | 11.59 → 8.76 |
+
+`main` measured against *itself* spans 253.61s to 525.38s — a **2.07x spread**, and 8.6x the 31.6s
+between the two conditions' means. The machine went from load 6.69 to 235 and back inside four
+runs, unprompted. B2's wrapper also recorded 1328s of wall time against pytest's own 260.41s, so
+roughly 1068s went somewhere outside the test session entirely.
+
+**The plain statement the brief asked for: no reading here is trustworthy, and the before/after
+figures above are reported as a bound, not a measurement.** What they do bound is useful. This
+branch runs three *extra* witnesses whose nested `runpytest_subprocess` runs cost about ten seconds
+between them, and it was still not measurably slower than `main` in either pairing — consistent
+with a small net saving that roughly offsets the tests it adds, and inconsistent with any
+regression large enough to matter.
+
+**So this phase's practice is kept and sharpened: measure the mechanism, not the suite.** One sweep
+is measurable to three digits and its multiplier is a test count, which is why the table above is a
+measurement and a suite duration is an anecdote. This also corrects the sprint-close note that
+framed the runtime question as "measure it on a quiet machine or report that it could not" — for an
+effect this size there is no quiet machine, only a smaller instrument.
+
+### The witnesses, and the mutations that prove they bite
+
+Seen red before the fix. The figure is **`3 failed, 8 passed`**, measured against `main`'s
+`conftest.py` with this branch's test file — each nested subprocess reporting `1 passed` for a read
+of 2026-03-02, past the repository's `dev_end` of 2025-12-31, with nothing firing. Three defects
+earlier in this phase were witnesses nobody had seen red, which is why this is an observation and
+not a claim.
+
+**An earlier draft of this ruling said `2 failed, 5 passed`.** That count was taken in the clobbered
+test file described in R154, which was missing three of `main`'s tests, so it understated both
+columns. Re-measured against the restored file.
+
+**Two of the three witnesses are for the defect; the third is for a hazard this design introduces,
+and they should not be conflated.** The alias and pre-captured witnesses are red against `main`
+because `main` has the bug. The leak witness is red against `main` for the opposite reason: `main`
+re-captures `load_panel` for every test, so a leaked rebinding heals itself and no error is raised,
+which is what that witness asserts must happen *here*. `main` needs no canary. This design does.
+
+Each piece of the fix was then mutated separately, because a witness that survives the mutation of
+the thing it is supposed to test is not testing it:
+
+| mutation | what went red | what it proves |
+|---|---|---|
+| install patches `store.load_panel` only, no sweep | all **3** boundary witnesses, the pre-existing one included | the sweep is load-bearing, and the pre-captured witness really does test it |
+| sweep matches the **name** `load_panel` (the original bug) | the **2** new witnesses; the pre-existing one stayed green | the new witnesses target the alias blind spot specifically, and nothing else |
+| marked tests leave the wrapper installed | `test_store_guard.py:280`, with `caller_module == 'conftest'` | the uninstall is load-bearing, and :280 is what catches its absence |
+| the drift canary removed | the leak witness: `3 passed` where the fix gives `passed=2, errors=1` | the police really do go silently dead after a marked test's leak |
+
+The second row is R151's own standard — "the witness for a derived rule is a mutation that the
+listed version passes" — run in reverse: the listed version *fails* the new witnesses and passes
+the old one, which locates the hole rather than asserting it.
+
+---
+
+## R154 — a deleted test is invisible to every gate this project has
+
+While fixing the alias blind spot I **silently deleted three tests** that PR #12 had added, in
+`tests/test_conftest_policy.py`:
+
+- `test_a_store_read_during_a_wider_scoped_fixture_is_an_error`
+- `test_the_refusal_follows_the_function_and_not_the_name_it_is_bound_to`
+- `test_a_module_first_imported_during_wider_scope_setup_is_not_left_refusing`
+
+The second is **the review's own witness that the fixture-scope guard matches by identity and not
+by name** — the nearest relative of the very defect the change was written to fix. I deleted the
+test for the bug while fixing the same bug one layer down.
+
+### The mechanism, which is duller than the irony
+
+I read the file with `cat` from the **shared checkout** while it sat on `docs/phase3-sprint-close`,
+a branch that predates #12, and then wrote the whole file into a worktree based on `main`, which
+carries #12. The content was a faithful copy — of the wrong branch. `tests/conftest.py` came
+through untouched because it was patched in place with targeted replacements that assert a single
+match; the one file rewritten whole is the one file that lost work.
+
+**Ruling: never write a whole file from content read earlier in the session.** Edit in place, or
+re-read the file from the tree being edited immediately before writing it. This generalises past
+branches: the same hazard exists between worktrees, and between a file read before a rebase and
+written after one.
+
+### Why nothing caught it, which is the part worth inheriting
+
+Every gate this repository has passed on both commits. They cannot do otherwise: **deleting a test
+removes a check without breaking one.** `pytest` was green, `ruff` and `mypy` were green, and CI
+was green twice. A reviewer reading the diff would have seen it; no automated gate could.
+
+What caught it was a **test count that moved the wrong way** — CI reported 1731 on `main` and 1730
+on a commit that *added two tests* — and it was noticed only while chasing an unrelated question
+about whether CI exercises the real-panel paths. Three tests were already gone and pushed by then.
+
+**Ruling: a test count is a gate.** A change that adds tests must raise the collected count by
+exactly what it added, and the number belongs in the commit message where the next reader can check
+it, as this branch's now does (1734 = `main`'s 1731 + 3). Where a diff against the base should add
+and never remove, say so and check it: `git diff <base> -- <path>` showing no removed lines is one
+command and it is now part of this branch's evidence.
+
+### The related correction
+
+The same rewrite reinvented `_run_nested`, which #12 had already introduced, and the commit message
+claimed credit for factoring out boilerplate that already existed. Both the deletion and the false
+claim are corrected in `10a03fc` rather than rebased away, because a branch that hid this would be
+the wrong artefact to inherit — R152's standard, applied to my own error instead of a board row.
+
+---
+
 ## R155 — a board used as a work queue decays, and the decay is not uniform
 
 The "Deferred findings" table in `docs/phase3-sprint-board.md` carried fifteen rows, each a finding
