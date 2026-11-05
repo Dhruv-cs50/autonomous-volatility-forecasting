@@ -33,8 +33,12 @@ instant as ``--at`` (``with_instant``), so the two share one reading of the cloc
 exactly one completion line, ``done`` if every stage exited zero and ``failed`` otherwise, carrying
 each stage's bounded output. If the process is interrupted between the two writes, the start line
 stands alone and the date stays retryable (``completed_dates``).
-A Ctrl-C kills the running stage's process group first (``run_stages``); a SIGTERM to ``run``
-does not -- the stage, in its own session, runs on, so a retry can overlap an abandoned run.
+A Ctrl-C kills the running stage's process group first (``run_stages``), and so does a SIGTERM:
+for the length of a ``work`` run ``_sigterm_unwinds`` turns SIGTERM into ``SystemExit``, which
+unwinds through ``run_stages`` (that kills the stage's group and reaps the stage) and the lock, and
+leaves the process without having written a completion line. Either way the start line stands
+alone and the date stays retryable. What that does not cover is in ``volab.daily.runner``: a ``SIGKILL`` to
+``run`` runs no handler at all, and a descendant that left the stage's group is not found.
 
 **One ``run`` at a time, by a lock that refuses and does not wait.** Before the start line, a
 ``work`` plan takes ``run_lock`` on ``daily_run.lock`` beside the run log (so an injected ``root``
@@ -50,9 +54,13 @@ not a successful morning. 2 for a run in which a stage failed or timed out, so a
 "the date is sealed" from "the work broke". 3 (``RUN_LOCKED_EXIT_CODE``) when another run holds the
 lock: not a sealed date and not broken work, and the locked run has written nothing, so a wrapper
 may simply fire again later. It is distinct from ``completed_elsewhere``, which is 0 -- the date is
-done. A closed exchange and an already-completed date are 0 -- those are the job correctly having
-nothing to do. The verb list is an ``argparse`` ``choices``
-tuple, as every other CLI in this project uses.
+done. 143 (``TERMINATED_EXIT_CODE``, 128 + SIGTERM as a shell reports it) when a SIGTERM ended a
+``work`` run while its handler was installed: the running stage's process group was killed, no
+completion line was written, and the date is retryable. A SIGTERM before the lock is taken and the
+handler installed, or to a ``plan`` or a non-``work`` ``run``, is not handled: the default
+disposition ends the process, with no stage started. A closed exchange and an already-completed
+date are 0 -- those are the job correctly having nothing to do. The verb list is an ``argparse``
+``choices`` tuple, as every other CLI in this project uses.
 
 ``root`` is injectable for the same reason ``volab.compare``'s ``main`` takes a ``sink``, and it
 moves **the run log only**: the file ``plan`` reads for completed dates and ``run`` writes. It does
@@ -69,10 +77,14 @@ store, which comes from the settings). A test that wants a ``run`` kept out of t
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime as dt
+import signal
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
+from types import FrameType
+from typing import NoReturn
 from zoneinfo import ZoneInfo
 
 from volab.config import load_settings
@@ -93,6 +105,10 @@ STAGE_FAILED_EXIT_CODE = 2
 # What ``run`` exits with when another run holds the lock: not 1 (a sealed date) and not 2 (the
 # work broke), because "someone else is already doing it" is neither.
 RUN_LOCKED_EXIT_CODE = 3
+
+# What ``run`` exits with when a SIGTERM ended it: 128 + SIGTERM, which is how a shell reports a
+# terminated process.
+TERMINATED_EXIT_CODE = 128 + signal.SIGTERM
 
 # The exchange's own timezone, because "today" for a job that asks the XNYS calendar whether it is
 # a session must be the date in New York, not on the machine. ``volab.sessions`` keeps its copy
@@ -124,6 +140,33 @@ def _today() -> dt.date:
 def _lock_path(log: Path) -> Path:
     """Beside the run log, so an injected ``root`` gets its own lock and ``data/**`` ignores it."""
     return log.with_name("daily_run.lock")
+
+
+@contextlib.contextmanager
+def _sigterm_unwinds() -> Iterator[None]:
+    """For the ``with`` body, make a SIGTERM raise ``SystemExit(TERMINATED_EXIT_CODE)``.
+
+    Python's default SIGTERM disposition ends the process without unwinding, so the runner's
+    cleanup of a running stage never runs. ``SystemExit`` is a ``BaseException``, so it takes the
+    same path a ``KeyboardInterrupt`` does. The handler then ignores further SIGTERMs, so a second
+    one cannot interrupt the unwinding the first started. The previous disposition is restored on
+    the way out. A ``SIGKILL`` cannot be caught and is not covered.
+
+    ``signal.signal`` works only on the main thread and raises ``ValueError`` elsewhere. That is
+    deliberately not caught: ``run`` is a process entry point and is on the main thread, and a
+    caller that invokes ``main`` from a thread should get the error and not a run that is silently
+    unprotected.
+    """
+
+    def terminate(number: int, frame: FrameType | None) -> NoReturn:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        raise SystemExit(TERMINATED_EXIT_CODE)
+
+    previous = signal.signal(signal.SIGTERM, terminate)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def _execute(plan: Plan, log: Path, clock: Callable[[], dt.datetime]) -> int:
@@ -182,7 +225,7 @@ def main(
         print(f"stage {stage.name}: python -m {stage.module} {' '.join(stage.argv)}".rstrip())
     if arguments.command == "run" and plan.outcome == "work":
         try:
-            with run_lock(_lock_path(log)):
+            with run_lock(_lock_path(log)), _sigterm_unwinds():
                 if plan.as_of in completed_dates(log):
                     print("outcome completed_elsewhere")
                     print("another run completed this date while this one waited for the lock")

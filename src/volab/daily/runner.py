@@ -51,11 +51,15 @@ the real stages; it is there to bound a hang, not to time the pipeline.
   outlives its parent) writes after that point is not captured. Before this, such a descendant
   held the read open until it exited -- 6.05 s for a 0.4 s timeout in a probe, and without bound
   for a stage that exited by itself, where no timeout applied at all;
-- an **interrupt** (``KeyboardInterrupt``) while a stage runs kills the stage's group and then
-  propagates. A **SIGTERM** to the ``run`` process does *not*: Python's default disposition ends
-  the process without unwinding, so the stage -- in its own session, which is also why the
-  terminal's Ctrl-C does not reach it -- keeps running with the start line written and no
-  completion. Nothing handles that.
+- an **interrupt** (``KeyboardInterrupt``) or any other ``BaseException`` while a stage runs --
+  from the moment the child exists, not from the moment the read loop starts -- kills the stage's
+  group, reaps the stage, and then propagates. The stage is in its own session, which is why the
+  terminal's Ctrl-C does not reach it and why this has to be done here. A **SIGTERM** to ``run``
+  is such an exception only because ``volab.daily.__main__`` converts it to ``SystemExit`` for the
+  length of a run (``_sigterm_unwinds``); this module installs no handler, and a caller that does
+  not will see the default disposition end the process with the stage still running. A
+  ``SIGKILL`` to ``run`` cannot be handled by anything. Only the process group is killed, so the
+  escaped-descendant bound above applies on this path too.
 - **a run lock keeps a second ``run`` out, and a killed run cannot wedge it** (``run_lock``). It is
   ``flock(LOCK_EX | LOCK_NB)`` on a file that is never unlinked, and the second run **refuses and
   does not wait**: ``LockHeld`` is raised at once, and the CLI turns it into a distinct exit code
@@ -178,14 +182,18 @@ def _run_one(stage: Stage, timeout_seconds: float) -> StageRun:
     kept = 0
     total = 0
     command = [sys.executable, "-m", stage.module, *stage.argv]
-    with subprocess.Popen(
+    process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL,
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
         start_new_session=True,  # its own process group, so the timeout can kill the whole tree
-    ) as process:
+    )
+    # Not ``with Popen(...)``: its ``__exit__`` waits for the child with no timeout for anything but
+    # a ``KeyboardInterrupt``, so a ``SystemExit`` landing before the read loop began would block
+    # until the stage finished. This ``try`` starts at the first line after the child exists.
+    try:
         assert process.stdout is not None  # stdout=PIPE above; narrows the type for mypy
         expired = threading.Event()
 
@@ -198,8 +206,8 @@ def _run_one(stage: Stage, timeout_seconds: float) -> StageRun:
                 os.killpg(process.pid, signal.SIGKILL)
 
         timer = threading.Timer(timeout_seconds, kill_the_group)
-        timer.start()
         try:
+            timer.start()
             descriptor = process.stdout.fileno()
             while True:
                 ready, _, _ = select.select([descriptor], [], [], _POLL_SECONDS)
@@ -216,18 +224,24 @@ def _run_one(stage: Stage, timeout_seconds: float) -> StageRun:
                 while kept - len(tail[0]) >= OUTPUT_BOUND_BYTES:
                     kept -= len(tail.popleft())
             exit_code = process.wait()
-        except BaseException:
-            # An interrupt reaches this process and not the stage, which is in its own session;
-            # without this the stage would be left running with nobody reading it.
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(-process.pid, signal.SIGKILL)
-            raise
         finally:
             timer.cancel()
-            timer.join()
+            if timer.is_alive():  # not yet started if the ``start`` itself was interrupted
+                timer.join()
         timed_out = expired.is_set()
         if timed_out:
             exit_code = TIMED_OUT_EXIT_CODE
+    except BaseException:
+        # An interrupt or a SIGTERM-turned-``SystemExit`` reaches this process and not the stage,
+        # which is in its own session. Kill its group and reap it before unwinding, or the stage
+        # outlives the run.
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(-process.pid, signal.SIGKILL)
+        raise
+    finally:
+        if process.stdout is not None:
+            process.stdout.close()
+        process.wait()  # reaped on every path, so no zombie and no ResourceWarning
     retained = b"".join(tail)[-OUTPUT_BOUND_BYTES:]
     dropped = total - len(retained)
     text = retained.decode("utf-8", errors="replace")

@@ -10,6 +10,8 @@ of the file write one, always under ``tmp_path`` and always with ``LIVE_STAGES``
 
 from __future__ import annotations
 
+import _thread
+import contextlib
 import datetime as dt
 import fcntl
 import json
@@ -17,6 +19,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import tracemalloc
 from collections.abc import Callable
@@ -67,6 +70,13 @@ _PROBES = {
         "import os, pathlib, sys, time\n"
         "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
         "print('before sleep', flush=True)\n"
+        "time.sleep(60)\n"
+    ),
+    # As probe_sleep but silent, so closing its pipe (which would give a printing stage a
+    # BrokenPipeError and end it early) cannot make it look as if it had been stopped.
+    "probe_sleep_silent": (
+        "import os, pathlib, sys, time\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))\n"
         "time.sleep(60)\n"
     ),
     # As probe_sleep, but through a grandchild that also sleeps; argv[1] gets both pids.
@@ -495,19 +505,46 @@ def test_the_start_line_is_on_disk_before_the_first_stage_starts(
     assert code == 0
 
 
+def _pid_when_written(pid_file: Path, deadline_seconds: float = 10) -> int:
+    """The pid a probe wrote to ``pid_file``, waiting for the whole number and not a half-write."""
+    deadline = time.monotonic() + deadline_seconds
+    while time.monotonic() < deadline:
+        with contextlib.suppress(FileNotFoundError, ValueError):
+            return int(pid_file.read_text())
+        time.sleep(0.02)
+    raise AssertionError(f"{pid_file} was never written")
+
+
+def _kill_if_alive(pid: int) -> None:
+    with contextlib.suppress(ProcessLookupError):
+        os.kill(pid, signal.SIGKILL)
+
+
 def test_a_run_abandoned_mid_stage_leaves_a_start_with_no_completion_and_a_retryable_date(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    _use_stages(monkeypatch, _stage("a", "probe_exit", "0"))
+    pid_file = tmp_path / "pid"
+    _use_stages(monkeypatch, _stage("a", "probe_sleep", str(pid_file)))
 
-    def interrupted(stages: tuple[Stage, ...], **_: object) -> tuple[StageRun, ...]:
-        raise KeyboardInterrupt
+    def interrupt_once_the_stage_is_running() -> None:
+        with contextlib.suppress(AssertionError):
+            _pid_when_written(pid_file)
+            _thread.interrupt_main()  # a genuine KeyboardInterrupt, with a genuine stage in flight
 
-    monkeypatch.setattr(daily_cli, "run_stages", interrupted)
+    interrupter = threading.Thread(target=interrupt_once_the_stage_is_running)
+    began = time.monotonic()
+    interrupter.start()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            _run(tmp_path, A_SESSION_IN_DEV, clock=_clock(_START, _END))
+        elapsed = time.monotonic() - began
+    finally:
+        interrupter.join()
+        if pid_file.exists():
+            _kill_if_alive(int(pid_file.read_text()))
 
-    with pytest.raises(KeyboardInterrupt):
-        _run(tmp_path, A_SESSION_IN_DEV, clock=_clock(_START, _END))
-
+    assert elapsed < 5, elapsed  # the stage sleeps sixty seconds; the unwind did not wait for it
+    assert _gone(int(pid_file.read_text()))
     (start,) = _records(tmp_path)
     assert start["kind"] == "start"
     log = run_log_path(tmp_path)
@@ -695,3 +732,125 @@ def test_a_run_that_takes_the_lock_leaves_the_date_done_and_the_lock_file_behind
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)  # and it is free again
     finally:
         os.close(descriptor)
+
+
+# --- SIGTERM ----------------------------------------------------------------------------------
+
+# Run in a child interpreter, because a SIGTERM with no handler kills the process it is sent to.
+# argv: root, pid file, date. It refuses to call ``main`` unless every planned stage is a probe: a
+# mis-patch here would otherwise run the real pipeline against this checkout.
+_DRIVER = """\
+import datetime as dt
+import sys
+from pathlib import Path
+
+import volab.daily as package
+import volab.daily.__main__ as cli
+from volab.daily import Stage
+
+root, pid_file, date = Path(sys.argv[1]), sys.argv[2], dt.date.fromisoformat(sys.argv[3])
+package.LIVE_STAGES = (Stage(name="a", module="probe_sleep", argv=(pid_file,)),)
+cli.git_state = lambda scope=None: ("abc1234", False)
+planned = package.plan_for(cli.load_settings(), date, completed=frozenset()).stages
+if not planned or not all(stage.module.startswith("probe_") for stage in planned):
+    print("refusing: a planned stage is not a probe", [s.module for s in planned], file=sys.stderr)
+    sys.exit(99)
+instants = iter(
+    [dt.datetime(2026, 11, 5, 9, 30, tzinfo=dt.UTC), dt.datetime(2026, 11, 5, 9, 45, tzinfo=dt.UTC)]
+)
+sys.exit(cli.main(["run", "--as-of", date.isoformat()], root=root, clock=lambda: next(instants)))
+"""
+
+
+def test_a_sigterm_during_a_stage_kills_the_stage_and_leaves_a_retryable_date(
+    tmp_path: Path,
+) -> None:
+    driver_file = tmp_path / "driver.py"
+    driver_file.write_text(_DRIVER, encoding="utf-8")
+    pid_file = tmp_path / "pid"
+    root = tmp_path / "root"
+    driver = subprocess.Popen(
+        [sys.executable, str(driver_file), str(root), str(pid_file), A_SESSION_IN_DEV.isoformat()],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    stage_pid: int | None = None
+    try:
+        stage_pid = _pid_when_written(pid_file)
+        driver.send_signal(signal.SIGTERM)
+        _, error = driver.communicate(timeout=10)
+        assert driver.returncode == 128 + signal.SIGTERM, error.decode()  # as a shell reports it
+        assert _gone(stage_pid)
+        assert daily_cli.TERMINATED_EXIT_CODE == 128 + signal.SIGTERM
+    finally:
+        if stage_pid is not None:
+            _kill_if_alive(stage_pid)
+        if driver.poll() is None:
+            driver.kill()
+            driver.communicate()
+
+    # The promise the two-line run log exists to keep: started, never completed, so retryable.
+    (start,) = _records(root)
+    assert start["kind"] == "start"
+    log = run_log_path(root)
+    assert completed_dates(log) == frozenset()
+    assert incomplete_run_ids(log) == (start["id"],)
+    retry = daily_package.plan_for(
+        daily_cli.load_settings(), A_SESSION_IN_DEV, completed=completed_dates(log)
+    )
+    assert retry.outcome == "work"
+
+
+def test_the_sigterm_handler_is_restored_after_a_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _use_stages(monkeypatch, _stage("a", "probe_exit", "0"))
+    before = signal.getsignal(signal.SIGTERM)
+
+    assert _run(tmp_path, A_SESSION_IN_DEV, clock=_clock(_START, _END)) == 0
+
+    assert signal.getsignal(signal.SIGTERM) is before
+
+
+def test_an_exit_landing_before_the_read_loop_does_not_wait_for_the_stage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pid_file = tmp_path / "pid"
+
+    class ExitsAtOnce:
+        def __init__(self, *_: object) -> None:
+            raise SystemExit(143)
+
+    monkeypatch.setattr(runner.threading, "Timer", ExitsAtOnce)
+    began = time.monotonic()
+    try:
+        with pytest.raises(SystemExit):
+            run_stages((_stage("a", "probe_sleep_silent", str(pid_file)),))
+        elapsed = time.monotonic() - began
+    finally:
+        if pid_file.exists():
+            _kill_if_alive(int(pid_file.read_text()))
+
+    # The stage sleeps sixty seconds. ``Popen.__exit__`` would have waited for all of them.
+    assert elapsed < 5, elapsed
+
+
+# --- the re-check under the lock --------------------------------------------------------------
+
+
+def test_a_date_completed_while_waiting_for_the_lock_runs_nothing_and_says_completed_elsewhere(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    marker = tmp_path / "ran"
+    _use_stages(monkeypatch, _stage("a", "probe_marker", str(marker)))
+    answers = iter([frozenset(), frozenset({A_SESSION_IN_DEV})])
+    # The plan reads the log first and says ``work``; the re-check under the lock then says done.
+    monkeypatch.setattr(daily_cli, "completed_dates", lambda log: next(answers))
+
+    assert _run(tmp_path, A_SESSION_IN_DEV, clock=_clock()) == 0
+
+    out = capsys.readouterr().out
+    assert "completed_elsewhere" in out
+    assert "already_done" not in out  # that word is the already-done verb's witness alone
+    assert not run_log_path(tmp_path).exists()
+    assert not marker.exists()
