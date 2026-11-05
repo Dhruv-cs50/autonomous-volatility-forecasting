@@ -29,17 +29,41 @@ Output is decoded after truncation with ``errors="replace"``, so a stage emittin
 not UTF-8 -- or a cut that lands inside a multi-byte character -- yields a replacement character
 and not an exception.
 
-**A stage that runs longer than ``timeout_seconds`` is killed and is a failed stage.** An
-unattended job with no timeout is a job that can hang forever on a stalled download and never
-write the completion line, so the date is neither done nor visibly failed. The deadline is
-enforced by a timer that sends SIGKILL to the stage's whole process group (the child is started in
-its own session for that reason: a grandchild that inherited the output pipe would otherwise keep
-the read loop open after its parent died). The stage is then recorded with ``timed_out`` set and
-the exit code ``TIMED_OUT_EXIT_CODE``, which is not zero, so the ordinary fail-stop applies. The
-default, ``STAGE_TIMEOUT_SECONDS``, is a ceiling chosen without measuring the real stages; it is
-there to bound a hang, not to time the pipeline.
+**A stage that runs longer than ``timeout_seconds`` is killed and is a failed stage -- within a
+stated bound.** An unattended job with no timeout is a job that can hang forever on a stalled
+download and never write the completion line, so the date is neither done nor visibly failed. The
+deadline is enforced by a ``threading.Timer`` that sends SIGKILL to the stage's whole process
+group (the child is started in its own session for that reason). The stage is then recorded with
+``timed_out`` set and the exit code ``TIMED_OUT_EXIT_CODE``, which is not zero, so the ordinary
+fail-stop applies. The default, ``STAGE_TIMEOUT_SECONDS``, is a ceiling chosen without measuring
+the real stages; it is there to bound a hang, not to time the pipeline.
 
-**This module takes no clock and records nothing.** It does not write the run record or any
+**The bound, stated rather than implied:**
+
+- the stage and every descendant **in its process group** are killed (SIGKILL, so nothing gets to
+  clean up);
+- a descendant that **left the group** (``setsid``, ``start_new_session=True``, a double fork
+  into a daemon) is **not killed**: this module has no way to find it, and nothing here claims
+  otherwise. It is orphaned and keeps running, and keeps the pipe open. What the runner does is
+  stop *waiting* for it: once the stage's own process has exited and the pipe has been idle for
+  ``_POLL_SECONDS``, reading ends and the stage is returned. That applies after a timeout and after
+  an ordinary exit alike. The cost is that output such an orphan (or a same-group descendant that
+  outlives its parent) writes after that point is not captured. Before this, such a descendant
+  held the read open until it exited -- 6.05 s for a 0.4 s timeout in a probe, and without bound
+  for a stage that exited by itself, where no timeout applied at all;
+- an **interrupt** (``KeyboardInterrupt``) while a stage runs kills the stage's group and then
+  propagates. A **SIGTERM** to the ``run`` process does *not*: Python's default disposition ends
+  the process without unwinding, so the stage -- in its own session, which is also why the
+  terminal's Ctrl-C does not reach it -- keeps running with the start line written and no
+  completion. Nothing handles that.
+- there is **no run lock**. Two ``run`` processes for one date (an abandoned stage's run and the
+  next morning's retry, or two launchd firings) can overlap and both fit and append; the
+  forecast log's duplicate-key refusal makes a second *forecast* line fail, but nothing stops the
+  stages themselves running twice.
+
+**This module reads no wall clock and records nothing.** It never asks what the date or time is
+(nothing it returns depends on either); the only time it uses is a *duration*, as a
+``threading.Timer`` and a ``select`` poll interval. It does not write the run record or any
 ledger and imports no sink; ``StageRun.as_result`` produces the ``StageResult`` -- verdict, bounded
 output, dropped-byte count and timed-out flag -- that the caller hands to ``volab.daily.runlog``,
 which writes all of it into the completion line.
@@ -49,6 +73,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -65,6 +90,10 @@ from volab.daily.runlog import StageResult
 OUTPUT_BOUND_BYTES = 16 * 1024
 
 _CHUNK_BYTES = 64 * 1024
+
+# How long the pipe must be idle, after the stage's own process has exited, before reading stops
+# and the stage is returned although something still holds the pipe open. See the module docstring.
+_POLL_SECONDS = 0.1
 
 # Two hours per stage. Unmeasured: the real stages have not been timed unattended, and this is a
 # bound on a hang rather than an estimate of a run, so it errs long -- a false timeout abandons
@@ -131,13 +160,28 @@ def _run_one(stage: Stage, timeout_seconds: float) -> StageRun:
         timer = threading.Timer(timeout_seconds, kill_the_group)
         timer.start()
         try:
-            while chunk := process.stdout.read(_CHUNK_BYTES):
+            descriptor = process.stdout.fileno()
+            while True:
+                ready, _, _ = select.select([descriptor], [], [], _POLL_SECONDS)
+                if not ready:
+                    if process.poll() is not None:
+                        break  # the stage has exited; something else holds the pipe
+                    continue
+                chunk = os.read(descriptor, _CHUNK_BYTES)
+                if not chunk:
+                    break
                 tail.append(chunk)
                 kept += len(chunk)
                 total += len(chunk)
                 while kept - len(tail[0]) >= OUTPUT_BOUND_BYTES:
                     kept -= len(tail.popleft())
             exit_code = process.wait()
+        except BaseException:
+            # An interrupt reaches this process and not the stage, which is in its own session;
+            # without this the stage would be left running with nobody reading it.
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(-process.pid, signal.SIGKILL)
+            raise
         finally:
             timer.cancel()
             timer.join()

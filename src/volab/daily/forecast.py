@@ -70,11 +70,12 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import inspect
 import json
 import math
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -104,19 +105,27 @@ FORECAST_LOG = Path("data") / "forecasts.jsonl"
 # ``src/volab/daily/forecast.py`` -> the repository root, as every CLI in this package spells it.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# ``pseudo`` is the pre-reveal dev winner; ``registered`` is the frozen champion after the reveal.
-# Required on every fingerprint with no default, so a line cannot be mistaken for the registered
-# kind by omission.
-_KINDS = ("pseudo", "registered")
+# The vocabulary of kinds a line can carry, and today it has one member. ``registered`` -- the
+# frozen champion after the reveal -- is **absent on purpose**: a kind that is not in the vocabulary
+# cannot be chosen by any argument, spelling or computed string, because no constructor here takes
+# one. Writing a registered line is a Phase 6 change to this tuple and to the types that carry it,
+# made in a reviewed diff; see ``Fingerprint``.
+_KINDS = (PSEUDO_KIND,)
 
 # (as_of, symbol, horizon). The horizon is read back from JSON, so it is typed as what it is.
 _Key = tuple[str, str, object]
 
-# The default of ``--minimum-training`` in both the walk-forward and the shootout CLIs (the two that
-# write the trial ledger), repeated rather than imported because it is an argparse default there and
-# not a name. The ledger does not record the value a given run used, so this is the default and not
-# a verified match to the run that elected a champion. A forecast from a thinner fit is refused.
-MINIMUM_TRAINING = 250
+# The training minimum the fit is run with: ``volab.walkforward.evaluate``'s own default, read from
+# its signature and not retyped, so the fit here and the fit ``evaluate`` would do on its own
+# cannot drift (the way ``volab.config.HOLDOUT_UNLOCK_ENV`` is one definition "so the two cannot
+# drift"). **One definition is not reachable for the three CLIs that write the trial ledger**
+# (``walkforward``, ``compare``, ``evaluators``): each spells ``default=250`` as an argparse literal
+# in a file outside this package, so a change to one of them is not followed from here. A test in
+# ``tests/test_daily_forecast.py`` reads those three literals and fails if any differs, which turns
+# silent drift into a red test but does not remove the second definition. The ledger does not
+# record the value a given run used, so this is the default and not a verified match to the run
+# that elected a champion. A forecast from a thinner fit is refused.
+MINIMUM_TRAINING: int = inspect.signature(evaluate).parameters["minimum_training"].default
 
 # What the single-model cohort the fit is run in is called. It is never written to a ledger.
 _FIT_COHORT = "pseudo-champion-fit"
@@ -132,17 +141,33 @@ class ForecastRefused(VolabError):
 
 @dataclass(frozen=True)
 class Fingerprint:
-    """What identifies the champion that produced a forecast. Carried on every line."""
+    """What identifies the champion that produced a forecast. Carried on every line.
+
+    **The kind is not an argument.** ``kind`` is a field with ``init=False``, fixed to
+    ``PSEUDO_KIND``: there is no parameter on this class, on ``take_fingerprint`` or on
+    ``pseudo_fingerprint`` through which another kind can arrive, so "no code path here writes a
+    registered line" holds of the types and not only of the spelling of the source. The AST scan in
+    ``tests/test_daily_forecast.py`` is a second line of defence. What remains reachable is
+    deliberate subversion (``object.__setattr__``, unpickling a forged state), which a frozen
+    dataclass cannot stop and this does not claim to.
+
+    **What Phase 6 does** to write a registered line: widen ``_KINDS``, give the registered path its
+    own constructor (a ``registered_fingerprint`` that reads the frozen champion from the
+    pre-registration, not from the ledger) and let ``kind`` be set by it. Each of those is an edit
+    to this file that the scan, ``test_the_vocabulary_holds_no_registered_kind...`` and the
+    mutation probe will flag, so it cannot happen by accident.
+    """
 
     # The champion's configuration name, e.g. the model it is.
     model: str
-    # ``pseudo`` or ``registered``; see ``_KINDS``.
-    kind: str
-    # ``("unknown", None)`` is recorded as such when git cannot be reached, never dropped.
+    # ``git_sha`` / ``git_dirty``: ``("unknown", None)`` is recorded as such when git cannot be
+    # reached, never dropped.
     git_sha: str
     git_dirty: bool | None
     # ``definition_hash``'s digest: identifies the code and configuration even on a dirty tree.
     definition_hash: str
+    # ``pseudo``; see ``_KINDS``. Not an ``__init__`` parameter.
+    kind: str = field(default=PSEUDO_KIND, init=False)
 
     def __post_init__(self) -> None:
         if self.kind not in _KINDS:
@@ -243,12 +268,14 @@ def definition_hash(
 def take_fingerprint(
     *,
     model: str,
-    kind: str,
     configuration: Mapping[str, object],
     sources: Sequence[Path],
     repo_root: Path,
 ) -> Fingerprint:
-    """Fingerprint the champion now: ``git_state`` of the **repository root**, plus the hash.
+    """Fingerprint the pseudo-champion now: ``git_state`` of the **repository root**, plus the hash.
+
+    There is no ``kind`` parameter: the result is ``kind="pseudo"`` because ``Fingerprint`` has no
+    other kind to give.
 
     The root is the scope, not the package: ``volab.walkforward.git_state`` documents that with
     the package as scope an edit to ``config/base.yaml`` or ``tests/`` reads as clean. Call this
@@ -258,7 +285,6 @@ def take_fingerprint(
     sha, dirty = git_state(repo_root)
     return Fingerprint(
         model=model,
-        kind=kind,
         git_sha=sha,
         git_dirty=dirty,
         definition_hash=definition_hash(configuration, sources, root=repo_root),
@@ -319,14 +345,13 @@ def append_forecasts(lines: Sequence[ForecastLine], *, root: Path, at: dt.dateti
 
 
 def pseudo_fingerprint(champion: PseudoChampion, *, repo_root: Path) -> Fingerprint:
-    """The fingerprint of a pseudo-champion. Its ``kind`` is ``PSEUDO_KIND`` and cannot be chosen.
+    """The fingerprint of a pseudo-champion. Its kind is ``pseudo`` and no argument can change it.
 
     The hash covers ``definition_sources(repo_root)`` and the champion's own configuration, which
     includes the ledger run that elected it; see ``definition_sources`` for why those files.
     """
     return take_fingerprint(
         model=champion.model,
-        kind=PSEUDO_KIND,
         configuration=champion.configuration(),
         sources=definition_sources(repo_root),
         repo_root=repo_root,

@@ -20,7 +20,12 @@ not only by the library.
 
 ``run`` computes the same plan and then does one of two things. For a plan that is not ``work`` --
 a refusal, a closed exchange, a date already done -- it prints what ``plan`` prints and **writes
-nothing at all**: no run record, no directory, not even a call to the clock. For ``work`` it writes
+nothing at all**: no run record, no directory, and no call to the clock *from ``run``*. That last
+is exact about where the clock is read: with ``--as-of`` the clock is not called at all; without
+it -- which is how the shipped plist invokes the job -- ``main`` reads it **once**, before the plan
+exists, because "today" is what the plan is for. Either way a non-work plan reads it no further, and
+only a ``work`` plan reads it again (the start and completion instants). Pinned by
+``tests/test_daily_forecast.py`` with a counting clock. For ``work`` it writes
 the start line (through ``record_start``, which fsyncs it) **before the first stage starts**, runs
 the stages through ``run_stages`` (each its own interpreter, killed past
 ``STAGE_TIMEOUT_SECONDS``) -- a stage that declares ``needs_at`` is handed the start line's own
@@ -28,6 +33,9 @@ instant as ``--at`` (``with_instant``), so the two share one reading of the cloc
 exactly one completion line, ``done`` if every stage exited zero and ``failed`` otherwise, carrying
 each stage's bounded output. If the process is interrupted between the two writes, the start line
 stands alone and the date stays retryable (``completed_dates``).
+A Ctrl-C kills the running stage's process group first (``run_stages``); a SIGTERM to ``run``
+does not -- the stage, in its own session, runs on -- and **there is no run lock**, so a retry can
+overlap an abandoned run. ``volab.daily.runner`` states both.
 
 **Exit codes.** 1 for a refusal, copied from ``volab.walkforward``'s refusal of a ``--to`` past
 ``dev_end`` rather than invented: an unattended job's wrapper reads exit codes, and a sealed date is
@@ -36,10 +44,16 @@ not a successful morning. 2 for a run in which a stage failed or timed out, so a
 those are the job correctly having nothing to do. The verb list is an ``argparse`` ``choices``
 tuple, as every other CLI in this project uses.
 
-``root`` is injectable for the same reason ``volab.compare``'s ``main`` takes a ``sink``: a test
-must be able to exercise the real entry point without writing into, or reading, the repository's own
-``data/``. It defaults to the repository root. The ``git_sha`` and ``git_dirty`` of the start line
-are always those of the repository itself, whatever ``root`` is.
+``root`` is injectable for the same reason ``volab.compare``'s ``main`` takes a ``sink``, and it
+moves **the run log only**: the file ``plan`` reads for completed dates and ``run`` writes. It does
+**not** reach the stages. ``plan_for`` hands no stage a ``--root``, so a real ``run`` with an
+injected ``root`` still has the forecast stage reading the repository's trial ledger and writing the
+repository's forecast log, and ``ingest`` and ``features`` take no root at all (they write the
+store, which comes from the settings). A test that wants a ``run`` kept out of the repository's
+``data/`` must replace ``LIVE_STAGES`` with stages it points at its own directory, as
+``tests/test_daily_rehearsal.py`` does; handing ``root`` is not enough, and this is pinned by
+``tests/test_daily_forecast.py``. It defaults to the repository root. The ``git_sha`` and
+``git_dirty`` of the start line are always those of the repository itself, whatever ``root`` is.
 """
 
 from __future__ import annotations

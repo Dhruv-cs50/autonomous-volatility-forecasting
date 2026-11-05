@@ -50,7 +50,7 @@ import datetime as dt
 from dataclasses import dataclass, replace
 from typing import Literal
 
-from volab.config import Settings
+from volab.config import Region, Settings, Splits
 from volab.sessions import get_calendar, is_session
 
 Outcome = Literal["work", "refused", "no_session", "already_done"]
@@ -92,7 +92,8 @@ class Plan:
     log will understand:
 
     - ``work`` -- there is work to do, and ``stages`` is it.
-    - ``refused`` -- the date is past ``dev_end``. ``stages`` is empty.
+    - ``refused`` -- the date is past ``dev_end``, in the holdout or the live region; the reason
+      says which. ``stages`` is empty.
     - ``no_session`` -- the exchange was closed. ``stages`` is empty.
     - ``already_done`` -- a completed run for this date exists. ``stages`` is empty.
     """
@@ -135,6 +136,25 @@ def _dated(stage: Stage, as_of: dt.date) -> Stage:
     return replace(stage, argv=(*stage.argv, "--as-of", as_of.isoformat()), needs_as_of=False)
 
 
+def _refusal_reason(splits: Splits, as_of: dt.date) -> str:
+    """Why a date past ``dev_end`` is refused, naming the region it is actually in.
+
+    The refusal itself is decided by ``dev_end`` alone, as the read guard is; the region only
+    chooses which true thing to say. (The split's end is not interpolated: nothing under this
+    package may name an attribute with ``holdout`` in it, ``tests/test_daily.py`` scans for that.)
+    ``Splits.region_of`` is total, so a date in the seam between
+    ``dev_end`` and ``holdout_start`` is called holdout, as the guard treats it.
+    """
+    if splits.region_of(as_of) is Region.LIVE:
+        where = (
+            "it is in the live region, after the holdout window, which this entry point cannot "
+            "read and has no key for"
+        )
+    else:
+        where = "the holdout is sealed and this entry point has no key"
+    return f"{as_of} is past dev_end {splits.dev_end}; {where}"
+
+
 def plan_for(
     settings: Settings,
     as_of: dt.date,
@@ -154,18 +174,17 @@ def plan_for(
     ``VOLAB_HOLDOUT_UNLOCK`` together, and neither name appears anywhere under
     ``src/volab/daily/`` -- asserted by a derived scan in ``tests/test_daily.py``, because
     ``docs/phase2-completion-sprint-board.md:225`` predicted exactly this failure: "an agent asked
-    to make dailies work is exactly who would reach for ``allow_holdout``". Until the holdout
-    reveal has happened and a ``live`` region exists (P4-05), **every real date is past
-    ``dev_end``**, so this refusal is the normal outcome rather than an edge case.
+    to make dailies work is exactly who would reach for ``allow_holdout``". **Every
+    real date is past ``dev_end``** -- in the holdout region while ``holdout_end`` lies ahead, in
+    the live region once it has passed (``Splits.region_of`` says which) -- so this refusal is the
+    normal outcome rather than an edge case. Its reason names the region the date is in: a live
+    date is not described as sealed holdout, though both are refused alike, with the same exit code.
     """
     if as_of > settings.splits.dev_end:
         return Plan(
             as_of=as_of,
             outcome="refused",
-            reason=(
-                f"{as_of} is past dev_end {settings.splits.dev_end}; the holdout is sealed and "
-                "this entry point has no key"
-            ),
+            reason=_refusal_reason(settings.splits, as_of),
             stages=(),
         )
     if not is_session(get_calendar(settings), as_of):

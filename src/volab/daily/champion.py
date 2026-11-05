@@ -6,9 +6,14 @@ is a dev winner, selected by looking at dev results** -- it is exactly the kind 
 reveal's pre-registration exists to prevent from being presented as a finding. So it is labelled
 wherever a reader meets it: ``kind="pseudo"`` on every forecast line (the field itself), the
 stage's printed output says "NOT the registered champion", and this docstring says what it is.
-Nothing under ``volab.daily`` writes the other kind: ``kind`` is set here from ``PSEUDO_KIND`` and
-nowhere from a parameter, and ``tests/test_daily_forecast.py`` scans the package for a code path
-that could.
+Nothing under ``volab.daily`` can write the other kind, and that is a property of the types and
+not of the spelling of the source: ``volab.daily.forecast.Fingerprint`` has no ``kind`` parameter
+(the field is fixed to ``PSEUDO_KIND`` and is not an ``__init__`` argument), neither
+``take_fingerprint`` nor ``pseudo_fingerprint`` takes one, and the vocabulary holds no other
+member, so a computed string such as ``"reg" + "istered"`` or ``take_fingerprint(kind=var)`` is a
+``TypeError`` and not a registered line. ``tests/test_daily_forecast.py`` also scans the package
+for a code path that spells the word, as a second line of defence. Only deliberate subversion
+(``object.__setattr__`` on a frozen instance, forging a pickle) gets past the types.
 
 **It is derived, not named.** ``pseudo_champion`` reads the trial ledger through
 ``volab.leaderboard.read_trials`` and ranks with the leaderboard's own ``ranked_trials``, its
@@ -50,14 +55,31 @@ PSEUDO_KIND = "pseudo"
 # The loss the registered champion is chosen on (pre-registration, section 3).
 CHAMPION_LOSS = "qlike"
 
-# What makes up a champion's definition besides the configuration: everything a forecast is
-# computed from. Directories are hashed whole, not file by file.
+# What makes up a champion's definition besides the configuration: the code and settings a forecast
+# is computed from. Directories are hashed whole, not file by file, and walked at call time.
 _DEFINITION_DIRECTORIES = (
     Path("src") / "volab" / "models",
     Path("src") / "volab" / "walkforward",
     Path("src") / "volab" / "features",
 )
-_DEFINITION_FILES = (Path("config") / "base.yaml",)
+# Single files, each named because a forecast is computed through it: the settings and where the
+# data is read from (``config``, ``paths``, ``store``), the panel assembly and truncation
+# (``panel``), the session calendar (``sessions``), the registry that supplies the model object
+# (``compare/cohorts``), this package's own champion and fit (``champion``, ``forecast`` -- whose
+# ``MINIMUM_TRAINING`` decides which origins fit), and the lockfile that fixes the numerical
+# libraries. Over-coverage is the policy; see ``definition_sources``.
+_DEFINITION_FILES = (
+    Path("config") / "base.yaml",
+    Path("uv.lock"),
+    Path("src") / "volab" / "config.py",
+    Path("src") / "volab" / "paths.py",
+    Path("src") / "volab" / "store.py",
+    Path("src") / "volab" / "panel.py",
+    Path("src") / "volab" / "sessions.py",
+    Path("src") / "volab" / "compare" / "cohorts.py",
+    Path("src") / "volab" / "daily" / "champion.py",
+    Path("src") / "volab" / "daily" / "forecast.py",
+)
 
 
 class NoChampionError(VolabError):
@@ -144,15 +166,27 @@ def pseudo_champion(root: Path, symbol: str, horizon: int) -> PseudoChampion:
 def definition_sources(repo_root: Path) -> list[Path]:
     """The files whose bytes are hashed into a champion's fingerprint, sorted.
 
-    ``config/base.yaml`` and every ``.py`` under ``src/volab/models``, ``src/volab/walkforward``
-    and ``src/volab/features``: the contestants, the walk-forward that fits and scores them, and
-    the features they are fitted on, which is everything a forecast is computed from. It is a
-    **coarse** definition on purpose. Deriving which file defines a given model name needs a
+    Every ``.py`` under ``src/volab/models``, ``src/volab/walkforward`` and ``src/volab/features``
+    (the contestants, the walk-forward that fits and scores them, and the features they are fitted
+    on), plus the named files in ``_DEFINITION_FILES``: ``config/base.yaml``, ``uv.lock``, and the
+    modules the forecast stage reaches through -- ``config``, ``paths``, ``store``, ``panel``,
+    ``sessions``, ``compare/cohorts`` and this package's ``champion`` and ``forecast``. That is the
+    **code and settings** a forecast is computed from.
+
+    **Not covered, and so not claimed:** the data (the curated store's bytes are not hashed, so the
+    same fingerprint can sit on a forecast from a different panel; the line's ``as_of`` and the
+    store's own manifest are what pin that), ``ingest/curate.py`` (the dataset names ``panel``
+    reads), ``compare/__init__.py`` and ``identity.py``, and every library not fixed by ``uv.lock``
+    (the interpreter itself). An edit to one of those changes a forecast without changing the hash.
+
+    It is a **coarse** definition on purpose. Deriving which file defines a given model name needs a
     registry that does not exist (the cohorts live in ``volab.compare``, which writes ledgers and
     is not imported here), and a hand-kept name-to-file map is a literal that rots silently. Over
     coverage means a harmless edit elsewhere in those directories changes the hash; under
     coverage would let a changed model keep its hash, which is the failure the hash exists for.
-    The directories are walked at call time, so a new model file is covered without an edit here.
+    The directories are walked at call time, so a new model file is covered without an edit here;
+    the single files are named, and ``tests/test_daily_forecast.py`` pins each one by a literal
+    list of its own, so a path dropping out of ``_DEFINITION_FILES`` fails a test.
     """
     files = [repo_root / relative for relative in _DEFINITION_FILES]
     for directory in _DEFINITION_DIRECTORIES:

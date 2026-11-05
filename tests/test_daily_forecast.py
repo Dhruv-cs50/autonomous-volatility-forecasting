@@ -62,7 +62,6 @@ _DAY = dt.date(2026, 11, 4)
 
 _FINGERPRINT = Fingerprint(
     model="har_semilog",
-    kind="pseudo",
     git_sha="a" * 40,
     git_dirty=False,
     definition_hash="b" * 64,
@@ -247,7 +246,7 @@ def test_a_non_finite_forecast_is_refused_rather_than_written_as_one() -> None:
         _line(value=float("inf"))
 
 
-def test_a_champion_kind_other_than_the_two_is_refused() -> None:
+def test_a_champion_kind_cannot_be_chosen_at_all() -> None:
     with pytest.raises(ValueError, match="kind"):
         dataclasses.replace(_FINGERPRINT, kind="winner")
 
@@ -394,9 +393,7 @@ def test_the_fingerprint_asks_git_about_the_repository_root_and_records_the_answ
     monkeypatch.setattr(forecast, "git_state", fake)
     source = _source(tmp_path, "m.py", "x\n")
 
-    taken = take_fingerprint(
-        model="m", kind="pseudo", configuration={}, sources=[source], repo_root=tmp_path
-    )
+    taken = take_fingerprint(model="m", configuration={}, sources=[source], repo_root=tmp_path)
 
     assert asked == [tmp_path]
     assert (taken.git_sha, taken.git_dirty) == ("c" * 40, True)
@@ -409,9 +406,7 @@ def test_unknown_git_state_is_recorded_as_unknown_and_not_hidden(
 ) -> None:
     monkeypatch.setattr(forecast, "git_state", lambda scope=None: ("unknown", None))
 
-    taken = take_fingerprint(
-        model="m", kind="pseudo", configuration={}, sources=[], repo_root=tmp_path
-    )
+    taken = take_fingerprint(model="m", configuration={}, sources=[], repo_root=tmp_path)
     append_forecasts([dataclasses.replace(_line(), champion=taken)], root=tmp_path, at=_AT)
 
     champion = _read(tmp_path)[0]["champion"]
@@ -694,28 +689,90 @@ def test_the_definition_sources_are_derived_from_the_tree_and_all_exist() -> Non
     assert not [p for p in relative if "__pycache__" in p]
 
 
+# Written out here, not read from ``volab.daily.champion``: a pin that is derived from the thing it
+# pins passes when a path drops out. Each is a file whose edit changes a forecast.
+_PINNED_FILES = (
+    "config/base.yaml",
+    "uv.lock",
+    "src/volab/config.py",
+    "src/volab/paths.py",
+    "src/volab/store.py",
+    "src/volab/panel.py",
+    "src/volab/sessions.py",
+    "src/volab/compare/cohorts.py",
+    "src/volab/daily/champion.py",
+    "src/volab/daily/forecast.py",
+)
+# Directories walked at call time, so a file added to one is covered without an edit anywhere.
+_PINNED_DIRECTORIES = ("src/volab/models", "src/volab/walkforward", "src/volab/features")
+
+
+def _lay_out_definition(root: Path) -> Path:
+    """A minimal tree holding every pinned file and one file in each pinned directory."""
+    for relative in _PINNED_FILES:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"# {relative}\n", encoding="utf-8")
+    for directory in _PINNED_DIRECTORIES:
+        (root / directory).mkdir(parents=True, exist_ok=True)
+        (root / directory / "m.py").write_text("x = 1\n", encoding="utf-8")
+    (root / "src" / "volab" / "models" / "notes.txt").write_text("not source\n", encoding="utf-8")
+    return root / "src" / "volab" / "models" / "m.py"
+
+
 def test_the_definition_sources_follow_the_root_it_is_handed(tmp_path: Path) -> None:
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "base.yaml").write_text("a: 1\n", encoding="utf-8")
-    models = tmp_path / "src" / "volab" / "models"
-    models.mkdir(parents=True)
-    (models / "m.py").write_text("x = 1\n", encoding="utf-8")
-    (models / "notes.txt").write_text("not source\n", encoding="utf-8")
+    _lay_out_definition(tmp_path)
 
     found = {p.relative_to(tmp_path).as_posix() for p in definition_sources(tmp_path)}
 
-    assert found == {"config/base.yaml", "src/volab/models/m.py"}
+    assert found == {
+        *_PINNED_FILES,
+        *(f"{directory}/m.py" for directory in _PINNED_DIRECTORIES),
+    }
+
+
+@pytest.mark.parametrize("relative", _PINNED_FILES)
+def test_every_pinned_file_is_a_real_file_in_the_repository_and_is_covered(relative: str) -> None:
+    """Fails if a path drops out of the coverage, or the file it names stops existing."""
+    covered = {p.relative_to(_REPO_ROOT).as_posix() for p in definition_sources(_REPO_ROOT)}
+
+    assert (_REPO_ROOT / relative).is_file(), relative
+    assert relative in covered
+
+
+@pytest.mark.parametrize("relative", _PINNED_FILES)
+def test_editing_any_pinned_file_changes_the_hash(
+    relative: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The consequence the coverage exists for: an edit anywhere in it moves ``definition_hash``."""
+    monkeypatch.setattr(forecast, "git_state", lambda scope=None: ("c" * 40, False))
+    _lay_out_definition(tmp_path)
+    _ledger(tmp_path, [_trial("a", -8.0), _trial("b", -7.0)])
+    champion = pseudo_champion(tmp_path, "SPY", 1)
+    before = pseudo_fingerprint(champion, repo_root=tmp_path).definition_hash
+
+    with (tmp_path / relative).open("a", encoding="utf-8") as handle:
+        handle.write("# edited\n")
+
+    assert pseudo_fingerprint(champion, repo_root=tmp_path).definition_hash != before
+
+
+def test_a_file_added_to_a_walked_directory_is_covered_without_an_edit_to_the_list(
+    tmp_path: Path,
+) -> None:
+    _lay_out_definition(tmp_path)
+    added = tmp_path / "src" / "volab" / "models" / "brand_new_model.py"
+    added.write_text("y = 2\n", encoding="utf-8")
+
+    assert added in definition_sources(tmp_path)
 
 
 def test_editing_a_model_file_changes_the_champions_hash_and_so_does_its_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(forecast, "git_state", lambda scope=None: ("c" * 40, False))
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config" / "base.yaml").write_text("a: 1\n", encoding="utf-8")
-    models = tmp_path / "src" / "volab" / "models"
-    models.mkdir(parents=True)
-    (models / "m.py").write_text("x = 1\n", encoding="utf-8")
+    model_file = _lay_out_definition(tmp_path)
+    models = model_file.parent
     _ledger(tmp_path, [_trial("a", -8.0), _trial("b", -7.0)])
     champion = pseudo_champion(tmp_path, "SPY", 1)
 
@@ -1540,3 +1597,439 @@ def test_the_batch_is_fsynced_and_not_merely_written(
     append_forecasts([_line(), _line(horizon=1)], root=tmp_path, at=_AT)
 
     assert len(synced) == 1
+
+
+# --- P4-08b2 item 1: the registered kind is unreachable, not merely unspelled -----------------
+
+
+def test_no_spelling_of_registered_reaches_a_fingerprint_because_none_is_accepted() -> None:
+    """Every spelling the lexical scan was shown to miss, built at run time, is refused anyway.
+
+    The scan reads source text; these are computed, which is the point -- nothing here can be
+    caught by reading the code, and the constructor refuses all of them regardless.
+    """
+    spellings = [
+        "reg" + "istered",
+        f"regist{'ered'}",
+        "REGISTERED".lower(),
+        "".join(["regis", "tered"]),
+    ]
+    for spelling in spellings:
+        with pytest.raises(TypeError):
+            Fingerprint(  # type: ignore[call-arg]
+                model="m", kind=spelling, git_sha="a", git_dirty=False, definition_hash="b" * 64
+            )
+        with pytest.raises(ValueError, match="kind"):
+            dataclasses.replace(_FINGERPRINT, kind=spelling)
+
+
+def test_the_pre_reveal_path_has_no_parameter_through_which_a_kind_can_arrive() -> None:
+    import inspect
+
+    assert "kind" not in inspect.signature(take_fingerprint).parameters
+    assert "kind" not in inspect.signature(pseudo_fingerprint).parameters
+    assert "kind" not in inspect.signature(Fingerprint).parameters
+    assert "kind" not in inspect.signature(ForecastLine).parameters
+
+
+def test_take_fingerprint_given_a_kind_by_keyword_is_refused(tmp_path: Path) -> None:
+    kind = "".join(["regis", "tered"])
+
+    with pytest.raises(TypeError, match="kind"):
+        take_fingerprint(  # type: ignore[call-arg]
+            model="m", kind=kind, configuration={}, sources=[], repo_root=tmp_path
+        )
+
+
+def test_the_only_kind_there_is_comes_out_as_the_word_pseudo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The literal, not ``PSEUDO_KIND``: a constant compared with itself cannot notice a rename."""
+    monkeypatch.setattr(forecast, "git_state", lambda scope=None: ("c" * 40, False))
+
+    taken = take_fingerprint(model="m", configuration={}, sources=[], repo_root=tmp_path)
+
+    assert taken.kind == "pseudo"
+    assert taken.record()["kind"] == "pseudo"
+    assert _FINGERPRINT.record()["kind"] == "pseudo"
+
+
+def test_the_vocabulary_holds_no_registered_kind_to_be_picked_from() -> None:
+    """``next(k for k in vocabulary if k != "pseudo")`` found it before; there is nothing now."""
+    assert [k for k in getattr(forecast, "_KINDS", ()) if k != "pseudo"] == []
+
+
+# --- P4-08b2 item 3: the training minimum has one definition here, and the others are watched --
+
+_MINIMUM_TRAINING_CLIS = (
+    "src/volab/walkforward/__main__.py",
+    "src/volab/compare/__main__.py",
+    "src/volab/evaluators/__main__.py",
+)
+
+
+def _minimum_training_defaults(source: str) -> list[object]:
+    """The ``default=`` of every ``add_argument("--minimum-training", ...)`` in ``source``."""
+    found: list[object] = []
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "--minimum-training"
+        ):
+            for keyword in node.keywords:
+                if keyword.arg == "default" and isinstance(keyword.value, ast.Constant):
+                    found.append(keyword.value.value)
+    return found
+
+
+def test_the_minimum_training_is_derived_from_the_fit_it_is_passed_to_and_not_retyped() -> None:
+    import inspect
+
+    tree = ast.parse(Path(forecast.__file__).read_text(encoding="utf-8"))
+    (value,) = [
+        node.value
+        for node in tree.body
+        if (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "MINIMUM_TRAINING" for t in node.targets)
+        )
+        or (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "MINIMUM_TRAINING"
+        )
+    ]
+
+    assert not isinstance(value, ast.Constant), "a literal is a second definition"
+    default = inspect.signature(walkforward.evaluate).parameters["minimum_training"].default
+    assert default == forecast.MINIMUM_TRAINING
+
+
+@pytest.mark.parametrize("relative", _MINIMUM_TRAINING_CLIS)
+def test_each_cli_that_writes_the_trial_ledger_defaults_to_the_same_minimum(relative: str) -> None:
+    """The drift guard: the CLIs' ``default=`` are literals this module cannot import."""
+    source = (_REPO_ROOT / relative).read_text(encoding="utf-8")
+
+    assert _minimum_training_defaults(source) == [forecast.MINIMUM_TRAINING], relative
+
+
+def test_the_drift_guard_bites_on_a_cli_whose_default_has_moved() -> None:
+    moved = 'parser.add_argument("--minimum-training", type=int, default=300)\n'
+
+    assert _minimum_training_defaults(moved) != [forecast.MINIMUM_TRAINING]
+    assert _minimum_training_defaults("parser.add_argument('--other', default=250)\n") == []
+
+
+# --- P4-08b2 item 4: the refusal names the region the date is actually in ---------------------
+
+
+def _settings_with(*, holdout_end: dt.date) -> Settings:
+    base = load_settings()
+    return dataclasses.replace(
+        base, splits=dataclasses.replace(base.splits, holdout_end=holdout_end)
+    )
+
+
+_HOLDOUT_END = dt.date(2026, 10, 30)
+
+
+@pytest.mark.parametrize(
+    "day",
+    [dt.date(2026, 1, 1), dt.date(2026, 3, 2), _HOLDOUT_END],
+    ids=["in the seam after dev_end", "mid holdout", "the last holdout day"],
+)
+def test_a_holdout_date_is_refused_as_sealed(day: dt.date) -> None:
+    plan = plan_for(_settings_with(holdout_end=_HOLDOUT_END), day)
+
+    assert plan.outcome == "refused"
+    assert plan.stages == ()
+    assert plan.reason.startswith(f"{day} is past dev_end 2025-12-31")
+    assert "the holdout is sealed" in plan.reason
+    assert "live" not in plan.reason
+    assert "no key" in plan.reason
+
+
+@pytest.mark.parametrize("day", [dt.date(2026, 11, 2), dt.date(2026, 11, 4), dt.date(2027, 1, 4)])
+def test_a_live_date_is_refused_as_live_and_not_as_the_holdout(day: dt.date) -> None:
+    plan = plan_for(_settings_with(holdout_end=_HOLDOUT_END), day)
+
+    assert plan.outcome == "refused"
+    assert plan.stages == ()
+    assert plan.reason.startswith(f"{day} is past dev_end 2025-12-31")
+    assert "in the live region" in plan.reason
+    assert "after the holdout window" in plan.reason
+    assert "holdout is sealed" not in plan.reason
+    assert "no key" in plan.reason
+
+
+def test_the_wording_follows_the_configured_holdout_end_and_not_a_hardcoded_date() -> None:
+    later = _settings_with(holdout_end=dt.date(2027, 6, 30))
+    day = dt.date(2026, 11, 4)
+
+    assert "the holdout is sealed" in plan_for(later, day).reason
+    assert "live" in plan_for(_settings_with(holdout_end=_HOLDOUT_END), day).reason
+
+
+@pytest.mark.parametrize("day", [dt.date(2026, 3, 2), dt.date(2026, 11, 4)])
+def test_both_refusals_exit_one_and_write_nothing_through_the_verb(
+    day: dt.date, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        daily_cli, "load_settings", lambda: _settings_with(holdout_end=_HOLDOUT_END)
+    )
+
+    code = daily_cli.main(["run", "--as-of", day.isoformat()], root=tmp_path)
+
+    assert code == 1
+    assert list(tmp_path.iterdir()) == []
+
+
+# --- P4-08b2 item 5: what the runner's timeout bounds, and what it does not ------------------
+
+_LEAVER = """\
+import os, pathlib, subprocess, sys, time
+
+# A descendant that leaves the stage's process group and keeps the output pipe open.
+escaped = subprocess.Popen(["sleep", "30"], start_new_session=True)
+pathlib.Path(sys.argv[1]).write_text(str(escaped.pid))
+print("stage output", flush=True)
+if sys.argv[2] == "hang":
+    time.sleep(60)
+"""
+
+_HANGER = """\
+import os, pathlib, sys, time
+
+pathlib.Path(sys.argv[1]).write_text(str(os.getpid()))
+print("before sleep", flush=True)
+time.sleep(60)
+"""
+
+
+def _probe_stage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str, *args: str) -> Stage:
+    (tmp_path / "probe_p408b2.py").write_text(source, encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    return Stage(name="probe", module="probe_p408b2", argv=args)
+
+
+def _kill_quietly(pid_file: Path) -> None:
+    import contextlib
+    import signal
+
+    if pid_file.exists():
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(int(pid_file.read_text(encoding="utf-8")), signal.SIGKILL)
+
+
+def _gone_within(pid: int, seconds: float) -> bool:
+    import time
+
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_a_timeout_returns_promptly_even_when_a_descendant_left_the_group_holding_the_pipe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Probed at 6.05 s for a 0.4 s timeout before the read loop stopped waiting for end-of-file."""
+    import time
+
+    from volab.daily.runner import TIMED_OUT_EXIT_CODE, run_stages
+
+    pid_file = tmp_path / "escaped.pid"
+    stage = _probe_stage(tmp_path, monkeypatch, _LEAVER, str(pid_file), "hang")
+    started = time.monotonic()
+    try:
+        (run,) = run_stages((stage,), timeout_seconds=0.4)
+        elapsed = time.monotonic() - started
+    finally:
+        _kill_quietly(pid_file)
+
+    assert run.timed_out
+    assert run.exit_code == TIMED_OUT_EXIT_CODE
+    assert "stage output" in run.output
+    assert elapsed < 5, elapsed  # the escaped descendant sleeps thirty seconds
+
+
+def test_a_stage_that_exits_leaving_the_pipe_held_is_not_waited_for_past_its_own_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The timeout never applied here (the stage had exited), so the read waited without bound."""
+    import time
+
+    from volab.daily.runner import run_stages
+
+    pid_file = tmp_path / "escaped.pid"
+    stage = _probe_stage(tmp_path, monkeypatch, _LEAVER, str(pid_file), "exit")
+    started = time.monotonic()
+    try:
+        (run,) = run_stages((stage,), timeout_seconds=30)
+        elapsed = time.monotonic() - started
+    finally:
+        _kill_quietly(pid_file)
+
+    assert (run.exit_code, run.timed_out) == (0, False)
+    assert "stage output" in run.output
+    assert elapsed < 5, elapsed
+
+
+def test_an_escaped_descendant_is_left_running_and_that_is_the_stated_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The docstring says own-session descendants are abandoned, not killed; this is that claim."""
+    from volab.daily.runner import run_stages
+
+    pid_file = tmp_path / "escaped.pid"
+    stage = _probe_stage(tmp_path, monkeypatch, _LEAVER, str(pid_file), "hang")
+    try:
+        run_stages((stage,), timeout_seconds=0.4)
+        escaped = int(pid_file.read_text(encoding="utf-8"))
+        os.kill(escaped, 0)  # still there: raises ProcessLookupError if it had been killed
+    finally:
+        _kill_quietly(pid_file)
+
+
+def test_an_interrupt_during_a_stage_kills_the_stage_instead_of_abandoning_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ctrl-C reaches ``run``, not the stage's own session; ``run_stages`` must pass it on."""
+    from volab.daily import runner
+
+    pid_file = tmp_path / "stage.pid"
+    stage = _probe_stage(tmp_path, monkeypatch, _HANGER, str(pid_file))
+    real_select = runner.select.select
+    calls = 0
+
+    def interrupted(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls > 3:  # let the stage start and print first
+            raise KeyboardInterrupt
+        return real_select(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(runner.select, "select", interrupted)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            runner.run_stages((stage,), timeout_seconds=30)
+        assert _gone_within(int(pid_file.read_text(encoding="utf-8")), 3)
+    finally:
+        _kill_quietly(pid_file)
+
+
+# --- P4-08b2 item 6: what ``run`` says about the clock and about ``root``, executed -----------
+
+
+class _CountingClock:
+    """A clock seam that says how often it was asked, and answers with a fixed instant."""
+
+    def __init__(self, instant: dt.datetime) -> None:
+        self.instant = instant
+        self.calls = 0
+
+    def __call__(self) -> dt.datetime:
+        self.calls += 1
+        return self.instant
+
+
+def test_a_refused_run_given_a_date_never_asks_the_clock(tmp_path: Path) -> None:
+    clock = _CountingClock(dt.datetime(2026, 11, 4, 12, tzinfo=dt.UTC))
+
+    code = daily_cli.main(["run", "--as-of", "2026-11-04"], root=tmp_path, clock=clock)
+
+    assert (code, clock.calls) == (1, 0)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_refused_run_without_a_date_asks_the_clock_exactly_once_for_the_date(
+    tmp_path: Path,
+) -> None:
+    """The shipped plist passes no ``--as-of``, so the one read is for "today" and nothing else."""
+    clock = _CountingClock(dt.datetime(2026, 11, 4, 17, tzinfo=dt.UTC))
+
+    code = daily_cli.main(["run"], root=tmp_path, clock=clock)
+
+    assert (code, clock.calls) == (1, 1)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_closed_exchange_run_without_a_date_asks_the_clock_once_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    saturday = dt.datetime(2025, 12, 13, 17, tzinfo=dt.UTC)
+    clock = _CountingClock(saturday)
+
+    code = daily_cli.main(["run"], root=tmp_path, clock=clock)
+
+    assert (code, clock.calls) == (0, 1)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_an_already_done_run_without_a_date_asks_the_clock_once_and_writes_nothing_more(
+    tmp_path: Path,
+) -> None:
+    from volab.daily.runlog import record_completion, record_start
+
+    log = run_log_path(tmp_path)
+    plan = plan_for(load_settings(), _SESSION)
+    start = dt.datetime(2025, 12, 15, 21, tzinfo=dt.UTC)
+    run_id = record_start(log, plan, at=start, sha="a" * 40, dirty=False)
+    record_completion(log, run_id, outcome="done", stages=(), at=start)
+    before = log.read_bytes()
+    clock = _CountingClock(dt.datetime(2025, 12, 15, 22, tzinfo=dt.UTC))
+
+    code = daily_cli.main(["run"], root=tmp_path, clock=clock)
+
+    assert (code, clock.calls) == (0, 1)
+    assert log.read_bytes() == before
+
+
+def test_the_root_a_run_is_handed_moves_the_run_log_and_no_stage_is_given_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``root`` is the run record's, and the docstring says so: no stage argv carries ``--root``.
+
+    A stage that reads the trial ledger or writes the forecast log takes its own ``--root`` or
+    none; an injected ``root`` that was meant to keep ``run`` out of the repository's ``data/``
+    would not, which is what the docstring used to claim.
+    """
+    (tmp_path / "echo_argv_p408b2.py").write_text(
+        "import sys\nprint('ARGV', sys.argv[1:])\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+    monkeypatch.setattr(
+        daily_package,
+        "LIVE_STAGES",
+        (
+            Stage(name="echo", module="echo_argv_p408b2", argv=("one",)),
+            Stage(
+                name="forecast",
+                module="echo_argv_p408b2",
+                argv=("two",),
+                needs_as_of=True,
+                needs_at=True,
+            ),
+        ),
+    )
+    repo_log = run_log_path(_REPO_ROOT)
+    before = repo_log.stat().st_mtime_ns if repo_log.exists() else None
+    clock = _CountingClock(dt.datetime(2025, 12, 15, 21, tzinfo=dt.UTC))
+
+    code = daily_cli.main(["run", "--as-of", _SESSION.isoformat()], root=tmp_path, clock=clock)
+
+    assert code == 0
+    assert completed_dates(run_log_path(tmp_path)) == frozenset({_SESSION})
+    assert (repo_log.stat().st_mtime_ns if repo_log.exists() else None) == before
+    text = run_log_path(tmp_path).read_text(encoding="utf-8")
+    assert "ARGV" in text
+    assert "--root" not in text
+    assert "--as-of" in text  # the stages did receive their arguments, so this is not vacuous
