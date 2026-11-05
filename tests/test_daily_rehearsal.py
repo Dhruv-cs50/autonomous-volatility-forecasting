@@ -57,8 +57,8 @@ from test_daily_forecast import (
 
 import volab.daily as daily_package
 import volab.daily.__main__ as daily_cli
-from volab.daily import LIVE_STAGES, Stage
 from volab.config import load_settings
+from volab.daily import LIVE_STAGES, Stage
 from volab.daily.runlog import completed_dates, run_log_path
 from volab.errors import ConfigError
 
@@ -908,7 +908,7 @@ _STAND_INS: Mapping[str, str] = MappingProxyType(
         ),
     }
 )
-"""The stages of ``LIVE_STAGES`` the rehearsal replaces with a probe, each with why it cannot run."""
+"""The ``LIVE_STAGES`` the rehearsal replaces with a probe, each with why it cannot run."""
 
 _STAND_IN_PREFIX = "stand_in_"
 
