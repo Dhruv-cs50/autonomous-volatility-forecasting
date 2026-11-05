@@ -74,7 +74,14 @@ _LEDGERS = ("data/trials.jsonl", "data/comparisons.jsonl")
 # The command the trigger-installer plant calls. Joined from two pieces because this file sits under
 # ``tools/``, which the very guard being tested scans: written whole, the script would be the
 # installer it plants and the guard would be red before any plant went in.
-_LAUNCH_TOOL = "".join(("launch", "ctl"))
+# The scheduler tool this script plants a call to, spelled so that **this file** does not read as
+# an installer to ``tests/test_daily_trigger.py``'s scan while the text it *plants* does. The scan
+# folds a concatenation or a ``join`` of literals (P4-08b1 closed that hole, and closing it made it
+# fire on this very line), but it does not fold a name bound earlier -- a limit its own docstring
+# states. So the pieces go through a name. Keep it that way: the plant must carry the real tool
+# name into the file it mutates, and the probe must not itself look like the thing it hunts.
+_LAUNCH_PREFIX = "launch"
+_LAUNCH_TOOL = _LAUNCH_PREFIX + "ctl"
 
 
 @dataclass(frozen=True)

@@ -648,8 +648,16 @@ def test_a_comment_naming_an_entry_point_never_reaches_the_ast_so_the_scan_canno
     assert _new_violations(sources, closure, entries) == []
 
 
-def test_the_same_text_as_a_string_statement_that_is_not_a_docstring_does_not_hide_a_call() -> None:
-    """The half that can fail: strip nothing textually, so a real call beside a comment fires."""
+def test_a_real_call_beside_a_comment_that_disclaims_it_still_fires() -> None:
+    """The half that can fail, and the pair to the comment test above.
+
+    The comment says the module never calls `append_trials` and the line below it does. A scan that
+    judged prose would be reassured; this one reads the AST, so the call is a violation and the
+    comment is invisible. **Renamed from `..._as_a_string_statement_...`, which described a plant
+    this test does not make** -- it plants a comment and a call, not a string statement. The name
+    was wrong in the commit that introduced it, and the engineer who wrote it said so rather than
+    leaving it.
+    """
     sources, entries, closure = _planted(
         append_to={"volab.daily.runner": "# never calls append_trials\nappend_trials([])\n"}
     )
