@@ -3,21 +3,22 @@
 **The plan is computed before anything runs, and printing it runs nothing.** That is the whole
 shape of this module: an operator inspecting a job they cannot watch needs to see its decision
 without causing it, and a test needs to assert a refusal without executing a stage.
-``python -m volab.daily plan`` prints what ``plan_for`` returned and stops. **That is the only
-verb this package has today**; ``run``, which executes the stages, arrives with P4-03, and a
-``run`` verb that recorded a completed run having executed nothing would be a record that lies.
+``python -m volab.daily plan`` prints what ``plan_for`` returned and stops. ``run`` computes the
+same plan and then, for a ``work`` plan only, executes its stages (P4-03 built the stage runner,
+P4-03b the verb); for any other outcome it prints and writes nothing.
 
 Every refusal below is decided *inside* the plan rather than at the point of execution, so the
-verb that only prints and the verb that will execute cannot diverge in what they refuse. There is
+verb that only prints and the verb that executes cannot diverge in what they refuse. There is
 deliberately **no flag anywhere here that turns a guard off** -- not a ``--force``, not a
-``--no-check``, and when ``run`` arrives its ``--plan-only`` will select whether the stages
-execute and never whether the guards do. A flag that could disable a guard is the holdout-reveal
+``--no-check``; which of ``plan`` and ``run`` is chosen selects whether the stages execute and
+never whether the guards do. A flag that could disable a guard is the holdout-reveal
 design's anti-goal #1 wearing a different hat.
 
 **``as_of`` is a parameter, never the clock.** The README's invariant is that nothing in this
 project computes a boundary from the clock, and a scheduler is the first module here that has a
-clock at all. It enters at exactly one seam -- ``_today`` in ``volab.daily.__main__`` -- and
-everything downstream, including every refusal, is a pure function of the date it is handed. That
+clock at all. It enters at exactly one seam -- ``_now``, which returns an instant, in
+``volab.daily.__main__``; ``_today`` is a pure function of it -- and everything downstream,
+including every refusal, is a pure function of the date it is handed. That
 is what makes "today is past ``dev_end``, so refuse" a testable statement rather than a statement
 about the machine the suite happens to run on.
 
@@ -28,15 +29,20 @@ and ``volab.compare`` append to ``data/trials.jsonl`` and ``data/comparisons.jso
 reports (R139), so an unattended job that appended to them daily would move, every morning and
 with nobody watching, the one count this project's honesty argument rests on. A daily run's own
 record of what it forecast belongs in a separate append-only log -- the holdout-reveal design's
-protection 3 -- which arrives with P4-06. ``tests/test_daily.py`` derives the set of
-ledger-writing modules from the source tree rather than listing it (R151) and asserts no planned
-stage names one.
+protection 3 -- which is ``volab.daily.forecast``, the last stage.
+``tests/test_daily.py`` derives the set of ledger-writing modules from the source tree
+rather than listing it (R151) and asserts no planned stage names one.
+
+**A plan's stages are the ones that will be run, dated.** ``LIVE_STAGES`` is the undated template;
+``plan_for`` appends ``--as-of DATE`` to each stage declared ``needs_as_of`` (today the forecast
+stage), reading ``LIVE_STAGES`` when it is called. The date reaches the stage as an argument,
+because a stage that had to find out would have to reach a clock.
 """
 
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from volab.config import Settings
@@ -60,6 +66,10 @@ class Stage:
     name: str
     module: str
     argv: tuple[str, ...]
+    # True for a stage that must be told which date it is for. ``plan_for`` appends
+    # ``--as-of DATE`` to such a stage's argv, so the template in ``LIVE_STAGES`` carries no date
+    # and a stage in a ``Plan`` always does; a planned stage has this cleared.
+    needs_as_of: bool = False
 
 
 @dataclass(frozen=True)
@@ -83,14 +93,27 @@ class Plan:
 
 # The pipeline order, which is the order the README documents. The three ledger writers are
 # absent by decision (R158 Q2) and the module docstring says why. The forecast stage is last and
-# writes only its own log; until P4-06b supplies a champion it refuses, which fails the run
-# rather than recording a day nothing was forecast on.
+# writes only its own log; today it derives the labelled pseudo-champions and refuses (see
+# ``volab.daily.forecast``), which fails the run rather than recording a day nothing was forecast
+# on. This is the **template**: no stage here knows a date. ``plan_for`` is what dates the ones
+# that need it, at call time, so a plan's stages are the ones that will actually be run.
 LIVE_STAGES: tuple[Stage, ...] = (
     Stage(name="ingest", module="volab.ingest", argv=("backfill",)),
     Stage(name="features", module="volab.features", argv=("build",)),
     Stage(name="leaderboard", module="volab.leaderboard", argv=()),
-    Stage(name="forecast", module="volab.daily.forecast", argv=()),
+    Stage(name="forecast", module="volab.daily.forecast", argv=(), needs_as_of=True),
 )
+
+
+def _dated(stage: Stage, as_of: dt.date) -> Stage:
+    """``stage`` as it will be run on ``as_of``: the date in its argv if it needs one.
+
+    The date is an argument all the way from the one clock seam, and a stage that needed it and
+    did not get it would have to reach a clock to find out.
+    """
+    if not stage.needs_as_of:
+        return stage
+    return replace(stage, argv=(*stage.argv, "--as-of", as_of.isoformat()), needs_as_of=False)
 
 
 def plan_for(
@@ -144,5 +167,5 @@ def plan_for(
         as_of=as_of,
         outcome="work",
         reason=f"{as_of} is a session and has no completed run",
-        stages=LIVE_STAGES,
+        stages=tuple(_dated(stage, as_of) for stage in LIVE_STAGES),
     )

@@ -32,8 +32,18 @@ takes the fingerprint once, at the start of its run, with ``take_fingerprint``.
 configured ``Splits`` (``Splits.region_of``), and a copy stored on the line could only go stale
 if ``holdout_end`` later moves, while adding a settings dependency to a writer that needs none.
 
-There is deliberately no function here that chooses a champion. That is P4-06b's, and until it
-lands ``main`` refuses.
+**The champion is a dev winner, and the stage says so.** ``volab.daily.champion`` derives it from
+the trial ledger through the leaderboard; ``pseudo_fingerprint`` fingerprints it with
+``kind="pseudo"`` and has no parameter to say otherwise. ``main`` prints each configuration's
+champion under a heading that calls it the dev-window leaderboard winner and not the registered
+champion.
+
+**``main`` still writes no line, and exits 1.** A line needs a ``value`` and the ``observations``
+behind it, which means fitting the champion on the panel -- a store read, which this stage is not
+permitted -- and an ``at`` instant, which this module may not take from a clock. Until that is
+decided the stage derives and prints the champions and refuses, because a forecast stage that
+exited 0 having written nothing would be recorded as a completed day. The date it is for arrives
+as ``--as-of``, through the plan, and is required: a stage that defaulted it would need a clock.
 """
 
 from __future__ import annotations
@@ -50,7 +60,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from volab.config import load_settings
+from volab.daily.champion import (
+    PSEUDO_KIND,
+    NoChampionError,
+    PseudoChampion,
+    definition_sources,
+    pseudo_champion,
+)
 from volab.errors import VolabError
+from volab.features.targets import HORIZONS
 from volab.store import git_state
 
 FORECAST_LOG = Path("data") / "forecasts.jsonl"
@@ -257,25 +276,72 @@ def append_forecasts(lines: Sequence[ForecastLine], *, root: Path, at: dt.dateti
     return len(lines)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Refuse, until P4-06b supplies a champion. Writes nothing and exits 1.
+def pseudo_fingerprint(champion: PseudoChampion, *, repo_root: Path) -> Fingerprint:
+    """The fingerprint of a pseudo-champion. Its ``kind`` is ``PSEUDO_KIND`` and cannot be chosen.
 
-    The exit code is 1, the refusal code ``volab.daily`` uses elsewhere: a stage that exits 0
-    having forecast nothing would be recorded as a completed day. ``--root`` is accepted so that
-    the refusal can be exercised against a directory that is not the repository's.
+    The hash covers ``definition_sources(repo_root)`` and the champion's own configuration, which
+    includes the ledger run that elected it; see ``definition_sources`` for why those files.
+    """
+    return take_fingerprint(
+        model=champion.model,
+        kind=PSEUDO_KIND,
+        configuration=champion.configuration(),
+        sources=definition_sources(repo_root),
+        repo_root=repo_root,
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Derive and print the pseudo-champions for ``--as-of``, then refuse. Writes nothing.
+
+    Exit 1 when any configuration has no champion (each is named with its reason), and exit 1 when
+    every one has, because the fit that would give a line its value needs the store; see the
+    module docstring. Exit 2, from ``argparse``, when ``--as-of`` is missing or is not an ISO
+    date. ``--root`` is the directory holding ``data/``; the fingerprint is always taken of the
+    repository itself, so a rehearsal root changes where the ledger is read and not what is hashed.
     """
     parser = argparse.ArgumentParser(prog="python -m volab.daily.forecast", description=__doc__)
+    parser.add_argument(
+        "--as-of",
+        dest="as_of",
+        type=dt.date.fromisoformat,
+        required=True,
+        help="the date to forecast for (ISO); required, there is no default and no clock here",
+    )
     parser.add_argument(
         "--root",
         type=Path,
         default=_REPO_ROOT,
-        help="the directory holding data/forecasts.jsonl (default: the repository's own)",
+        help="the directory holding data/ (default: the repository's own)",
     )
-    parser.parse_args(argv)
+    arguments = parser.parse_args(argv)
+    print(f"as_of {arguments.as_of}")
     print(
-        "no champion: none is defined until P4-06b lands, so there is nothing to forecast from. "
-        "Refusing rather than inventing one or writing a line with an empty fingerprint."
+        "PSEUDO-CHAMPION: each model below is the dev-window leaderboard winner, NOT the "
+        "registered champion; the reveal has not happened"
     )
+    refused = 0
+    for symbol in load_settings().universe:
+        for horizon in HORIZONS:
+            try:
+                champion = pseudo_champion(arguments.root, symbol, horizon)
+            except NoChampionError as error:
+                refused += 1
+                print(f"refused {symbol} h{horizon}: {error}")
+                continue
+            taken = pseudo_fingerprint(champion, repo_root=_REPO_ROOT)
+            print(
+                f"{symbol} h{horizon}: {champion.model} ({champion.loss} {champion.value:.6g}, "
+                f"{champion.cohort} run {champion.run_at}) kind={taken.kind} "
+                f"definition_hash={taken.definition_hash[:12]}"
+            )
+    if refused:
+        print(f"refusing: {refused} configuration(s) have no champion, so nothing is forecast")
+    else:
+        print(
+            "refusing: fitting the champions needs the store, which this stage may not read, "
+            "so no forecast line was written"
+        )
     return 1
 
 
