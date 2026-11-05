@@ -9,6 +9,7 @@ or not a real run has already written it.
 from __future__ import annotations
 
 import ast
+import contextlib
 import dataclasses
 import datetime as dt
 import functools
@@ -646,6 +647,14 @@ def _writes_registered(source: str, *, module: str) -> list[str]:
 
 
 def _daily_sources() -> dict[str, str]:
+    """Every module directly under ``volab/daily``, by stem, as source text.
+
+    ``glob("*.py")`` is non-recursive, which is a bound on all three scans this feeds: the
+    registered-writer scan, the private-import scan, and the floor that at least four of these
+    modules reach another package. A subpackage added under ``daily/`` is read by none of them,
+    and the floor names a fixed set of stems rather than counting, so it would not notice the
+    omission either -- such a module would clear all three by never being looked at.
+    """
     root = Path(forecast.__file__).parent
     return {p.stem: p.read_text(encoding="utf-8") for p in sorted(root.glob("*.py"))}
 
@@ -1381,19 +1390,29 @@ def _assert_log_unchanged(before: str | None, after: str | None, path: Path) -> 
 
 @pytest.fixture(autouse=True)
 def _forbid_changing_the_repositorys_forecast_log() -> Iterator[None]:
-    """Fail any test in this file that creates, changes or removes ``data/forecasts.jsonl``.
+    """Report any test in this file that creates, changes or removes ``data/forecasts.jsonl``.
 
     The floor under the whole file, present tests and future ones: each writes under its own
     ``tmp_path``, and the repository's own log belongs to whatever real run wrote it. What is
-    read is bytes and existence, so a byte-identical rewrite is no failure and neither is absence
-    both times; a file created, changed or removed is one, reported in teardown.
+    read is bytes and existence, so a byte-identical rewrite is no complaint and neither is
+    absence both times; a file created, changed or removed is one, raised in teardown.
+
+    "Reported" and not "failed", precisely: an ``AssertionError`` raised in teardown is an error
+    against the teardown, so pytest counts the test itself as passed and its teardown as an
+    error, and exits 1. That is as loud as a failure and is what the floor needs -- it is simply
+    not a failed test, and a reader scanning the summary for one would not find it.
 
     Reading "as it was found" rather than "absent" is the point. The daily job can legitimately
     run in a checkout, and once it has, "absent" is false while the code is correct -- but a test
-    that writes the repository's own log still fails here.
+    that writes the repository's own log is still reported here.
 
-    Function-scoped: one reading per test, taken before it runs and compared when it ends, so
-    the test that moved the file is the test that fails.
+    Function-scoped: one reading per test, taken before it runs and compared when it ends, so the
+    window is one test wide. That is the narrowest attribution available and not a proof of
+    authorship: whatever moves the log inside the window is charged to the test *in flight*, so a
+    real daily run overlapping a suite run would be charged to an innocent test -- the same class
+    of false red this guard's byte comparison removed, narrowed to one test's window rather than
+    abolished. A wider scope would be worse: one comparison when that scope ends, charged to the
+    last test it covered.
     """
     path = _REPO_ROOT / FORECAST_LOG
     before = _digest(path)
@@ -1452,16 +1471,76 @@ def test_a_forecast_log_absent_before_and_after_is_unchanged(tmp_path: Path) -> 
     _assert_log_unchanged(before, _digest(path), path)
 
 
+def test_the_guard_reports_the_log_it_watches_being_created(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fixture's own body, stepped against a fake root: it reads a path and it compares.
+
+    The five witnesses above call ``_assert_log_unchanged`` directly, which leaves the body that
+    calls it unwitnessed: cut it to a bare ``yield``, or point it at ``_REPO_ROOT /
+    "nowhere.jsonl"``, and every one of them still passes. Here the first ``next`` runs the setup
+    that takes the ``before`` reading and the second runs the teardown, so under either mutant
+    the teardown has nothing to say and this is the test that notices.
+
+    Patching the module global cannot reach the autouse instance already covering this test. That
+    instance resolved its own ``path`` from ``_REPO_ROOT`` during its setup, before this body
+    ran, and holds it in a local; so the repository's own log stays under guard while the
+    instance stepped here watches ``tmp_path``.
+    """
+    monkeypatch.setattr(sys.modules[__name__], "_REPO_ROOT", tmp_path)
+    (tmp_path / "data").mkdir()
+    body = _forbid_changing_the_repositorys_forecast_log._fixture_function
+
+    with contextlib.closing(body()) as guard:
+        next(guard)
+        (tmp_path / FORECAST_LOG).write_text('{"planted": true}\n', encoding="utf-8")
+
+        # ``next``'s default and not a bare call: under either mutant the teardown says nothing
+        # and the generator just ends, which DID NOT RAISE names and a StopIteration does not.
+        with pytest.raises(AssertionError, match=r"^created\b"):
+            next(guard, None)
+
+
+def test_the_guard_passes_a_log_already_there_and_a_write_beside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same body, not trivially red, and watching one file rather than its directory.
+
+    The checkout where the daily job has already run: the log exists before this test and is
+    untouched by it, and the write goes elsewhere under ``data``. The body must complete, which
+    is what makes two plausible over-reaches red. A teardown asking ``not path.exists()`` rather
+    than comparing bytes -- the assertion the byte comparison replaced -- makes this the one
+    failed test in the file. It errors every test here as well, this one included, but only
+    because the repository's own log exists in this checkout: those errors are a fact about the
+    checkout, where this failure is a fact about the fixture. A teardown reading the whole of
+    ``path.parent`` rather than the one file is red here and in the test above.
+
+    The note in the test above about the outer autouse instance applies here unchanged.
+    """
+    monkeypatch.setattr(sys.modules[__name__], "_REPO_ROOT", tmp_path)
+    (tmp_path / "data").mkdir()
+    (tmp_path / FORECAST_LOG).write_text('{"a real run wrote this": true}\n', encoding="utf-8")
+    body = _forbid_changing_the_repositorys_forecast_log._fixture_function
+
+    with contextlib.closing(body()) as guard:
+        next(guard)
+        (tmp_path / "data" / "other.jsonl").write_text('{"n": 1}\n', encoding="utf-8")
+
+        with pytest.raises(StopIteration):
+            next(guard)
+
+
 def test_the_forecast_log_guard_is_autouse_and_function_scoped(
     request: pytest.FixtureRequest,
 ) -> None:
     """Who the guard above is called for, which the witnesses do not say.
 
-    They show that ``_assert_log_unchanged`` bites; drop ``autouse=True`` and every one of them
-    still passes, while of the tests here only the two that measure the log inline would still
-    check it. So: the fixture is in this test's closure although this test does not ask for it,
-    and it is function-scoped -- a wider scope compares once, when that scope ends, and reports
-    the error against the last test it covered rather than against the one that wrote.
+    They show that ``_assert_log_unchanged`` bites and that the body calling it reads
+    ``_REPO_ROOT / FORECAST_LOG``; drop ``autouse=True`` and every one of them still passes,
+    while of the tests here only the two that measure the log inline would still check it. So:
+    the fixture is in this test's closure although this test does not ask for it, and it is
+    function-scoped -- a wider scope compares once, when that scope ends, and reports the error
+    against the last test it covered rather than against the test in flight when the log moved.
 
     ``_fixture_function_marker`` is pytest's own record of the arguments the decorator was given;
     on pytest 9 a fixture is a ``FixtureFunctionDefinition`` and that is where it is kept.
@@ -1621,10 +1700,25 @@ def _foreign_references(source: str) -> list[str]:
     flow-insensitive: a local or parameter that shadows one still resolves to the module, and a
     binding reassigned at runtime still reads as its import. Nothing dynamic is followed --
     ``importlib.import_module``, ``__import__``, subscripting ``__dict__``, a ``getattr`` whose
-    name is computed -- nor is a chain whose root is a call or a subscript. Privacy is judged on
-    the reached name alone and never on the owner, so ``from volab.ingest._http import fetch`` is
-    reported here as the foreign reference it is, but the name it reaches is public and
-    ``_private_imports`` drops it.
+    name is computed -- nor is a chain whose root is a call or a subscript. The ``getattr`` match
+    is positional, over the two- and three-argument forms alike, so ``getattr(m, name="_x")`` is
+    not followed either; CPython rejects that call too, ``getattr`` being positional-only, so it
+    is a spelling no module can use rather than a gap one could walk through. A star import is
+    reported, but not as a name: ``from volab.leaderboard import *``
+    yields the pseudo-entry ``* from volab.leaderboard``, and since the scan never opens the
+    module it names, a star import of a package whose ``__all__`` exported an underscore name
+    would carry that name in unreported.
+
+    Privacy is judged on the reached name alone and never on the owner. One way round that reads
+    as a clearance: ``from volab.ingest._http import fetch`` is reported here as the foreign
+    reference it is, but the name it reaches is public and ``_private_imports`` drops it. The
+    other way round it reads as an accusation, which is the practical consequence -- a
+    single-underscore name that *is* public API, reached off an object imported from another
+    ``volab`` package, is reported as a private import. ``volab.daily.__init__`` already
+    imports ``Region`` from ``volab.config``, so one line adding ``Region._member_names_`` would
+    be reported as ``_member_names_ from volab.config.Region``; ``_make``, ``_fields``,
+    ``_replace`` and ``_asdict`` reached off an imported ``NamedTuple`` are the same shape.
+    Nothing under ``daily`` reaches such a name today, so this is a bound and not a defect.
     """
     tree = ast.parse(source)
     bound: dict[str, str] = {}
@@ -1806,18 +1900,30 @@ def test_a_dunder_off_a_foreign_binding_is_not_a_private_import() -> None:
 
 
 def test_a_third_party_private_is_not_a_private_import() -> None:
-    """The rule is about crossing a ``volab`` package boundary; pandas is not one."""
+    """The rule is about crossing a ``volab`` package boundary; neither of these is one.
+
+    ``pandas`` is nobody's ``volab``. ``volabx`` is the other half of the dot boundary
+    ``_is_foreign`` names -- the half ``volab.dailyx`` pins from the inside. Until it was pinned
+    here, dropping the dot from that function's last line, so that it read
+    ``startswith("volab")`` and swept ``volabx`` in, left every assertion in this file green.
+    """
     third_party = "import pandas as pd\n\npd._libs\nfrom pandas._libs import tslibs\n"
+    neighbour = "from volabx import _x\n\nimport volabx.thing as t\n\nt._y\n"
 
     assert _foreign_references(third_party) == []
     assert _private_imports(third_party) == []
+    assert _foreign_references(neighbour) == []
+    assert _private_imports(neighbour) == []
 
 
-def test_every_daily_module_that_leaves_the_package_shows_a_foreign_reference() -> None:
+def test_at_least_these_four_daily_modules_show_a_foreign_reference() -> None:
     """The floor: a scan that matched nothing would report every module as clean.
 
     ``runner`` and ``runlog`` are rightly absent -- they import only from ``volab.daily`` and
-    ``volab.daily.runlog``, so they reach no other package and have nothing to report.
+    ``volab.daily.runlog``, so they reach no other package and have nothing to report. Which is
+    why this is a floor over four named stems and not a claim about every module: it is satisfied
+    by those four whatever else is there, and ``_daily_sources`` states the further bound that a
+    module in a subpackage under ``daily/`` is not among the sources at all.
     """
     reaching = {name for name, source in _daily_sources().items() if _foreign_references(source)}
 
