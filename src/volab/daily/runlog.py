@@ -79,19 +79,50 @@ def run_log_path(root: Path) -> Path:
     return root / RUN_LOG
 
 
-def _append(path: Path, line: dict[str, Any]) -> None:
-    """Append one JSON line and get it onto the disk before returning.
+def append_text(path: Path, text: str) -> None:
+    """Append ``text`` (whole newline-terminated lines) and get it onto the disk before returning.
+
+    Shared by this log and ``volab.daily.forecast``'s, which had separate copies of the same
+    write and so the same defect.
+
+    **If the file does not end in a newline, a newline is written first**, in the same write as
+    the new text. A process killed between the ``write`` and the ``fsync`` can leave a final line
+    with no terminator, and appending straight after it glues the new record onto the fragment:
+    one unparseable line that swallows the record, after which a start line never joins to its
+    completion and the date never reads as done. The separator puts the fragment on a line of its
+    own, where the readers already skip it, and the new record on a line of its own. The file is
+    only ever appended to: nothing is truncated or rewritten, so the torn bytes stay visible to
+    anyone reading the file. An empty file, or one already ending in a newline (the ordinary
+    case), gets no separator and so no blank line.
 
     ``flush`` then ``fsync``: closing the handle would flush it to the operating system, which
     survives this process dying but not the machine dying. A daily job's whole claim is that its
     record predates the work, and the cheapest way for that claim to be false is a line that was
     still in a buffer. Once a day, the cost does not matter.
+
+    **Not guaranteed:** a torn line is still a line nothing can parse, and its record is lost; the
+    fix keeps it from taking the *next* record with it. The tail check is not atomic with the
+    write, so two writers racing on one file are not made safe (nothing here runs two). And
+    ``fsync`` is a request to the operating system, not a promise about the hardware: durability
+    against a power cut is not claimed.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(line, allow_nan=False) + "\n")
+    # Binary, so the last byte is read as a byte and "\n" is not translated on the way out.
+    with path.open("ab+") as handle:
+        end = handle.seek(0, os.SEEK_END)
+        separator = b""
+        if end > 0:
+            handle.seek(end - 1)
+            if handle.read(1) != b"\n":
+                separator = b"\n"
+        handle.write(separator + text.encode("utf-8"))
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def _append(path: Path, line: dict[str, Any]) -> None:
+    """Append one JSON line; see ``append_text`` for how a torn final line is handled."""
+    append_text(path, json.dumps(line, allow_nan=False) + "\n")
 
 
 def record_start(
@@ -164,7 +195,8 @@ def _lines(path: Path) -> list[dict[str, Any]]:
     final line. If reading the log then raised, one crash would make every later run unable to ask
     "what has already completed" -- the exact "a crash bricks the day" outcome the two-line design
     exists to prevent. A line that cannot be parsed is a line that records nothing, so skipping it
-    loses no evidence; the bytes stay in the file for a reader.
+    loses no evidence; the bytes stay in the file for a reader. ``append_text`` keeps the *next*
+    record off that line, so the skipped line is only ever the torn one.
     """
     if not path.exists():
         return []

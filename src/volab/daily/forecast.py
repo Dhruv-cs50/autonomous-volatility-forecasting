@@ -72,7 +72,6 @@ import datetime as dt
 import hashlib
 import json
 import math
-import os
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -91,6 +90,7 @@ from volab.daily.champion import (
     definition_sources,
     pseudo_champion,
 )
+from volab.daily.runlog import append_text
 from volab.errors import VolabError
 from volab.features.targets import HORIZONS
 from volab.models.base import Cohort, Model
@@ -270,6 +270,9 @@ def _existing_keys(path: Path) -> set[_Key]:
 
     A torn final line is skipped rather than raised on, as ``volab.daily.runlog`` skips one: a
     job killed mid-write must not leave a log nothing can append to. The bytes stay in the file.
+    Because ``append_forecasts`` starts its next write on a fresh line, a key written after a torn
+    line is visible here, so a second attempt at it is still refused. The torn line itself
+    contributes no key, and what it was meant to record is not recoverable from it.
     """
     if not path.exists():
         return set()
@@ -290,7 +293,10 @@ def append_forecasts(lines: Sequence[ForecastLine], *, root: Path, at: dt.dateti
     All-or-nothing: duplicates, within the batch or against the file, are refused before a byte is
     written. The batch goes out in one write, flushed and fsynced -- the log is a once-a-day
     record whose claim is that it predates the reader, and a line still in a buffer is the
-    cheapest way for that to be false.
+    cheapest way for that to be false. If the file ends in a torn line with no newline, the batch
+    starts on a fresh line rather than onto the fragment (see ``volab.daily.runlog.append_text``,
+    which this shares with the run log); the fragment is left in place and is still not a record.
+    Durability against a power cut is not claimed.
     """
     path = forecast_log_path(root)
     seen = _existing_keys(path)
@@ -308,11 +314,7 @@ def append_forecasts(lines: Sequence[ForecastLine], *, root: Path, at: dt.dateti
         json.dumps({"at": at.isoformat(), **line.record()}, allow_nan=False) + "\n"
         for line in lines
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
+    append_text(path, text)
     return len(lines)
 
 

@@ -853,20 +853,63 @@ def test_a_run_recorded_as_failed_does_not_consume_its_date(
     assert plan_for(settings, A_SESSION_IN_DEV, completed=completed_dates(path)).outcome == "work"
 
 
-def test_a_torn_final_line_does_not_make_the_log_unreadable(
-    settings: Settings, tmp_path: Path
-) -> None:
-    """A job killed between the write and the fsync leaves a partial line.
+# What a killed job can leave at the end of the file, and what the log must make of each. The
+# fragment cases have no trailing newline; the last case is the ordinary one, which must not gain
+# a blank line from the fix for the others.
+_ENDINGS = [
+    pytest.param(b'{"kind": "complete", "ref": "ab', id="fragment-no-newline"),
+    pytest.param(b'{"kind": "note"}', id="valid-json-no-newline"),
+    pytest.param(b"", id="empty-file"),
+    pytest.param(b'{"kind": "note"}\n', id="complete-line"),
+]
 
-    If reading the log then raised, one crash would stop every later run asking what had already
-    completed -- the bricked day the two-line design exists to prevent. The torn bytes stay in the
-    file; they simply record nothing.
+
+@pytest.mark.parametrize("prefix", _ENDINGS)
+def test_an_append_after_a_torn_final_line_is_well_formed_and_loses_nothing(
+    settings: Settings, tmp_path: Path, prefix: bytes
+) -> None:
+    """A job killed between the write and the fsync leaves a final line with no newline.
+
+    The next append used to open in ``"a"`` and write straight onto the end of that fragment,
+    producing one unparseable line that swallowed the new record -- so a start line was glued to
+    the fragment, its completion joined to nothing, and the date never read as complete. This
+    reads the *bytes* back: the earlier version of this test tore the file and read it, and never
+    appended, so it passed against the broken code.
     """
     path = run_log_path(tmp_path)
-    run_id = record_start(path, plan_for(settings, A_SESSION_IN_DEV), at=_AT, sha="s", dirty=False)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write('{"kind": "complete", "ref": "' + run_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(prefix)
 
+    run_id = record_start(path, plan_for(settings, A_SESSION_IN_DEV), at=_AT, sha="s", dirty=False)
+    record_completion(path, run_id, outcome="done", stages=(), at=_LATER)
+
+    raw = path.read_bytes()
+    assert raw.startswith(prefix)  # nothing truncated or rewritten
+    assert raw.endswith(b"\n")
+    assert b"\n\n" not in raw  # no blank line, in the ordinary case or any other
+    lines = raw.splitlines()
+    if prefix:
+        assert lines[0] == prefix.rstrip(b"\n")  # the fragment is intact and on its own line
+        lines = lines[1:]
+    parsed = [json.loads(line) for line in lines]  # every appended line parses
+    assert [record["kind"] for record in parsed] == ["start", "complete"]
+    assert parsed[0]["id"] == run_id
+    assert parsed[1]["ref"] == run_id
+    assert completed_dates(path) == frozenset({A_SESSION_IN_DEV})
+    assert incomplete_run_ids(path) == ()
+
+
+def test_a_torn_fragment_is_still_in_the_file_and_still_skipped_after_an_append(
+    settings: Settings, tmp_path: Path
+) -> None:
+    path = run_log_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fragment = b'{"kind": "complete", "ref": "ab'
+    path.write_bytes(fragment)
+
+    run_id = record_start(path, plan_for(settings, A_SESSION_IN_DEV), at=_AT, sha="s", dirty=False)
+
+    assert fragment in path.read_bytes().splitlines()
     assert completed_dates(path) == frozenset()
     assert incomplete_run_ids(path) == (run_id,)
 

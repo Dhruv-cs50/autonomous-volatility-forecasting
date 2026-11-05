@@ -26,6 +26,7 @@ import pytest
 import volab.daily as daily_package
 import volab.daily.__main__ as daily_cli
 import volab.daily.forecast as forecast
+import volab.daily.runlog as runlog
 import volab.walkforward as walkforward
 from volab.config import Settings, load_settings
 from volab.daily import LIVE_STAGES, Stage, plan_for, with_instant
@@ -173,12 +174,70 @@ def test_the_same_configuration_on_another_day_is_not_a_duplicate(tmp_path: Path
     assert append_forecasts([_line(day=dt.date(2026, 11, 5))], root=tmp_path, at=_AT) == 1
 
 
-def test_a_torn_final_line_does_not_make_the_log_unwritable(tmp_path: Path) -> None:
+_OTHER_KEY = ("2026-11-03", "SPY", 1)
+
+# (what the file holds before the append, the keys it contributes by itself). The last case is the
+# ordinary one, which must not gain a blank line from the fix for the others.
+_ENDINGS = [
+    pytest.param(b'{"as_of": "2026-11-0', set(), id="fragment-no-newline"),
+    pytest.param(
+        b'{"as_of": "2026-11-03", "symbol": "SPY", "horizon": 1}',
+        {_OTHER_KEY},
+        id="valid-json-no-newline",
+    ),
+    pytest.param(b"", set(), id="empty-file"),
+    pytest.param(
+        b'{"as_of": "2026-11-03", "symbol": "SPY", "horizon": 1}\n',
+        {_OTHER_KEY},
+        id="complete-line",
+    ),
+]
+
+
+@pytest.mark.parametrize(("prefix", "earlier"), _ENDINGS)
+def test_an_append_after_a_torn_final_line_is_well_formed_and_loses_nothing(
+    tmp_path: Path, prefix: bytes, earlier: set[tuple[str, str, int]]
+) -> None:
+    """The return count is not the claim; the bytes are.
+
+    The earlier version of this test asserted only ``== 1``. It passed while the writer glued the
+    new line onto the fragment, producing one unparseable line that swallowed the record.
+    """
     path = forecast_log_path(tmp_path)
     path.parent.mkdir(parents=True)
-    path.write_text('{"as_of": "2026-11-0', encoding="utf-8")
+    path.write_bytes(prefix)
 
-    assert append_forecasts([_line()], root=tmp_path, at=_AT) == 1
+    assert append_forecasts([_line(), _line(horizon=20)], root=tmp_path, at=_AT) == 2
+
+    raw = path.read_bytes()
+    assert raw.startswith(prefix)  # nothing truncated or rewritten
+    assert raw.endswith(b"\n")
+    assert b"\n\n" not in raw  # no blank line, in the ordinary case or any other
+    lines = raw.splitlines()
+    if prefix:
+        assert lines[0] == prefix.rstrip(b"\n")  # the fragment is intact and on its own line
+        lines = lines[1:]
+    parsed = [json.loads(line) for line in lines]  # every appended line parses
+    assert [(record["symbol"], record["horizon"]) for record in parsed] == [("SPY", 5), ("SPY", 20)]
+    assert forecast._existing_keys(path) == earlier | {
+        ("2026-11-04", "SPY", 5),
+        ("2026-11-04", "SPY", 20),
+    }
+
+
+def test_a_key_written_after_a_torn_line_is_still_refused_the_second_time(
+    tmp_path: Path,
+) -> None:
+    """The consequence of the glue: the written key was invisible, so a retry could duplicate it."""
+    path = forecast_log_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b'{"as_of": "2026-11-0')
+
+    append_forecasts([_line()], root=tmp_path, at=_AT)
+
+    assert ("2026-11-04", "SPY", 5) in forecast._existing_keys(path)
+    with pytest.raises(ForecastLogError, match="already in the log"):
+        append_forecasts([_line()], root=tmp_path, at=_AT)
 
 
 def test_a_non_finite_forecast_is_refused_rather_than_written_as_one() -> None:
@@ -1351,6 +1410,7 @@ import pickle
 import sys
 
 import volab.daily.forecast as forecast
+import volab.daily.runlog as runlog
 from volab.config import load_settings
 from volab.panel import truncate
 
@@ -1469,13 +1529,13 @@ def test_the_batch_is_fsynced_and_not_merely_written(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     synced: list[int] = []
-    real_fsync = forecast.os.fsync
+    real_fsync = runlog.os.fsync
 
     def recording(descriptor: int) -> None:
         synced.append(descriptor)
         real_fsync(descriptor)
 
-    monkeypatch.setattr(forecast.os, "fsync", recording)
+    monkeypatch.setattr(runlog.os, "fsync", recording)
 
     append_forecasts([_line(), _line(horizon=1)], root=tmp_path, at=_AT)
 
