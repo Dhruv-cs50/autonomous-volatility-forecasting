@@ -15,10 +15,17 @@ executes, and asserts that no module in that closure names a writer entry point 
 the writers' own bodies. It is a floor on carelessness and not a proof; its limit is stated on
 ``_closure_violations``.
 
-**Half two is a rehearsal.** A complete ``run`` on a dev date against a ``tmp_path`` storage root,
-with the repository's own ``data/`` measured either side *inside the test*: both reported ledgers
-by line count and digest, and every file and directory under ``data/`` by size and mtime. It is
-the only test in the suite that mechanically shows a daily run cannot move a reported number.
+**Half two is a rehearsal, not a whole daily run.** The ``run`` verb on a dev date against a
+``tmp_path`` storage root, with the repository's own ``data/`` measured either side *inside the
+test*: both reported ledgers by line count and digest, and every file and directory under
+``data/`` by size and mtime. Two of the four ``LIVE_STAGES`` are **named stand-ins** that only
+print: ``ingest`` (``volab.ingest backfill`` fetches from the network and archives under the
+tracked ``data/vendor_payloads/``) and ``features`` (``volab.features build`` takes no root, and a
+storage root must be inside the repository, so no ``tmp_path`` can be aimed at it). ``leaderboard``
+and ``forecast`` really run. A guard keeps the substitute stages in one-to-one correspondence with
+``LIVE_STAGES`` by name, so a new live stage that is not rehearsed goes red, and two tests pin the
+two limits that justify the stand-ins. It is the only test in the suite that mechanically shows a
+daily run's real stages cannot move a reported number.
 
 Nothing here reads the store past ``dev_end``, reaches for a holdout key, or writes under the
 repository's ``data/``. Every plant is in memory or under ``tmp_path``.
@@ -35,6 +42,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 from test_daily import _LEDGER_FILENAMES, _appends_to_a_file, _modules_named_in
@@ -50,7 +58,9 @@ from test_daily_forecast import (
 import volab.daily as daily_package
 import volab.daily.__main__ as daily_cli
 from volab.daily import LIVE_STAGES, Stage
+from volab.config import load_settings
 from volab.daily.runlog import completed_dates, run_log_path
+from volab.errors import ConfigError
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SOURCE_ROOT = _REPO_ROOT / "src" / "volab"
@@ -886,6 +896,57 @@ with open(sys.argv[1], "a", encoding="utf-8") as handle:
 """
 
 
+_STAND_INS: Mapping[str, str] = MappingProxyType(
+    {
+        "ingest": (
+            "`volab.ingest backfill` fetches from the network, and archives under "
+            "`settings.storage_root / Tier.RAW`, which is the tracked `data/vendor_payloads/`"
+        ),
+        "features": (
+            "`volab.features build` takes no root and reads `load_settings()`, and a storage root "
+            "must be strictly inside the repository, so no `tmp_path` can be aimed at it"
+        ),
+    }
+)
+"""The stages of ``LIVE_STAGES`` the rehearsal replaces with a probe, each with why it cannot run."""
+
+_STAND_IN_PREFIX = "stand_in_"
+
+
+def _stand_in_names(substitutes: tuple[Stage, ...]) -> frozenset[str]:
+    """The stages of ``substitutes`` that are probes: their module is a ``stand_in_*`` one."""
+    return frozenset(s.name for s in substitutes if s.module.startswith(_STAND_IN_PREFIX))
+
+
+def _substitutes(tmp_path: Path, forecast: Stage) -> tuple[Stage, ...]:
+    """One stage per real stage, in ``LIVE_STAGES`` order. Two are probes; see ``_STAND_INS``."""
+    return (
+        Stage(name="ingest", module=f"{_STAND_IN_PREFIX}ingest", argv=()),
+        Stage(name="features", module=f"{_STAND_IN_PREFIX}features", argv=()),
+        Stage(name="leaderboard", module="volab.leaderboard", argv=("--root", str(tmp_path))),
+        forecast,
+    )
+
+
+def _correspondence_gaps(
+    substitutes: tuple[Stage, ...], live: tuple[Stage, ...], reasons: Mapping[str, str]
+) -> list[str]:
+    """Why ``substitutes`` does not stand in one-to-one, by name, for ``live``. Empty if it does."""
+    gaps: list[str] = []
+    live_names = [s.name for s in live]
+    if [s.name for s in substitutes] != live_names:
+        gaps.append(f"stage names {[s.name for s in substitutes]} != LIVE_STAGES {live_names}")
+    stand_ins = _stand_in_names(substitutes)
+    if stand_ins != set(reasons):
+        gaps.append(f"stand-ins {sorted(stand_ins)} != declared reasons {sorted(reasons)}")
+    gaps.extend(
+        f"stand-in {name!r} has no reason"
+        for name in sorted(stand_ins)
+        if not reasons.get(name, "").strip()
+    )
+    return gaps
+
+
 def _rehearse(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -893,25 +954,28 @@ def _rehearse(
     repo: Path,
     plant_into: Path | None = None,
 ) -> tuple[int, Measurement, Measurement]:
-    """Run the whole ``run`` verb on a dev date with ``tmp_path`` as the storage root.
+    """Run the ``run`` verb on a dev date with ``tmp_path`` as the storage root.
 
-    The stages are three child interpreters like the real ones, and not the real ``LIVE_STAGES``:
-    ``ingest backfill`` reaches the network and writes ``data/vendor_payloads/`` in the repository,
-    ``features build`` takes no root, and ``plan_for`` appends no ``--root`` to any stage, so
-    handing ``main`` a ``root`` moves only the run record. What stands in is a probe, the shipped
-    ``volab.leaderboard`` stage module pointed at ``tmp_path``, and the real forecast ``main``
-    behind the shim ``tests/test_daily_forecast.py`` already uses (fake loaders, so no store is
-    read). ``plant_into`` adds a stage that appends a line to that file -- the witness that the
+    This is not the real ``LIVE_STAGES``. It is one stage per real stage, same names, same order,
+    and **two of the four are named stand-ins** (``_STAND_INS``), each a child interpreter that
+    only prints: ``ingest``, because ``volab.ingest backfill`` reaches the network and archives
+    under the tracked ``data/vendor_payloads/``; and ``features``, because ``volab.features build``
+    takes no root and a storage root must be inside the repository, so it cannot be aimed at
+    ``tmp_path``. (``plan_for`` appends no ``--root`` to any stage, so handing ``main`` a ``root``
+    moves only the run record.) The other two really run: the shipped ``volab.leaderboard`` stage
+    module pointed at ``tmp_path``, and the real forecast ``main`` behind the shim
+    ``tests/test_daily_forecast.py`` already uses (fake loaders, so no store is read).
+    ``plant_into`` adds a stage that appends a line to that file -- the witness that the
     measurement bites when a stage does what the rehearsal exists to rule out.
     """
     _fit_ledger(tmp_path)
     _stages_with_the_real_forecast(monkeypatch, tmp_path)
-    probe, forecast = daily_package.LIVE_STAGES
-    stages = [
-        probe,
-        Stage(name="leaderboard", module="volab.leaderboard", argv=("--root", str(tmp_path))),
-        forecast,
-    ]
+    for name in _STAND_INS:
+        (tmp_path / "probes" / f"{_STAND_IN_PREFIX}{name}.py").write_text(
+            f"print('{name} stand-in ran')\n", encoding="utf-8"
+        )
+    forecast = daily_package.LIVE_STAGES[-1]
+    stages = list(_substitutes(tmp_path, forecast))
     if plant_into is not None:
         (tmp_path / "probes" / "ledger_appender.py").write_text(_APPENDER, encoding="utf-8")
         stages.insert(2, Stage(name="appender", module="ledger_appender", argv=(str(plant_into),)))
@@ -926,6 +990,15 @@ def test_a_whole_daily_run_leaves_the_repositorys_ledgers_and_data_untouched(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The point of the story. Read the two ledgers, run the day, read them again.
+
+    The run is **not** the real four-stage ``LIVE_STAGES``: ``ingest`` and ``features`` are named
+    stand-ins that only print. ``ingest`` cannot really run because ``volab.ingest backfill``
+    fetches from the network and archives under the tracked ``data/vendor_payloads/``;
+    ``features`` cannot because ``volab.features build`` takes no root and a storage root must be
+    inside the repository, so it cannot be aimed at ``tmp_path``. ``leaderboard`` (the shipped
+    module, rooted at ``tmp_path``) and ``forecast`` (the real ``main``, fake loaders) really run.
+    What this shows is those two, plus the run verb's own bookkeeping, leaving the repository's
+    ``data/`` alone; it says nothing about what ``ingest`` and ``features`` write.
 
     The readings are taken from the files and compared with each other, not with constants: the
     property is that a run does not move them, and a pinned digest would fail the day the reveal
@@ -950,8 +1023,13 @@ def test_a_whole_daily_run_leaves_the_repositorys_ledgers_and_data_untouched(
     assert (start["kind"], complete["kind"]) == ("start", "complete")
     assert complete["ref"] == start["id"]
     assert complete["outcome"] == "done"
-    assert [stage["name"] for stage in complete["stages"]] == ["probe", "leaderboard", "forecast"]
-    assert [stage["exit_code"] for stage in complete["stages"]] == [0, 0, 0]
+    assert [stage["name"] for stage in complete["stages"]] == [
+        "ingest",
+        "features",
+        "leaderboard",
+        "forecast",
+    ]
+    assert [stage["exit_code"] for stage in complete["stages"]] == [0, 0, 0, 0]
     assert completed_dates(log) == {dt.date.fromisoformat(_FITTED)}
 
 
@@ -979,3 +1057,94 @@ def test_the_fixture_ledgers_the_real_rehearsal_depends_on_exist() -> None:
     for name in _LEDGERS:
         assert (_REPO_ROOT / "data" / name).is_file(), name
     assert re.fullmatch(r"[0-9a-f]{32}", _ledger_reading(_REPO_ROOT / "data" / "trials.jsonl")[1])
+
+
+def test_the_rehearsal_has_one_stage_per_live_stage_and_exactly_the_two_declared_stand_ins(
+    tmp_path: Path,
+) -> None:
+    """Derived from ``LIVE_STAGES``: a stage added there and not to the rehearsal goes red here."""
+    substitutes = _substitutes(tmp_path, LIVE_STAGES[-1])
+
+    assert _correspondence_gaps(substitutes, LIVE_STAGES, _STAND_INS) == []
+    assert _stand_in_names(substitutes) == frozenset({"ingest", "features"})
+    assert set(_STAND_INS) == {"ingest", "features"}
+    assert all(reason.strip() for reason in _STAND_INS.values())
+
+
+def test_a_live_stage_the_rehearsal_does_not_stand_in_for_is_a_gap(tmp_path: Path) -> None:
+    """The guard bites: ``LIVE_STAGES`` with one more stage is not matched by the substitutes."""
+    extra = Stage(name="publish", module="volab.publish", argv=())
+    live = (*LIVE_STAGES, extra)
+
+    gaps = _correspondence_gaps(_substitutes(tmp_path, LIVE_STAGES[-1]), live, _STAND_INS)
+
+    assert any("publish" in gap for gap in gaps)
+
+
+def test_a_stand_in_added_without_a_reason_is_a_gap(tmp_path: Path) -> None:
+    """A third probe, or a declared stand-in whose reason is blank, goes red."""
+    substitutes = _substitutes(tmp_path, LIVE_STAGES[-1])
+    third = (
+        Stage(name="ingest", module="stand_in_ingest", argv=()),
+        Stage(name="features", module="stand_in_features", argv=()),
+        Stage(name="leaderboard", module="stand_in_leaderboard", argv=()),
+        substitutes[-1],
+    )
+
+    undeclared = _correspondence_gaps(third, LIVE_STAGES, _STAND_INS)
+    blank = _correspondence_gaps(substitutes, LIVE_STAGES, {**_STAND_INS, "features": "  "})
+
+    assert any("leaderboard" in gap for gap in undeclared)
+    assert any("'features' has no reason" in gap for gap in blank)
+
+
+def _root_arguments(source: str) -> list[int]:
+    """The line of every ``add_argument("--root", ...)`` call in ``source``."""
+    return [
+        node.lineno
+        for node in ast.walk(ast.parse(source))
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "--root"
+        )
+    ]
+
+
+def _main_module_source(module: str) -> str:
+    path = _SOURCE_ROOT.joinpath(*module.split(".")[1:]) / "__main__.py"
+    return path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("module", ["volab.ingest", "volab.features"])
+def test_neither_the_ingest_nor_the_features_command_accepts_a_root(module: str) -> None:
+    """Why ``ingest`` and ``features`` are stand-ins: nothing can point them at ``tmp_path``.
+
+    Scanned, not called -- calling ``ingest``'s ``main`` reaches the network. ``plan_for`` appends
+    no ``--root`` either, so the daily run cannot supply one.
+    """
+    assert _root_arguments(_main_module_source(module)) == []
+
+
+def test_the_root_scan_fires_on_a_planted_root_argument() -> None:
+    planted = "parser.add_argument('command')\nparser.add_argument('--root', default=None)\n"
+
+    assert _root_arguments(planted) == [2]
+    assert _root_arguments("parser.add_argument('--source')\n") == []
+
+
+def test_a_temporary_directory_cannot_be_a_storage_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The premise behind the ``features`` stand-in.
+
+    ``features build`` reads ``load_settings()``, and ``storage.root`` must be strictly inside the
+    repository, so neither the environment nor a settings file can aim it at ``tmp_path``.
+    """
+    monkeypatch.setenv("VOLAB_STORAGE_ROOT", str(tmp_path))
+
+    with pytest.raises(ConfigError, match="must be inside the repository"):
+        load_settings()
