@@ -40,15 +40,22 @@ the real stages; it is there to bound a hang, not to time the pipeline.
 
 **The bound, stated rather than implied.** It has two halves, and they are not the same claim.
 
-*Everything still in the stage's process group is killed, on every path.* On a timeout the
-``threading.Timer`` sends SIGKILL to the group while the stage runs. On every path -- an ordinary
-exit, a failure, a timeout, an interrupt -- ``_sweep_the_group`` sends SIGKILL to the group once
-the stage's own process has been reaped, so a same-group descendant the stage forgot to wait for
-(a plain ``subprocess.Popen`` it left running) does not outlive the stage. SIGKILL, so nothing gets
-to clean up. It runs after the read loop, so it cannot truncate captured output, and after the
-reap, so it cannot race a live stage. Its own residual: POSIX does not reuse a process-group id
-while the group still has a member, so the only window is the moment after the group has emptied
-completely, when the id could in principle be reused before the sweep's signal lands.
+*Everything still in the stage's process group is killed, on every path that is not interrupted
+again while it cleans up.* On a timeout the ``threading.Timer`` sends SIGKILL to the group while the
+stage runs. After an ordinary exit, a failure, a timeout or a first interrupt, the cleanup
+(``_close_reap_and_sweep``) closes the pipe, reaps the stage and then has ``_sweep_the_group`` send
+SIGKILL to the group, so a same-group descendant the stage forgot to wait for (a plain
+``subprocess.Popen`` it left running) does not outlive the stage. SIGKILL, so nothing gets to clean
+up. The three steps are each attempted even if an earlier one was interrupted, so a second
+interrupt that lands in the reap still gets the sweep and a second reap. What is not covered: a
+third interrupt landing in that second reap, and a SIGKILL to ``run``, run nothing at all. The sweep
+runs after the read loop, so it cannot truncate captured output, and after the reap, so on the
+uninterrupted paths it cannot race a live stage. Its own residuals, both small: POSIX does not
+reuse a process-group id while the group still has a member, so the only window is the moment
+after the group has emptied completely, when the id could in principle be reused before the
+sweep's signal lands; and the timeout's ``kill_the_group`` can fire in the gap between
+``process.wait()`` returning and ``timer.cancel()``, which is safe only because it re-checks
+``poll()`` first and does nothing for a stage that has already been reaped.
 
 *A descendant that left the group is not killed.* (``setsid``, ``start_new_session=True``, a
 double fork into a daemon.) It is orphaned, keeps running, and keeps the pipe open. This is a
@@ -214,6 +221,26 @@ def _sweep_the_group(pid: int) -> None:
         os.kill(group, signal.SIGKILL)
 
 
+def _close_reap_and_sweep(process: subprocess.Popen[bytes]) -> None:
+    """Close the stage's pipe, reap it, then sweep its group, each attempted whatever the last did.
+
+    Nested ``finally`` blocks, so an interrupt raised by one step is propagated only after the
+    later steps have run. If the reap itself is the step interrupted, the sweep that follows kills
+    the group (the leader too, if it is still alive) and one further ``wait`` then reaps it; an
+    interrupt that lands in *that* ``wait`` is not defended against.
+    """
+    try:
+        if process.stdout is not None:
+            process.stdout.close()
+    finally:
+        try:
+            process.wait()
+        finally:
+            _sweep_the_group(process.pid)
+            if process.returncode is None:  # the first ``wait`` was interrupted
+                process.wait()
+
+
 def _run_one(stage: Stage, timeout_seconds: float) -> StageRun:
     """Run ``stage`` in a fresh interpreter and return its verdict and output tail.
 
@@ -276,14 +303,13 @@ def _run_one(stage: Stage, timeout_seconds: float) -> StageRun:
         # An interrupt or a SIGTERM-turned-``SystemExit`` reaches this process and not the stage,
         # which is in its own session. Kill its group and reap it before unwinding, or the stage
         # outlives the run.
-        with contextlib.suppress(ProcessLookupError):
+        # ``PermissionError`` as well: a group whose only member is a stage that has exited and
+        # not yet been reaped refuses the signal, and it must not replace the interrupt.
+        with contextlib.suppress(ProcessLookupError, PermissionError):
             os.kill(-process.pid, signal.SIGKILL)
         raise
     finally:
-        if process.stdout is not None:
-            process.stdout.close()
-        process.wait()  # reaped on every path, so no zombie and no ResourceWarning
-        _sweep_the_group(process.pid)  # only now: the stage is reaped, so nothing live is raced
+        _close_reap_and_sweep(process)
     retained = b"".join(tail)[-OUTPUT_BOUND_BYTES:]
     dropped = total - len(retained)
     text = retained.decode("utf-8", errors="replace")

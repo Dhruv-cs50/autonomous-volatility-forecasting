@@ -16,6 +16,7 @@ import datetime as dt
 import fcntl
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
@@ -387,6 +388,85 @@ def test_a_same_group_child_left_by_a_finished_stage_is_killed_with_the_group(
     assert run.exit_code == 0
     assert elapsed < 1, elapsed
     assert gone
+
+
+def _is_a_zombie(pid: int) -> bool:
+    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+    return state.stdout.strip().startswith("Z")
+
+
+def test_an_interrupt_landing_after_the_stage_exited_but_before_it_was_reaped_still_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Signalling a group led by an exited, unreaped stage raises ``PermissionError``.
+
+    The interrupt handler's kill of the group must not let that replace the interrupt: the CLI
+    promises ``TERMINATED_EXIT_CODE`` for a SIGTERM and not a traceback.
+    """
+    started: list[subprocess.Popen[bytes]] = []
+
+    class Recording(subprocess.Popen):  # type: ignore[type-arg]
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)  # type: ignore[call-overload]
+            started.append(self)
+
+    real_select = select.select
+
+    def select_once_the_stage_has_exited_unreaped(*args: object) -> object:
+        (process,) = started
+        # Nothing here reaps it, so ``ps`` reporting a zombie is the state in question: exited and
+        # not waited for. (``os.waitid`` with ``WNOWAIT`` would say so too, but darwin lacks it.)
+        deadline = time.monotonic() + 5
+        while not _is_a_zombie(process.pid):
+            assert time.monotonic() < deadline, "the stage never exited"
+            time.sleep(0.01)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner.subprocess, "Popen", Recording)
+    monkeypatch.setattr(runner.select, "select", select_once_the_stage_has_exited_unreaped)
+    began = time.monotonic()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_stages((_stage("a", "probe_exit", "0"),), timeout_seconds=_SHORT)
+    finally:
+        monkeypatch.setattr(runner.select, "select", real_select)
+        for process in started:
+            process.kill()
+            process.wait()
+    assert time.monotonic() - began < 5
+
+
+def test_a_second_interrupt_inside_the_cleanup_still_reaps_the_stage_and_closes_its_pipe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first interrupt lands in the read loop's ``wait``; the second in the cleanup's own."""
+    started: list[subprocess.Popen[bytes]] = []
+
+    class InterruptedTwice(subprocess.Popen):  # type: ignore[type-arg]
+        waits = 0
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            super().__init__(*args, **kwargs)  # type: ignore[call-overload]
+            started.append(self)
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.waits += 1
+            if self.waits <= 2:
+                raise KeyboardInterrupt
+            return super().wait(timeout)
+
+    monkeypatch.setattr(runner.subprocess, "Popen", InterruptedTwice)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_stages((_stage("a", "probe_exit", "0"),), timeout_seconds=_SHORT)
+        (process,) = started
+        assert process.returncode is not None  # reaped: not a zombie, and no ResourceWarning
+        assert process.stdout is not None and process.stdout.closed
+    finally:
+        for process in started:
+            process.kill()
+            InterruptedTwice.waits = 99
+            process.wait()
 
 
 def test_a_stage_that_finishes_inside_its_timeout_is_not_marked_timed_out() -> None:
@@ -830,6 +910,39 @@ def test_a_sigterm_during_a_stage_kills_the_stage_and_leaves_a_retryable_date(
     assert retry.outcome == "work"
 
 
+def test_the_run_lock_is_released_by_a_sigterm_unwind_so_the_next_run_proceeds(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """In this process, not a child: a child's exit would release the lock whatever the unwind did.
+
+    ``flock`` conflicts between two open file descriptions even inside one process, so a
+    descriptor the unwind failed to close would make the second run refuse.
+    """
+    pid_file = tmp_path / "pid"
+    _use_stages(monkeypatch, _stage("a", "probe_sleep", str(pid_file)))
+
+    def terminate_once_the_stage_is_running() -> None:
+        with contextlib.suppress(AssertionError):
+            _pid_when_written(pid_file)
+            os.kill(os.getpid(), signal.SIGTERM)
+
+    terminator = threading.Thread(target=terminate_once_the_stage_is_running)
+    terminator.start()
+    try:
+        with pytest.raises(SystemExit) as exited:
+            _run(tmp_path, A_SESSION_IN_DEV, clock=_clock(_START, _END))
+    finally:
+        terminator.join()
+        if pid_file.exists():
+            _kill_if_alive(int(pid_file.read_text()))
+    assert exited.value.code == daily_cli.TERMINATED_EXIT_CODE
+    assert _gone(int(pid_file.read_text()))
+
+    _use_stages(monkeypatch, _stage("a", "probe_exit", "0"))
+    assert _run(tmp_path, A_SESSION_IN_DEV, clock=_clock(_START, _END)) == 0
+    assert completed_dates(run_log_path(tmp_path)) == frozenset({A_SESSION_IN_DEV})
+
+
 def test_the_sigterm_handler_is_restored_after_a_run(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -867,19 +980,37 @@ def test_an_exit_landing_before_the_read_loop_does_not_wait_for_the_stage(
 # --- the re-check under the lock --------------------------------------------------------------
 
 
-def test_a_date_completed_while_waiting_for_the_lock_runs_nothing_and_says_completed_elsewhere(
+def test_a_date_completed_after_the_plan_was_read_runs_nothing_and_says_completed_elsewhere(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
 ) -> None:
     marker = tmp_path / "ran"
     _use_stages(monkeypatch, _stage("a", "probe_marker", str(marker)))
-    answers = iter([frozenset(), frozenset({A_SESSION_IN_DEV})])
-    # The plan reads the log first and says ``work``; the re-check under the lock then says done.
-    monkeypatch.setattr(daily_cli, "completed_dates", lambda log: next(answers))
+    lock = daily_cli._lock_path(run_log_path(tmp_path))
+    reads: list[bool] = []
 
-    assert _run(tmp_path, A_SESSION_IN_DEV, clock=_clock()) == 0
+    def completed_dates_that_changes_its_answer(log: Path) -> frozenset[dt.date]:
+        # The plan reads the log first and says ``work``; the re-check then says done. The second
+        # read must happen with the run lock held, or the re-check closes nothing.
+        reads.append(True)
+        if len(reads) == 1:
+            return frozenset()
+        descriptor = os.open(lock, os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(descriptor)
+        return frozenset({A_SESSION_IN_DEV})
 
+    monkeypatch.setattr(daily_cli, "completed_dates", completed_dates_that_changes_its_answer)
+
+    code = _run(tmp_path, A_SESSION_IN_DEV, clock=_clock(_START, _END))
+
+    assert code == 0
+    assert len(reads) == 2
     out = capsys.readouterr().out
     assert "completed_elsewhere" in out
     assert "already_done" not in out  # that word is the already-done verb's witness alone
+    assert "waited" not in out  # the run refuses; it never waits
     assert not run_log_path(tmp_path).exists()
     assert not marker.exists()

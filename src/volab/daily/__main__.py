@@ -59,10 +59,11 @@ done. 143 (``TERMINATED_EXIT_CODE``, 128 + SIGTERM as a shell reports it) when a
 ``work`` run while its handler was installed: the running stage's process group was killed, no
 completion line was written, and the date is retryable. The handler is installed *before* the lock
 is taken, so there is no stretch in which a SIGTERM arrives with the lock held and no way to
-unwind; one that lands while the lock is being tried exits 143 having written nothing. A SIGTERM
-before the handler is installed (the plan is read and printed first), or to a ``plan`` or a
-non-``work`` ``run``, is not handled: the default disposition ends the process, with
-no stage started. A closed exchange and an already-completed
+unwind. By construction, and not by a test that sends a signal into that window, a SIGTERM
+arriving while the lock is still being tried would unwind through the same handler before any start
+line is written. A SIGTERM before the handler is installed (the plan is read and printed first), or
+to a ``plan`` or a non-``work`` ``run``, is not handled: the default disposition ends the process,
+with no stage started. A closed exchange and an already-completed
 date are 0 -- those are the job correctly having nothing to do. The verb list is an ``argparse``
 ``choices`` tuple, as every other CLI in this project uses.
 
@@ -232,7 +233,10 @@ def main(
             with _sigterm_unwinds(), run_lock(_lock_path(log)):
                 if plan.as_of in completed_dates(log):
                     print("outcome completed_elsewhere")
-                    print("another run completed this date while this one waited for the lock")
+                    print(
+                        "another run completed this date after this one read the run log "
+                        "and before it took the lock"
+                    )
                     return 0
                 return _execute(plan, log, _now if clock is None else clock)
         except LockHeld:
