@@ -772,11 +772,13 @@ right and is not what this ruling revisits. What it revisits is the second job t
 into: being read as a queue of work to do.
 
 **Every row was re-derived from the working tree at `01fcee7`, from the code the row names and
-never from the row's own wording or from a commit message. Seven of fifteen did not state what the
-repository contained.** The table had been reviewed, audited and closed on an independent delivery
-audit six weeks of commits earlier, and it still decayed.
+never from the row's own wording or from a commit message. Six of fifteen did not state what the
+repository contained**, and a seventh carried a suite count stale twice over. The rows were written
+on 2026-10-29 (`210a3e4`, `166f881`, `e75497f`) and the table was closed on an independent delivery
+audit in that same week; `main` was three merges further on when it was re-derived, and it had
+already decayed.
 
-### The four ways a row went wrong, which are not one failure
+### The three ways a row went wrong, which are not one failure
 
 Lumping them together as "stale" hides the only part worth inheriting: they have different causes
 and call for different defences.
@@ -785,12 +787,16 @@ and call for different defences.
 |---|---|---|
 | 8, 9, 15 | **discharged after the row was written.** The evidence is *not* an ancestor of the row's own birth commit | work re-done from scratch — P3-09's exact cost |
 | 4 | **half-discharged.** The overclaiming docstring was fixed; the gap behind it survived, now disclosed | either the whole row is dropped and a live gap leaves the queue, or it is kept and a fixed defect is re-fixed |
-| 5 | **wrong when it was written.** The assertions it said were absent landed in `04479bb` and `fbbf8be`, **both ancestors of `210a3e4`, the commit that wrote the row** | the same cost, and no amount of re-checking *later* finds it, because nothing changed |
 | 3, 13 | **still true, pointing at the wrong lines.** `tests/test_evaluators.py:872` is now an unrelated test | a reader checks the cited line, finds something else, and must decide whether the finding moved or evaporated |
 
-The eight remaining rows were accurate. Three of those eight had never been *measured* either — row
-14's "no relative import exists in the package" and row 12's arithmetic were both assertions that
-happened to hold. They are now checked, which is a different state from being asserted.
+The nine remaining rows were accurate, row 5 among them (see the correction note below), though
+its suite figure was not. **Two of those nine had never been *measured* either** — row 14's "no
+relative import exists in the package" and row 12's arithmetic were both assertions that happened
+to hold. They are now checked, which is a different state from being asserted. A third claim of
+this re-derivation's own making needed the same treatment: row 6's cell first said the conformance
+suite reaches all three of the redundant test's assertions, and it reaches two
+(`tests/model_conformance.py:665` and `:371-380`); the literal contestant name is pinned nowhere
+else, because `:511` only checks that the name is stable across a rebuild.
 
 **The test that separates these is one command**, and it is the one thing this re-derivation could
 not have been done without:
@@ -800,10 +806,22 @@ git log -S '<fragment of the row>' -- docs/phase3-sprint-board.md   # when the r
 git merge-base --is-ancestor <evidence commit> <row commit>         # did the evidence come first?
 ```
 
-If the evidence predates the row, the row was never stale: it was **wrong on arrival**, and that is
-a review failure, not a bookkeeping one. Row 5 reads exactly like rows 8, 9 and 15 — "evidenced
-only by that round's passing run, not from the diff" — and only the ancestry check tells them
-apart. Without it this pass would have reported five clean discharges and quietly repeated P3-09.
+This is what established that rows 4, 8, 9 and 15 went stale *after* they were written rather than
+being wrong when written: in each case the discharging commit is **not** an ancestor of the row's
+own birth commit. Run it before acting on any row, because a row that was discharged last week and
+a row that was never right look identical on the page.
+
+**What the check does not establish, which this ruling got wrong the first time.** Evidence that
+*predates* a row does not make the row wrong on arrival. It only does so when the row claims that
+evidence is **absent**. Row 5 does not: it says the origin counts are "evidenced only by that
+round's run, **not from the diff**", which is a claim about *derivability*, and it asks for "a
+dedicated construction test". The assertions are there, hard-coded; the reviewer saw them, which is
+precisely why `04479bb` and `fbbf8be` are ancestors of `210a3e4`. The first version of this ruling
+read the ancestry result and not the row, classified row 5 as wrong on arrival, and so reported a
+failure mode that **no row in the table exhibits** — committing the same error the ruling was
+written to name: trusting a mechanical signal over the text it was supposed to illuminate. **An
+ancestry result is evidence about two commits, never a reading of the claim.** Read the row first,
+decide what it asserts, and only then ask what the dates mean.
 
 ### Ruling
 
@@ -826,8 +844,9 @@ both.** Concretely, for any table of findings that anyone may later work from:
    `01fcee7`. A count is a gate (R154) and a gate's reading needs the sha it was taken at.
 
 **Numbered R155, not R153.** R150's allocation gives R150 onward to Phase 3 and reserves R142-R149
-for the Phase 2 completion session, which used only R142. **R153 and R154 are taken, on the open PR
-#13 branch `guard/police-aliased-load-panel`, and not on `main`** — checked with
+for the Phase 2 completion session, which used only R142. **R153 and R154 were taken, at the time
+of writing on the then-open PR #13 branch `guard/police-aliased-load-panel` and not on `main`**
+*(both have since merged, as `571aa95`; `main` is at `56bf9e2`)* — checked with
 `git show <branch>:docs/superpowers/phase3-decisions.md` across every local and remote branch, not
 by reading `main` alone, which would have reported R152 as the high-water mark and produced a
 collision. That is R150's rule applied to the ledger's own numbering. Both that PR and this one
@@ -846,8 +865,15 @@ again.** Three of the fifteen rows are `closed` (8, 9 and 15), which leaves one 
 gate, and is counted among the three on either reading, so the figure is twelve whichever way that
 caveat is taken.
 
-Everything else in this ruling's arithmetic holds — fifteen rows, seven misstating the tree, eight
-accurate. What did not was a closing tally that disagreed by one with the table it summarised, in
-the very ruling about a board whose rows stopped matching the thing they described. That is R129's
+The row counts this paragraph rested on have since been revised once more: **six rows misstated
+the tree, a seventh (row 5) was accurate but carried a stale suite figure, and nine were
+accurate** — see the correction note under the ancestry check, which moved row 5 out of "wrong on
+arrival". The twelve/three split above is unaffected, because row 5 was `cosmetic` and still open
+on either reading, and 1 + 4 + 7 = 12 whichever way it is classified.
+
+What went wrong here was a closing tally that disagreed by one with the table it summarised, in the
+very ruling about a board whose rows stopped matching the thing they described. That is R129's
 pattern: a small untrue number is the kind that survives by being small, and it survived two
-sprints last time.
+sprints last time. **Both of this ruling's two corrections were found by a reviewer reading it
+against the table, neither by its author** — the same finding Phase 3's close recorded eleven times
+over, and the reason a verdict column is a recommendation and not a decision.
