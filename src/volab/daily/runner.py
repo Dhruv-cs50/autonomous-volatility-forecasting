@@ -293,6 +293,11 @@ def _run_one(stage: Stage, timeout_seconds: float) -> StageRun:
                     kept -= len(tail.popleft())
             exit_code = process.wait()
         finally:
+            # Why this ``try`` scopes the read loop rather than the whole function: ``expired`` is
+            # read just below, and a timer still able to fire could set it between the loop ending
+            # and that read -- marking a stage timed out that in fact exited on its own. Cancelling
+            # and joining here makes the flag quiescent before anything reads it, and keeps the
+            # timeout's SIGKILL from racing the kill in the ``except`` below.
             timer.cancel()
             if timer.is_alive():  # not yet started if the ``start`` itself was interrupted
                 timer.join()
