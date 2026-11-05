@@ -1,7 +1,9 @@
 """The forecast log: one line per day per configuration, append-only, each carrying a fingerprint.
 
 Every test that writes writes under ``tmp_path``. The repository's own ``data/forecasts.jsonl``
-must not exist as a consequence of running this file, and one test pins that.
+is left byte for byte as each test found it -- not created, not changed, not removed -- and the
+autouse ``_forbid_changing_the_repositorys_forecast_log`` holds every test here to that, whether
+or not a real run has already written it.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ import os
 import pickle
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
 
@@ -1339,6 +1342,9 @@ def test_a_refusing_stage_in_a_fresh_interpreter_exits_one_and_says_what_it_is(
 ) -> None:
     """The refusal as an unattended job meets it, with no store read: the ledger is empty, so
     every configuration is refused at the champion, which is derived before any panel is read."""
+    repo_log = _REPO_ROOT / FORECAST_LOG
+    before = _digest(repo_log)
+
     completed = subprocess.run(
         [sys.executable, "-m", "volab.daily.forecast", *_argv(tmp_path, _FITTED)],
         capture_output=True,
@@ -1351,7 +1357,119 @@ def test_a_refusing_stage_in_a_fresh_interpreter_exits_one_and_says_what_it_is(
     assert "the trial ledger is empty" in completed.stdout
     assert "wrote 0 forecast line(s)" in completed.stdout
     assert not forecast_log_path(tmp_path).exists()
-    assert not (_REPO_ROOT / FORECAST_LOG).exists()
+    assert _digest(repo_log) == before, "the child moved the repository's own forecast log"
+
+
+# --- the repository's own forecast log is left exactly as it was found -------------------------
+
+
+def _assert_log_unchanged(before: str | None, after: str | None, path: Path) -> None:
+    """``path`` holds what it held: the same bytes, or the same absence.
+
+    ``before`` and ``after`` are ``_digest`` readings, so ``None`` is "absent at that moment" and
+    absent both times passes, as does present both times with the same bytes. Each of the three
+    ways this can fail names itself first, so a witness can match the one branch it means.
+    """
+    if before is None:
+        how = f"created: {path} did not exist before and does now"
+    elif after is None:
+        how = f"removed: {path} existed before and does not now"
+    else:
+        how = f"changed: {path} holds different bytes than it did"
+    assert after == before, how
+
+
+@pytest.fixture(autouse=True)
+def _forbid_changing_the_repositorys_forecast_log() -> Iterator[None]:
+    """Fail any test in this file that creates, changes or removes ``data/forecasts.jsonl``.
+
+    The floor under the whole file, present tests and future ones: each writes under its own
+    ``tmp_path``, and the repository's own log belongs to whatever real run wrote it. What is
+    read is bytes and existence, so a byte-identical rewrite is no failure and neither is absence
+    both times; a file created, changed or removed is one, reported in teardown.
+
+    Reading "as it was found" rather than "absent" is the point. The daily job can legitimately
+    run in a checkout, and once it has, "absent" is false while the code is correct -- but a test
+    that writes the repository's own log still fails here.
+
+    Function-scoped: one reading per test, taken before it runs and compared when it ends, so
+    the test that moved the file is the test that fails.
+    """
+    path = _REPO_ROOT / FORECAST_LOG
+    before = _digest(path)
+    yield
+    _assert_log_unchanged(before, _digest(path), path)
+
+
+def test_a_forecast_log_a_test_created_is_not_unchanged(tmp_path: Path) -> None:
+    path = tmp_path / "forecasts.jsonl"
+    before = _digest(path)
+
+    path.write_text('{"planted": true}\n', encoding="utf-8")
+
+    with pytest.raises(AssertionError, match=r"^created\b"):
+        _assert_log_unchanged(before, _digest(path), path)
+
+
+def test_a_forecast_log_a_test_changed_in_place_is_not_unchanged(tmp_path: Path) -> None:
+    """The bytes and not merely the existence: this rewrite keeps the length."""
+    path = tmp_path / "forecasts.jsonl"
+    path.write_text('{"n": 1}\n', encoding="utf-8")
+    before = _digest(path)
+
+    path.write_text('{"n": 2}\n', encoding="utf-8")
+
+    with pytest.raises(AssertionError, match=r"^changed\b"):
+        _assert_log_unchanged(before, _digest(path), path)
+
+
+def test_a_forecast_log_a_test_removed_is_not_unchanged(tmp_path: Path) -> None:
+    path = tmp_path / "forecasts.jsonl"
+    path.write_text('{"n": 1}\n', encoding="utf-8")
+    before = _digest(path)
+
+    path.unlink()
+
+    with pytest.raises(AssertionError, match=r"^removed\b"):
+        _assert_log_unchanged(before, _digest(path), path)
+
+
+def test_a_forecast_log_still_present_with_its_own_bytes_is_unchanged(tmp_path: Path) -> None:
+    """The comparison is not trivially red: two readings with nothing in between agree."""
+    path = tmp_path / "forecasts.jsonl"
+    path.write_text('{"n": 1}\n', encoding="utf-8")
+
+    _assert_log_unchanged(_digest(path), _digest(path), path)
+
+
+def test_a_forecast_log_absent_before_and_after_is_unchanged(tmp_path: Path) -> None:
+    """Absence is a reading and not a failure -- the checkout where the daily job never ran."""
+    path = tmp_path / "forecasts.jsonl"
+
+    before = _digest(path)
+
+    assert before is None
+    _assert_log_unchanged(before, _digest(path), path)
+
+
+def test_the_forecast_log_guard_is_autouse_and_function_scoped(
+    request: pytest.FixtureRequest,
+) -> None:
+    """Who the guard above is called for, which the witnesses do not say.
+
+    They show that ``_assert_log_unchanged`` bites; drop ``autouse=True`` and every one of them
+    still passes, while of the tests here only the two that measure the log inline would still
+    check it. So: the fixture is in this test's closure although this test does not ask for it,
+    and it is function-scoped -- a wider scope compares once, when that scope ends, and reports
+    the error against the last test it covered rather than against the one that wrote.
+
+    ``_fixture_function_marker`` is pytest's own record of the arguments the decorator was given;
+    on pytest 9 a fixture is a ``FixtureFunctionDefinition`` and that is where it is kept.
+    """
+    marker = _forbid_changing_the_repositorys_forecast_log._fixture_function_marker
+
+    assert "_forbid_changing_the_repositorys_forecast_log" in request.fixturenames
+    assert (marker.autouse, marker.scope) == (True, "function")
 
 
 # --- finding the champion's model: the leaderboard's cohort name is the way back ---------------
@@ -1401,25 +1519,163 @@ def test_a_model_the_named_cohort_does_not_hold_is_refused_by_name() -> None:
 # --- no private name crosses a package boundary ------------------------------------------------
 
 
-def _private_imports(source: str) -> list[str]:
-    """Names this source imports with a leading underscore from a ``volab`` package other than
-    ``volab.daily``. A package's own privates are its own business; another's are not."""
-    found = []
-    for node in ast.walk(ast.parse(source)):
-        if (
-            isinstance(node, ast.ImportFrom)
-            and node.level == 0
-            and node.module is not None
-            and node.module.startswith("volab.")
-            and node.module != "volab.daily"
-            and not node.module.startswith("volab.daily.")
+_DAILY_PACKAGE = "volab.daily"
+# A relative import that climbs past ``volab`` has no module to name, so it is reported under this
+# owner rather than dropped: a spelling the scan cannot resolve is not a spelling it clears.
+_ABOVE_VOLAB = "a relative import above volab"
+
+
+def _dotted(node: ast.expr) -> str | None:
+    """The dotted spelling of ``node`` when it is a name or a chain of attributes rooted at one.
+
+    ``None`` for a chain rooted at anything else -- a call, a subscript, a literal -- because there
+    is no name to resolve such a root through.
+    """
+    parts = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _through(dotted: str | None, bound: dict[str, str]) -> str | None:
+    """``dotted`` with its root replaced by the module that root is bound to.
+
+    ``None`` when there is nothing to resolve: no chain at all, or a root no import in the file
+    bound.
+    """
+    if dotted is None:
+        return None
+    root, _, rest = dotted.partition(".")
+    if root not in bound:
+        return None
+    return f"{bound[root]}.{rest}" if rest else bound[root]
+
+
+def _imported_module(node: ast.ImportFrom) -> str:
+    """The module ``node`` imports from, a relative spelling resolved against ``volab.daily``.
+
+    Every source ``_daily_sources`` yields lives in that package, so level 1 is ``volab.daily`` and
+    level 2 is ``volab``. A level that climbs above ``volab`` names no module this scan can resolve
+    and is reported under ``_ABOVE_VOLAB`` rather than cleared.
+    """
+    if node.level == 0:
+        return node.module or ""
+    parts = _DAILY_PACKAGE.split(".")
+    if node.level > len(parts):
+        return _ABOVE_VOLAB
+    base = ".".join(parts[: len(parts) - node.level + 1])
+    return f"{base}.{node.module}" if node.module else base
+
+
+def _is_foreign(owner: str) -> bool:
+    """Whether ``owner`` is a ``volab`` package other than ``volab.daily`` or a submodule of it.
+
+    Both boundaries are tested with the dot, so ``volab.dailyx`` is foreign and ``volabx`` is not
+    ``volab`` at all. The owner ``_imported_module`` invents for an import that climbs above
+    ``volab`` is foreign too: a module this scan cannot name is not one it can clear.
+    """
+    if owner.startswith(_ABOVE_VOLAB):
+        return True
+    if owner == _DAILY_PACKAGE or owner.startswith(f"{_DAILY_PACKAGE}."):
+        return False
+    return owner == "volab" or owner.startswith("volab.")
+
+
+def _foreign_reference(resolved: str) -> str | None:
+    """``"<name> from <owner>"`` when the dotted path ``resolved`` crosses the boundary, else None.
+
+    The last component is the name and everything before it the owner, so a path of one component
+    -- a bare name, owned by nothing -- names no boundary to cross. A dunder is a module's own
+    public surface (``m.__file__``), not another package's business, so it is excluded.
+    """
+    owner, _, name = resolved.rpartition(".")
+    if not owner or not _is_foreign(owner):
+        return None
+    if name.startswith("__") and name.endswith("__"):
+        return None
+    return f"{name} from {owner}"
+
+
+def _foreign_references(source: str) -> list[str]:
+    """Every name ``source`` reaches that belongs to a ``volab`` package other than ``volab.daily``
+    and its submodules, public or private alike but never a dunder, as ``"<name> from <owner>"``.
+
+    Its reach, one spelling at a time. ``import volab.leaderboard`` binds the root it makes
+    available, ``volab``, to ``volab``; ``import volab.leaderboard as m`` binds ``m`` to the whole
+    dotted module; either way the statement itself reports ``leaderboard from volab``.
+    ``from <module> import x as y`` reports ``x`` against the module -- a relative spelling
+    resolved by ``_imported_module``, which fails closed above ``volab`` -- and binds ``y`` (or
+    ``x``, unaliased) to ``<module>.x``, so an attribute off it resolves too. An attribute chain
+    is flattened by ``_dotted`` and its root mapped through those bindings, as is the first
+    argument of ``getattr(<binding>, "name")`` when the second argument is a constant string.
+    Every node of a chain is judged, not just the outermost, which is why one chain can yield
+    several entries: ``m._ranked.index`` reports ``_ranked`` as a name of its own rather than
+    burying it in the owner of ``index``. A dunder is the one name never reported, whatever it is
+    reached off: ``m.__file__`` is a module's own public surface, not another package's business.
+
+    Its bounds, equally. Bindings come from ``import`` statements alone, and are file-global and
+    flow-insensitive: a local or parameter that shadows one still resolves to the module, and a
+    binding reassigned at runtime still reads as its import. Nothing dynamic is followed --
+    ``importlib.import_module``, ``__import__``, subscripting ``__dict__``, a ``getattr`` whose
+    name is computed -- nor is a chain whose root is a call or a subscript. Privacy is judged on
+    the reached name alone and never on the owner, so ``from volab.ingest._http import fetch`` is
+    reported here as the foreign reference it is, but the name it reaches is public and
+    ``_private_imports`` drops it.
+    """
+    tree = ast.parse(source)
+    bound: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".")[0]
+                bound[alias.asname or root] = alias.name if alias.asname else root
+        elif isinstance(node, ast.ImportFrom):
+            module = _imported_module(node)
+            for alias in node.names:
+                bound[alias.asname or alias.name] = f"{module}.{alias.name}"
+    found: list[str] = []
+    for node in ast.walk(tree):
+        resolved: list[str | None]
+        if isinstance(node, ast.Import):
+            resolved = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            module = _imported_module(node)
+            resolved = [f"{module}.{alias.name}" for alias in node.names]
+        elif isinstance(node, ast.Attribute):
+            resolved = [_through(_dotted(node), bound)]
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "getattr"
+            and len(node.args) >= 2
+            and isinstance(node.args[1], ast.Constant)
+            and isinstance(node.args[1].value, str)
         ):
-            found.extend(
-                f"{alias.name} from {node.module}"
-                for alias in node.names
-                if alias.name.startswith("_")
-            )
+            owner = _through(_dotted(node.args[0]), bound)
+            resolved = [None if owner is None else f"{owner}.{node.args[1].value}"]
+        else:
+            continue
+        found.extend(
+            entry
+            for path in resolved
+            if path is not None and (entry := _foreign_reference(path)) is not None
+        )
     return found
+
+
+def _private_imports(source: str) -> list[str]:
+    """The private half of ``_foreign_references``: the names it reports that start with an
+    underscore. A package's own privates are its own business; another's are not. That function
+    states the reach and the bounds, dunders among them."""
+    return [
+        entry
+        for entry in _foreign_references(source)
+        if entry.partition(" from ")[0].startswith("_")
+    ]
 
 
 def test_nothing_under_daily_imports_a_private_name_from_another_package() -> None:
@@ -1431,15 +1687,51 @@ def test_nothing_under_daily_imports_a_private_name_from_another_package() -> No
 
 
 @pytest.mark.parametrize(
-    "planted",
+    ("planted", "expected"),
     [
-        "from volab.leaderboard import _ranked\n",
-        "from volab.leaderboard import TrialLine, _ranked, read_trials\n",
-        "from volab.walkforward import _har_levels_forecast as h\n",
+        ("from volab.leaderboard import _ranked\n", "_ranked from volab.leaderboard"),
+        (
+            "from volab.leaderboard import TrialLine, _ranked, read_trials\n",
+            "_ranked from volab.leaderboard",
+        ),
+        (
+            "from volab.walkforward import _har_levels_forecast as h\n",
+            "_har_levels_forecast from volab.walkforward",
+        ),
+        ("import volab.leaderboard as m\n\nm._ranked\n", "_ranked from volab.leaderboard"),
+        (
+            "import volab.leaderboard\n\nvolab.leaderboard._ranked\n",
+            "_ranked from volab.leaderboard",
+        ),
+        (
+            "from volab import leaderboard as lb\n\nlb._ranked\n",
+            "_ranked from volab.leaderboard",
+        ),
+        (
+            'import volab.leaderboard as m\n\ngetattr(m, "_ranked")\n',
+            "_ranked from volab.leaderboard",
+        ),
+        ("from ..leaderboard import _ranked\n", "_ranked from volab.leaderboard"),
+        ("from volab import _x\n", "_x from volab"),
+        ("from ...elsewhere import _x\n", f"_x from {_ABOVE_VOLAB}"),
+        ("from volab.dailyx import _x\n", "_x from volab.dailyx"),
+    ],
+    ids=[
+        "imported by name",
+        "imported among public names",
+        "imported under an alias",
+        "an attribute off an aliased module",
+        "an attribute off an unaliased dotted chain",
+        "an attribute off a submodule imported from the root",
+        "getattr with a constant name",
+        "a relative import",
+        "imported from the root package itself",
+        "a relative import that climbs above volab",
+        "a package whose name merely starts with daily",
     ],
 )
-def test_the_private_import_scan_bites_on_a_planted_import(planted: str) -> None:
-    assert _private_imports(planted) != []
+def test_the_private_import_scan_bites_on_a_planted_import(planted: str, expected: str) -> None:
+    assert expected in _private_imports(planted)
 
 
 def test_the_private_import_scan_lets_public_names_and_the_packages_own_through() -> None:
@@ -1450,6 +1742,86 @@ def test_the_private_import_scan_lets_public_names_and_the_packages_own_through(
     )
 
     assert _private_imports(clean) == []
+
+
+def test_the_private_import_scan_lets_the_packages_own_privates_through_in_every_spelling() -> None:
+    """``volab.daily``'s own privates are its own business, in each of these spellings.
+
+    ``own`` holds six: four imports, an attribute off an imported module, and a ``getattr`` with
+    a constant name. Every owner they name is ``volab.daily`` or a submodule of it, so the scan
+    reports no foreign reference at all and the private filter is handed nothing to drop -- both
+    assertions on ``own`` are empty.
+
+    ``through_the_root`` reaches those same two privates through the root package instead:
+    ``volab.daily.forecast._existing_keys`` off an unaliased ``import``, and ``d._dated`` off
+    ``from volab import daily as d``. The privates are owned by the daily package there too, so
+    they are no foreign reference either; what the scan reports is the step to ``daily`` from
+    ``volab`` -- public, and reported twice, once by the ``from`` statement and once by the
+    ``volab.daily`` prefix of the attribute chain, which is why that assertion compares a set.
+    The filter is what keeps that public step out of ``_private_imports``.
+    """
+    own = (
+        "from volab.daily import _dated\n"
+        "from volab.daily.forecast import _existing_keys\n"
+        "from .forecast import _existing_keys as e\n"
+        "import volab.daily.forecast as f\n"
+        "\n"
+        "f._existing_keys\n"
+        'getattr(f, "_existing_keys")\n'
+    )
+    through_the_root = (
+        "import volab.daily.forecast\n"
+        "from volab import daily as d\n"
+        "\n"
+        "volab.daily.forecast._existing_keys\n"
+        "d._dated\n"
+    )
+
+    assert _foreign_references(own) == []
+    assert _private_imports(own) == []
+    assert set(_foreign_references(through_the_root)) == {"daily from volab"}
+    assert _private_imports(through_the_root) == []
+
+
+def test_a_public_foreign_name_is_a_foreign_reference_but_not_a_private_import() -> None:
+    """The split itself: public foreign names are seen by the walk, then dropped by the filter."""
+    public = (
+        "from volab.leaderboard import ranked_trials\n"
+        "from volab import leaderboard as lb\n"
+        "\n"
+        "lb.ranked_trials\n"
+    )
+
+    assert "ranked_trials from volab.leaderboard" in _foreign_references(public)
+    assert "ranked_trials from volab.leaderboard" not in _private_imports(public)
+    assert _private_imports(public) == []
+
+
+def test_a_dunder_off_a_foreign_binding_is_not_a_private_import() -> None:
+    """``m.__file__`` is a module's public surface, not another package's private."""
+    dunder = "import volab.leaderboard as m\n\nm.__file__\n"
+
+    assert [entry for entry in _foreign_references(dunder) if "__file__" in entry] == []
+    assert _private_imports(dunder) == []
+
+
+def test_a_third_party_private_is_not_a_private_import() -> None:
+    """The rule is about crossing a ``volab`` package boundary; pandas is not one."""
+    third_party = "import pandas as pd\n\npd._libs\nfrom pandas._libs import tslibs\n"
+
+    assert _foreign_references(third_party) == []
+    assert _private_imports(third_party) == []
+
+
+def test_every_daily_module_that_leaves_the_package_shows_a_foreign_reference() -> None:
+    """The floor: a scan that matched nothing would report every module as clean.
+
+    ``runner`` and ``runlog`` are rightly absent -- they import only from ``volab.daily`` and
+    ``volab.daily.runlog``, so they reach no other package and have nothing to report.
+    """
+    reaching = {name for name, source in _daily_sources().items() if _foreign_references(source)}
+
+    assert {"__init__", "__main__", "champion", "forecast"} <= reaching
 
 
 # --- the run verb, end to end on a dev date ----------------------------------------------------
@@ -1527,6 +1899,8 @@ def test_a_work_plan_on_a_dev_date_completes_done_with_a_forecast_line_per_confi
 ) -> None:
     _fit_ledger(tmp_path)
     _stages_with_the_real_forecast(monkeypatch, tmp_path)
+    repo_log = _REPO_ROOT / FORECAST_LOG
+    before = _digest(repo_log)
 
     code = daily_cli.main(["run", "--as-of", _FITTED], root=tmp_path, clock=_clock(_START, _END))
 
@@ -1544,7 +1918,7 @@ def test_a_work_plan_on_a_dev_date_completes_done_with_a_forecast_line_per_confi
     # The instant on every forecast line is the run's own: the start line's, from the one seam.
     assert {line["at"] for line in lines} == {start["started_at"]} == {_START.isoformat()}
     assert "wrote 4 forecast line(s)" in complete["stages"][1]["output"]
-    assert not (_REPO_ROOT / FORECAST_LOG).exists()
+    assert _digest(repo_log) == before, "the run moved the repository's own forecast log"
 
 
 def test_a_run_whose_forecast_refuses_a_configuration_is_recorded_failed_not_done(
@@ -1576,10 +1950,6 @@ def test_a_pseudo_champion_is_a_value_object_with_the_run_it_came_from(tmp_path:
     assert isinstance(champion, PseudoChampion)
     assert champion.configuration()["model"] == "a"
     assert champion.configuration()["run_sha"] == "f" * 40
-
-
-def test_nothing_here_created_the_repositorys_own_forecast_log() -> None:
-    assert not (_REPO_ROOT / FORECAST_LOG).exists()
 
 
 def test_the_batch_is_fsynced_and_not_merely_written(
