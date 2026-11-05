@@ -369,3 +369,71 @@ orchestrator's:
 a property of its tests rather than of its shape, in a project whose README says refusal "has to
 live in the data layer, where it can be mechanical". That is a real downgrade, which is why it is
 a numbered ruling and a question to the user rather than a line in a commit message.
+
+---
+
+## R164 — the run log records what went through the verb, and nothing else. A stage invoked
+directly is invisible, and that was discovered by needing it
+
+**The incident.** During Phase 4's close, the real pipeline ran in the working checkout without
+authorisation: `volab.ingest backfill` fetched from the network and added 22 files to the
+**git-tracked** `data/vendor_payloads/` at 2026-11-05T12:02:39Z, `data/raw` gained 101 files for
+sessions dated 2026-11-02 to 11-04, `data/curated` and `data/features` were rebuilt in place, and
+`data/forecasts.jsonl` appeared in the repository with 12 real lines at `as_of` 2025-12-15, sha
+`b6ef92b`, `git_dirty: true`.
+
+**What held, measured rather than assumed:** `data/trials.jsonl` stayed at 414 lines
+(`090e37b08f03d0548f63d1515ec8e35c`) and `data/comparisons.jsonl` at 52
+(`b9f41c2651f10f3f9288d6cb427e2c9a`), `git log -p 56bf9e2..HEAD -- data/` is empty, and no tracked
+file was overwritten. The three ledger-writing stages never ran. The reported numbers survived.
+
+**And this is the ruling's subject: nobody can say who ran it.** `data/daily_runs.jsonl` does not
+exist. A `run` writes its start line — flushed and fsynced — *before the first stage starts*, so the
+absence of that file is proof that **no `run` verb was involved at all**: the stages were invoked
+directly, by name. The session suspected of it disproved the charge from mtimes and from that same
+absence, and was right to.
+
+So the scheduler's audit trail covers its own runs and only its own runs. Everything the two-line
+record promises — that an attempt is visible even if it dies, that a day's history is attributable —
+holds for `python -m volab.daily run` and says nothing whatsoever about
+`python -m volab.features build` typed by hand. **The hole was found by needing the record and not
+having it**, which is R162's third seat doing its job on the orchestrator rather than on a story.
+
+### Two fixes that do not survive the tree, recorded so they are not proposed again
+
+Both were this orchestrator's, and the engineer refused them with reasons:
+
+| proposal | why it fails |
+|---|---|
+| make `run` the only thing that can reach a stage | unenforceable. A stage is an ordinary module with an ordinary `__main__`; `runner.py` is its caller, not a gatekeeper, and nothing it does can stop an operator typing the module name |
+| have a stage refuse unless handed a run id | it would land in four `__main__.py` files nobody in that story owned, **and it punishes legitimate use** — a developer rebuilding features by hand is not a defect, and a refusal teaches people to route around the guard |
+
+### The accepted design, which is the engineer's, and it is deferred rather than built
+
+**Record it; do not refuse it.** Two halves, indivisible in that order:
+
+1. `runner.py` stamps the run id into each stage's environment, one line beside the existing
+   `PYTHONUNBUFFERED=1`, so a stage can tell "I am part of run X" from "someone typed my name".
+2. A stage started **without** that stamp appends one line to the run log — kind `ad_hoc`, carrying
+   the module, argv, pid, sha and dirty flag — and then proceeds normally. No refusal, no new exit
+   code, nothing to work around. It is the same shape as the start and completion lines, so
+   `completed_dates` and `incomplete_run_ids` ignore it by kind without changing.
+
+**Deferred for three stated reasons**, not for lack of merit: it owns `volab.ingest/__main__.py`
+and `volab.features/__main__.py`, which another session is editing concurrently; it rewrites the two
+`run_stages(...)` anchors in `tools/mutate_daily_guards.py` during the one window in which that
+probe is the phase's closing evidence; and this project separates the pass that finds from the pass
+that repairs (R155 rule 4).
+
+### Ruling
+
+**Phase 4 closes with this hole stated, not closed, and every description of the run log must say
+which runs it covers.** A sentence like "the run log is the record of what ran" is false as written;
+"the run log is the record of what ran *through the verb*" is true. That is the same demotion R163
+made to the ledger guarantee, for the same reason: a claim that quietly covers less than it sounds
+like is the defect this project exists to refuse, whether the subject is a seal, a guard, or an
+audit trail.
+
+**What this costs if it is wrong:** an operator who runs a stage by hand on a scheduled morning
+leaves a tree that disagrees with the record, and the only evidence is mtimes — which is exactly the
+forensics this incident had to use, and exactly how much it hurt.

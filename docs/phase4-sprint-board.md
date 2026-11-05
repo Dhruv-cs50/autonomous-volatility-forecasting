@@ -271,6 +271,12 @@ in this phase has ever run `forecast.main` against the real store** — every en
 `load_curated_panel`, `load_targets` and `load_settings`. One engineer reported exercising the real
 path once by hand, outside the suite, against a scratch root.
 
+## Deferred with its design settled, so nobody re-derives it
+
+| story | shape | why it waits |
+|---|---|---|
+| **P4-09 — record an ad-hoc stage run.** The run log covers only what went through the `run` verb; a stage invoked directly by name is invisible, which is why the unauthorised pipeline run during this phase's close could not be attributed (R164) | `runner.py` stamps the run id into each stage's environment beside `PYTHONUNBUFFERED=1`; a stage started **without** that stamp appends one `ad_hoc` line — module, argv, pid, sha, dirty — and proceeds. Records, never refuses: a developer rebuilding features by hand is not a defect. Owns four stage `__main__.py` files plus `runlog.py` for the new kind | it collides with files another session is editing; it rewrites the two `run_stages(...)` anchors in the mutation probe during the window where that probe is the phase's closing evidence; and finding and repairing are separate passes here (R155 rule 4) |
+
 ## Held, not forgotten
 
 | item | why it is held | releases on |
