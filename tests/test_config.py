@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 import volab
-from volab.config import DEFAULT_CONFIG_PATH, Settings, Splits, load_settings
+from volab.config import DEFAULT_CONFIG_PATH, Region, Settings, Splits, load_settings
 from volab.errors import ConfigError, DatasetNotFound, HoldoutViolation, UnknownSymbol
 from volab.store import load_panel
 
@@ -16,6 +16,7 @@ calendar: XNYS
 splits:
   dev_end: "2023-12-31"
   holdout_start: "2024-01-02"
+  holdout_end: "2024-12-31"
 storage:
   root: "data"
 """
@@ -41,6 +42,7 @@ def test_repo_default_config_loads() -> None:
     assert settings.calendar == "XNYS"
     assert settings.splits.dev_end == dt.date(2025, 12, 31)
     assert settings.splits.holdout_start == dt.date(2026, 1, 2)
+    assert settings.splits.holdout_end == dt.date(2026, 10, 30)
     assert isinstance(settings, Settings)
 
 
@@ -206,6 +208,26 @@ def test_unquoted_yaml_dates_are_accepted(tmp_path: Path) -> None:
             "missing universe",
         ),
         (VALID.replace('  dev_end: "2023-12-31"\n', ""), "splits.dev_end", "missing dev_end"),
+        (
+            VALID.replace('  holdout_end: "2024-12-31"\n', ""),
+            "missing required setting 'splits.holdout_end'",
+            "missing holdout_end",
+        ),
+        (
+            VALID.replace('"2024-12-31"', '"2024-01-02"'),
+            "holdout_end must be after holdout_start",
+            "holdout_end equals holdout_start",
+        ),
+        (
+            VALID.replace('"2024-12-31"', '"2024-01-01"'),
+            "holdout_end must be after holdout_start",
+            "holdout_end before holdout_start",
+        ),
+        (
+            VALID.replace('"2024-12-31"', '"not-a-date"'),
+            "splits.holdout_end",
+            "unparseable holdout_end",
+        ),
         (VALID.replace('storage:\n  root: "data"\n', ""), "storage", "missing storage"),
         (VALID + "extra: 1\n", "extra", "unknown top-level key"),
         (VALID.replace("  root:", "  typo: x\n  root:"), "typo", "unknown nested key"),
@@ -279,11 +301,13 @@ def test_env_overrides_apply_to_every_field(
     monkeypatch.setenv("VOLAB_UNIVERSE", "SPY, DIA")
     monkeypatch.setenv("VOLAB_SPLITS_DEV_END", "2023-12-29")
     monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_START", "2024-01-02")
+    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_END", "2025-06-30")
     monkeypatch.setenv("VOLAB_STORAGE_ROOT", "scratch")
     settings = load_settings(_write(tmp_path, VALID))
     assert settings.universe == ("SPY", "DIA")
     assert settings.splits.dev_end == dt.date(2023, 12, 29)
     assert settings.splits.holdout_start == dt.date(2024, 1, 2)
+    assert settings.splits.holdout_end == dt.date(2025, 6, 30)
     assert settings.storage_root == _repo_root() / "scratch"
 
 
@@ -296,6 +320,7 @@ def test_env_overrides_apply_to_every_field(
         ("VOLAB_CALENDAR", "NOT_A_CALENDAR", "calendar"),
         ("VOLAB_CALENDAR", "", "calendar"),
         ("VOLAB_SPLITS_DEV_END", "garbage", "splits.dev_end"),
+        ("VOLAB_SPLITS_HOLDOUT_END", "garbage", "splits.holdout_end"),
         ("VOLAB_SPLITS_HOLDOUT_START", "2023-12-01", "holdout_start must be after dev_end"),
         ("VOLAB_STORAGE_ROOT", "/etc", "storage.root"),
     ],
@@ -401,6 +426,7 @@ exogenous: [VIX]
 calendar: XNYS
 splits:
   holdout_start: "2024-01-02"
+  holdout_end: "2024-12-31"
 storage:
   root: "data"
 """
@@ -441,3 +467,235 @@ def test_the_env_cannot_move_the_boundary_to_read_a_sealed_row(
 
     with pytest.raises(HoldoutViolation, match="later than the 2025-12-31 pinned in"):
         load_panel("bars_daily", symbols=["SPY"], end=dt.date(2026, 6, 30), settings=moved)
+
+
+# --- The seal's far end moves the other way ------------------------------------------------
+#
+# ``holdout_end`` is the last sealed date; everything after it is ``live``. Moving it *earlier*
+# turns days that were sealed into days that are ``live``, which the reveal will hand out freely,
+# so earlier is the refused direction -- the reverse of ``dev_end``, where later is. A rule copied
+# from ``dev_end`` without turning the comparison round would refuse the harmless override and
+# wave the dangerous one through, which is why every case below states the direction it covers.
+#
+# The refusal cases leave ``VOLAB_SPLITS_HOLDOUT_START`` alone: moving ``holdout_end`` earlier
+# than the file's does not need a second variable to be consistent, and the only thing under test
+# is the direction.
+
+NO_HOLDOUT_END = VALID.replace('  holdout_end: "2024-12-31"\n', "")
+
+
+@pytest.mark.parametrize(
+    "earlier",
+    [
+        "2024-12-30",  # one day earlier
+        "2024-01-03",  # still after holdout_start: a shorter sealed window, not an invalid one
+        "2023-01-01",  # not even after holdout_start: still a violation, not a ConfigError
+    ],
+)
+def test_an_env_holdout_end_earlier_than_the_file_literal_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, earlier: str
+) -> None:
+    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_END", earlier)
+
+    with pytest.raises(HoldoutViolation, match="earlier than the 2024-12-31 pinned in"):
+        load_settings(_write(tmp_path, VALID))
+
+
+def test_an_env_holdout_end_earlier_than_the_repository_literal_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same refusal for the configuration every unqualified ``load_settings()`` reads."""
+    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_END", "2026-10-29")
+
+    with pytest.raises(HoldoutViolation, match="earlier than the 2026-10-30 pinned in"):
+        load_settings()
+
+
+def test_an_env_holdout_end_later_than_the_file_literal_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A longer sealed window only withholds more, so this direction stays open."""
+    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_END", "2025-06-30")
+
+    assert load_settings(_write(tmp_path, VALID)).splits.holdout_end == dt.date(2025, 6, 30)
+
+
+def test_an_env_holdout_end_later_than_the_repository_literal_is_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_END", "2026-12-31")
+
+    assert load_settings().splits.holdout_end == dt.date(2026, 12, 31)
+
+
+def test_an_env_holdout_end_equal_to_the_file_literal_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_END", "2024-12-31")
+
+    assert load_settings(_write(tmp_path, VALID)).splits.holdout_end == dt.date(2024, 12, 31)
+
+
+def test_the_two_override_directions_are_opposite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The one test that fails if either rule is copied from the other, whichever way round.
+
+    Each variable is moved earlier and later in turn against the same file. ``dev_end`` is
+    refused later and ``holdout_end`` earlier: the two moves that carry a boundary into the
+    committed sealed window, one from each side.
+    """
+    config = _write(tmp_path, VALID)
+    outcomes: dict[tuple[str, str], bool] = {}
+    cases = [
+        # (variable, direction, value, extra variable that keeps the pair consistent)
+        ("VOLAB_SPLITS_DEV_END", "earlier", "2023-12-29", None),
+        (
+            "VOLAB_SPLITS_DEV_END",
+            "later",
+            "2024-06-28",
+            ("VOLAB_SPLITS_HOLDOUT_START", "2024-07-01"),
+        ),
+        ("VOLAB_SPLITS_HOLDOUT_END", "earlier", "2024-12-30", None),
+        ("VOLAB_SPLITS_HOLDOUT_END", "later", "2025-01-02", None),
+    ]
+    for variable, direction, value, extra in cases:
+        with monkeypatch.context() as scoped:
+            scoped.setenv(variable, value)
+            if extra is not None:
+                scoped.setenv(*extra)
+            try:
+                load_settings(config)
+            except HoldoutViolation:
+                outcomes[(variable, direction)] = True
+            else:
+                outcomes[(variable, direction)] = False
+
+    assert outcomes == {
+        ("VOLAB_SPLITS_DEV_END", "earlier"): False,
+        ("VOLAB_SPLITS_DEV_END", "later"): True,
+        ("VOLAB_SPLITS_HOLDOUT_END", "earlier"): True,
+        ("VOLAB_SPLITS_HOLDOUT_END", "later"): False,
+    }
+
+
+@pytest.mark.parametrize("value", ["2024-12-31", "2099-12-31", "2000-01-01"])
+def test_an_env_holdout_end_is_refused_when_the_file_pins_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    """A file with no literal has no end to be later than, whatever date the variable carries.
+
+    Without this the refusal would be sidestepped by deleting the key. The later and equal
+    values are the ones that would pass if the rule were "no earlier than the literal, when
+    there is one".
+    """
+    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_END", value)
+
+    with pytest.raises(HoldoutViolation, match="pins no splits.holdout_end"):
+        load_settings(_write(tmp_path, NO_HOLDOUT_END))
+
+
+def test_a_file_pinning_no_holdout_end_is_a_config_error_when_the_env_is_unset(
+    tmp_path: Path,
+) -> None:
+    """The other route to the same file: no variable, so the missing-key rule answers instead."""
+    with pytest.raises(ConfigError, match="missing required setting 'splits.holdout_end'"):
+        load_settings(_write(tmp_path, NO_HOLDOUT_END))
+
+
+def test_the_holdout_end_variable_is_a_registered_override() -> None:
+    """The variable has the name the design gives it, in the map the loader reads.
+
+    ``conftest._clean_volab_environment`` clears whatever is in that map; that it does so for
+    this variable was checked by exporting it around a run, not by this test.
+    """
+    from volab.config import _ENV_OVERRIDES
+
+    assert _ENV_OVERRIDES["splits.holdout_end"] == "VOLAB_SPLITS_HOLDOUT_END"
+
+
+# --- The three regions ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("day", "expected"),
+    [
+        (dt.date.min, Region.DEV),
+        (dt.date(2025, 12, 30), Region.DEV),
+        (dt.date(2025, 12, 31), Region.DEV),  # dev_end itself
+        (dt.date(2026, 1, 1), Region.HOLDOUT),  # between dev_end and holdout_start
+        (dt.date(2026, 1, 2), Region.HOLDOUT),  # holdout_start itself
+        (dt.date(2026, 6, 15), Region.HOLDOUT),
+        (dt.date(2026, 10, 30), Region.HOLDOUT),  # holdout_end itself
+        (dt.date(2026, 10, 31), Region.LIVE),  # holdout_end + 1 day
+        (dt.date(2026, 11, 2), Region.LIVE),
+        (dt.date.max, Region.LIVE),
+    ],
+)
+def test_the_repository_dates_fall_in_the_three_regions(day: dt.date, expected: Region) -> None:
+    assert load_settings().splits.region_of(day) is expected
+
+
+def test_a_date_in_the_gap_between_dev_and_holdout_is_holdout() -> None:
+    """2026-01-01 is a holiday, so the seam check lets it through, and it belongs to neither
+    ``dev_end`` nor ``holdout_start``. It is ``holdout``: ``dev`` means "at or before ``dev_end``",
+    which is the test ``store.load_panel`` applies, so calling the gap ``dev`` would name as free a
+    date the guard refuses."""
+    splits = load_settings().splits
+    gap = splits.dev_end + dt.timedelta(days=1)
+
+    assert gap < splits.holdout_start
+    assert splits.region_of(gap) is Region.HOLDOUT
+
+
+def test_every_date_has_exactly_one_region_and_they_follow_in_order() -> None:
+    splits = load_settings().splits
+    first = splits.dev_end - dt.timedelta(days=3)
+    last = splits.holdout_end + dt.timedelta(days=3)
+    days = [first + dt.timedelta(days=n) for n in range((last - first).days + 1)]
+
+    order = [Region.DEV, Region.HOLDOUT, Region.LIVE]
+    ranks = [order.index(splits.region_of(day)) for day in days]
+
+    assert ranks == sorted(ranks)  # never back from a later region to an earlier one
+    assert set(ranks) == {0, 1, 2}  # and the window shown really crosses all three
+
+
+def test_a_hand_built_splits_with_no_end_has_no_live_region() -> None:
+    """The default ``holdout_end`` keeps the meaning ``Splits`` had before it had an end."""
+    splits = Splits(dev_end=dt.date(2023, 12, 31), holdout_start=dt.date(2024, 1, 2))
+
+    assert splits.holdout_end == dt.date.max
+    assert splits.region_of(dt.date(2099, 1, 1)) is Region.HOLDOUT
+    assert splits.region_of(dt.date.max) is Region.HOLDOUT
+
+
+def test_a_live_date_is_refused_by_the_existing_guard_exactly_as_a_holdout_date_is(
+    synthetic_store,
+) -> None:
+    """``live`` has a name and no path: no read past ``holdout_end`` is any more open than before.
+
+    The settings are the store's, given the repository's own splits so that ``dev_end`` is the
+    real boundary. Each read is refused at step 3, before any filesystem access, with the
+    message the guard has always used, which names ``dev_end`` and not the region. That the two
+    messages differ only in the date is the point: the guard's answer does not depend on the
+    region.
+    """
+    splits = load_settings().splits
+    settings = dataclasses.replace(synthetic_store.settings, splits=splits)
+    holdout_day = dt.date(2026, 6, 15)
+    live_day = dt.date(2026, 11, 2)
+    assert splits.region_of(holdout_day) is Region.HOLDOUT
+    assert splits.region_of(live_day) is Region.LIVE
+
+    messages = []
+    for day in (holdout_day, live_day):
+        with pytest.raises(HoldoutViolation) as raised:
+            load_panel("bars_daily", symbols=["SPY"], end=day, settings=settings)
+        assert f"end {day} is past dev_end 2025-12-31; reading the holdout window" in str(
+            raised.value
+        )
+        assert "allow_holdout=True and VOLAB_HOLDOUT_UNLOCK=1" in str(raised.value)
+        messages.append(str(raised.value).replace(str(day), "<end>"))
+
+    assert messages[0] == messages[1]
