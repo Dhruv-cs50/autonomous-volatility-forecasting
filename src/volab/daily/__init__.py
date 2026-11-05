@@ -33,10 +33,15 @@ protection 3 -- which is ``volab.daily.forecast``, the last stage.
 ``tests/test_daily.py`` derives the set of ledger-writing modules from the source tree
 rather than listing it (R151) and asserts no planned stage names one.
 
-**A plan's stages are the ones that will be run, dated.** ``LIVE_STAGES`` is the undated template;
-``plan_for`` appends ``--as-of DATE`` to each stage declared ``needs_as_of`` (today the forecast
-stage), reading ``LIVE_STAGES`` when it is called. The date reaches the stage as an argument,
-because a stage that had to find out would have to reach a clock.
+**A plan's stages are the ones that will be run, dated -- and the run adds the instant.**
+``LIVE_STAGES`` is the undated template; ``plan_for`` appends ``--as-of DATE`` to each stage
+declared ``needs_as_of`` (today the forecast stage), reading ``LIVE_STAGES`` when it is called.
+The date reaches the stage as an argument, because a stage that had to find out would have to
+reach a clock. A stage declared ``needs_at`` is also given the run's instant, but not by the plan:
+the plan is a function of a date and holds no instant (printing it must not ask the clock), so the
+``run`` verb appends ``--at INSTANT`` with ``with_instant`` once it has taken the instant for the
+start line. The stage as printed -- by ``plan``, and by ``run`` before it executes anything --
+therefore lacks ``--at``, and the one that runs has it; both are derived from the same ``Stage``.
 """
 
 from __future__ import annotations
@@ -70,6 +75,13 @@ class Stage:
     # ``--as-of DATE`` to such a stage's argv, so the template in ``LIVE_STAGES`` carries no date
     # and a stage in a ``Plan`` always does; a planned stage has this cleared.
     needs_as_of: bool = False
+    # True for a stage that must be told when the run happened. A second flag and not a
+    # generalisation of the first, because the two are known at different moments: the date is a
+    # parameter of the plan and is in a ``Plan``'s stages, while the instant is read from the clock
+    # seam only once ``run`` knows there is work, so a plan -- which is data, computed without the
+    # clock -- cannot hold it. ``with_instant`` appends ``--at INSTANT`` and clears this; until
+    # then it stays set on a ``Plan``'s stage, which is how the stage says it is still waiting.
+    needs_at: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,15 +105,22 @@ class Plan:
 
 # The pipeline order, which is the order the README documents. The three ledger writers are
 # absent by decision (R158 Q2) and the module docstring says why. The forecast stage is last and
-# writes only its own log; today it derives the labelled pseudo-champions and refuses (see
-# ``volab.daily.forecast``), which fails the run rather than recording a day nothing was forecast
-# on. This is the **template**: no stage here knows a date. ``plan_for`` is what dates the ones
-# that need it, at call time, so a plan's stages are the ones that will actually be run.
+# writes only its own log: it fits the labelled pseudo-champion of each configuration and appends
+# one line per configuration (see ``volab.daily.forecast``), and exits non-zero if any
+# configuration was refused, so a partial day fails the run rather than being recorded as done.
+# This is the **template**: no stage here knows a date or an instant. ``plan_for`` dates the ones
+# that need it, at call time; ``with_instant`` stamps the ones that need the run's instant.
 LIVE_STAGES: tuple[Stage, ...] = (
     Stage(name="ingest", module="volab.ingest", argv=("backfill",)),
     Stage(name="features", module="volab.features", argv=("build",)),
     Stage(name="leaderboard", module="volab.leaderboard", argv=()),
-    Stage(name="forecast", module="volab.daily.forecast", argv=(), needs_as_of=True),
+    Stage(
+        name="forecast",
+        module="volab.daily.forecast",
+        argv=(),
+        needs_as_of=True,
+        needs_at=True,
+    ),
 )
 
 
@@ -169,3 +188,19 @@ def plan_for(
         reason=f"{as_of} is a session and has no completed run",
         stages=tuple(_dated(stage, as_of) for stage in LIVE_STAGES),
     )
+
+
+def with_instant(stage: Stage, at: dt.datetime) -> Stage:
+    """``stage`` as it will be run at ``at``: the instant in its argv if it needs one.
+
+    ``at`` is the instant the ``run`` verb took from the clock seam for the start line, so a stage
+    that records it (the forecast log's ``at``) records the run's own start and a reader can join
+    the two. Like the date, it travels as an argument: a stage that had to find it out would have
+    to reach a clock, and exactly one function under ``volab.daily`` may. It must carry a UTC
+    offset, because a naive instant would be written to a log nothing could place on a timeline.
+    """
+    if not stage.needs_at:
+        return stage
+    if at.tzinfo is None:
+        raise ValueError(f"the instant must carry a UTC offset, got {at.isoformat()}")
+    return replace(stage, argv=(*stage.argv, "--at", at.isoformat()), needs_at=False)

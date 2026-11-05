@@ -349,6 +349,44 @@ def test_equal_losses_share_a_rank_rather_than_inventing_an_order(tmp_path) -> N
     assert [rank for rank, _m, _v in _rows(_text(tmp_path), "mse")][:3] == ["1", "1", "3"]
 
 
+def test_the_public_ranking_is_the_one_the_rendering_prints(tmp_path) -> None:
+    """``ranked_trials`` is the accessor other packages are to use, so it must not be a second
+    ranking: it hands back exactly what the table is printed from, ties sharing a rank and an
+    undefined value last and unranked."""
+    _run(tmp_path, comparisons=False)
+    trials, _ = leaderboard.read_trials(tmp_path)
+    group = [t for t in trials if t.loss == "mse" and t.run == trials[0].run]
+
+    ranked = leaderboard.ranked_trials(group)
+
+    assert ranked == leaderboard._ranked(group)
+    assert [rank for rank, _ in ranked][0] == "1"
+    values = [t.value for _, t in ranked]
+    assert values == sorted(values)
+
+
+def test_the_public_ranking_shares_a_rank_and_lists_an_undefined_value_last() -> None:
+    def line(model: str, value: float | None) -> leaderboard.TrialLine:
+        return leaderboard.TrialLine(
+            at="2026-10-28T08:00:00+00:00",
+            sha="f" * 40,
+            dirty=False,
+            cohort="c",
+            symbol="SPY",
+            horizon=1,
+            loss="qlike",
+            model=model,
+            value=value,
+            origins=10,
+            dropped=0,
+            refused=0,
+        )
+
+    ranked = leaderboard.ranked_trials([line("c", None), line("b", -7.0), line("a", -7.0)])
+
+    assert [(rank, t.model) for rank, t in ranked] == [("1", "b"), ("1", "a"), ("--", "c")]
+
+
 def test_a_loss_the_leaderboard_cannot_orient_is_refused_not_guessed(tmp_path) -> None:
     """Every known loss is lower-is-better; an unknown one has no stated direction."""
     _run(tmp_path, comparisons=False)

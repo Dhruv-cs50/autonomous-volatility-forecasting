@@ -11,8 +11,9 @@ exception was added for it), and it has to be: until the reveal, the champion on
 *pseudo*-champion -- the current dev winner, labelled ``kind="pseudo"`` rather than the registered
 one (R158 Q2) -- and a tracked file would put unregistered numbers into git. The reported counts
 remain the trial and comparison ledgers, and **this module writes nothing else**: not those two,
-and not the evaluators' decision sink. Two tests pin that: no code string names one of the
-three files, and a write creates no file but this one.
+and not the evaluators' decision sink. Three tests pin that: no code string names one of the
+three files, a write creates no file but this one, and a run with the ledger writer replaced by a
+tripwire leaves every ledger byte-identical.
 
 **One line per day per configuration is enforced here, not hoped for.** A configuration is
 ``(as_of, symbol, horizon)``. ``append_forecasts`` refuses a batch that repeats a key, or that
@@ -22,11 +23,13 @@ lines it wrote, so a caller can assert that N configurations produced exactly N 
 reveal design's "attempts are counted, not forbidden" governs the *run* record; a forecast is a
 claim about a day, and two claims for one day would leave a reader unable to say which stood.
 
-**The timestamp, the sha and the dirty flag are the caller's.** ``at`` is injected because
-nothing under ``volab.daily`` may reach a clock but ``_today`` (``tests/test_daily.py`` derives
-that), and for the reason ``append_trials`` states: read here, the sha would describe the tree as
-it is when the writing happens rather than the tree that produced the numbers (R70). The caller
-takes the fingerprint once, at the start of its run, with ``take_fingerprint``.
+**The timestamp, the sha and the dirty flag are the caller's.** ``at`` is injected -- on the
+command line, as ``--at`` -- because nothing under ``volab.daily`` may reach a clock but ``_now``
+(``tests/test_daily.py`` derives that), and for the reason ``append_trials`` states: read here, the
+sha would describe the tree as it is when the writing happens rather than the tree that produced
+the numbers (R70). The ``run`` verb passes the instant it took for its own start line, so a line's
+``at`` joins to the run record. ``main`` takes each champion's fingerprint, with
+``take_fingerprint``, before it fits that champion and not when the line is written.
 
 **The region of the forecast date is not a field.** It is a pure function of ``as_of`` and the
 configured ``Splits`` (``Splits.region_of``), and a copy stored on the line could only go stale
@@ -38,12 +41,28 @@ the trial ledger through the leaderboard; ``pseudo_fingerprint`` fingerprints it
 champion under a heading that calls it the dev-window leaderboard winner and not the registered
 champion.
 
-**``main`` still writes no line, and exits 1.** A line needs a ``value`` and the ``observations``
-behind it, which means fitting the champion on the panel -- a store read, which this stage is not
-permitted -- and an ``at`` instant, which this module may not take from a clock. Until that is
-decided the stage derives and prints the champions and refuses, because a forecast stage that
-exited 0 having written nothing would be recorded as a completed day. The date it is for arrives
-as ``--as-of``, through the plan, and is required: a stage that defaulted it would need a clock.
+**``main`` fits each champion and writes its line.** For every configuration it derives the
+pseudo-champion, finds the model the ledger names (``champion_model``), reads the panel and the
+targets from the store **to the earlier of ``--as-of`` and ``dev_end``** and nothing later, and
+fits that one model at ``as_of`` through ``volab.walkforward.evaluate`` -- the walk-forward's own
+fit at an origin, handed a cohort of one -- so the panel truncation, the knowable-target slice, the
+thin-training and null-regressor skips and a model's own refusal are the walk-forward's and there
+is no second fitting path. The bound needs no key and the names of the two keys do
+not appear under this package (a derived scan asserts it): a read at or before ``dev_end`` is
+ordinary. A date past ``dev_end`` is therefore read to ``dev_end``, finds a panel that ends before
+it, and is refused at every configuration; the plan refuses such a date before any stage runs, so
+that path is reached only by running this module by hand.
+
+**A configuration that cannot be forecast is refused with its reason, and the others still
+write.** The reasons: no champion, a cohort or model that cannot be rebuilt, a champion that does
+not answer the horizon, a store that cannot be read, a panel that ends before the date, too few
+training rows, a champion that skips its own fit, a forecast that is not finite. A line already in
+the log for the day is not rewritten and not an error, so a retry after a partial day fills in
+what is missing. Exit 0 only if every configuration has its line, whether written now or before;
+otherwise exit 1, because a stage that exited 0 with a configuration missing would be recorded as
+a completed day. Exit 2, from ``argparse``, when ``--as-of`` or ``--at`` is missing or malformed:
+neither has a default, because a default would need a clock.
+
 """
 
 from __future__ import annotations
@@ -60,17 +79,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from volab.config import load_settings
+import exchange_calendars as xcals
+import pandas as pd
+
+from volab.config import Settings, load_settings
 from volab.daily.champion import (
     PSEUDO_KIND,
     NoChampionError,
     PseudoChampion,
+    champion_model,
     definition_sources,
     pseudo_champion,
 )
 from volab.errors import VolabError
 from volab.features.targets import HORIZONS
+from volab.models.base import Cohort, Model
+from volab.panel import as_of_dates, load_curated_panel
+from volab.sessions import get_calendar
 from volab.store import git_state
+from volab.walkforward import evaluate, load_targets
 
 FORECAST_LOG = Path("data") / "forecasts.jsonl"
 
@@ -85,9 +112,22 @@ _KINDS = ("pseudo", "registered")
 # (as_of, symbol, horizon). The horizon is read back from JSON, so it is typed as what it is.
 _Key = tuple[str, str, object]
 
+# The default of ``--minimum-training`` in both the walk-forward and the shootout CLIs (the two that
+# write the trial ledger), repeated rather than imported because it is an argparse default there and
+# not a name. The ledger does not record the value a given run used, so this is the default and not
+# a verified match to the run that elected a champion. A forecast from a thinner fit is refused.
+MINIMUM_TRAINING = 250
+
+# What the single-model cohort the fit is run in is called. It is never written to a ledger.
+_FIT_COHORT = "pseudo-champion-fit"
+
 
 class ForecastLogError(VolabError):
     """Raised when an append would put a second line for one day and configuration in the log."""
+
+
+class ForecastRefused(VolabError):
+    """Raised when one configuration cannot be forecast; the message is the reason."""
 
 
 @dataclass(frozen=True)
@@ -212,8 +252,8 @@ def take_fingerprint(
 
     The root is the scope, not the package: ``volab.walkforward.git_state`` documents that with
     the package as scope an edit to ``config/base.yaml`` or ``tests/`` reads as clean. Call this
-    once at the start of a run and hand the result to every line, so the fingerprint describes
-    the tree that produced the numbers (R70).
+    before the champion is fitted, not when its line is written, so the fingerprint describes the
+    tree that produced the number (R70).
     """
     sha, dirty = git_state(repo_root)
     return Fingerprint(
@@ -291,14 +331,116 @@ def pseudo_fingerprint(champion: PseudoChampion, *, repo_root: Path) -> Fingerpr
     )
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    """Derive and print the pseudo-champions for ``--as-of``, then refuse. Writes nothing.
+def fit_champion(
+    model: Model,
+    panel: pd.DataFrame,
+    targets: pd.DataFrame,
+    *,
+    symbol: str,
+    horizon: int,
+    origin: dt.date,
+    calendar: xcals.ExchangeCalendar,
+) -> tuple[float, int]:
+    """``model``'s forecast at ``origin`` and the observations the fit consumed.
 
-    Exit 1 when any configuration has no champion (each is named with its reason), and exit 1 when
-    every one has, because the fit that would give a line its value needs the store; see the
-    module docstring. Exit 2, from ``argparse``, when ``--as-of`` is missing or is not an ISO
-    date. ``--root`` is the directory holding ``data/``; the fingerprint is always taken of the
-    repository itself, so a rehearsal root changes where the ledger is read and not what is hashed.
+    Runs ``volab.walkforward.evaluate`` for the single origin with a cohort of one, so the fit is
+    the walk-forward's own: the panel is truncated at ``origin``, the training targets are those
+    knowable then, and an origin with too few training rows or a null regressor is skipped, not
+    fitted. Raises ``ForecastRefused`` with the reason for each of those, for a champion that does
+    not answer ``horizon``, for a panel that does not reach ``origin``, for a champion that skips
+    its own fit, and for a forecast that is not finite.
+    """
+    if not model.domain.answers(horizon):
+        raise ForecastRefused(
+            f"{model.name!r} answers h<={model.domain.max_horizon} and was asked h{horizon}"
+        )
+    bars = panel[panel["symbol"] == symbol]
+    if bars.empty:
+        raise ForecastRefused(f"the panel holds no bars for {symbol}")
+    last = max(as_of_dates(bars))
+    if last < origin:
+        raise ForecastRefused(
+            f"the panel for {symbol} ends at {last}, before the as-of {origin}: a forecast for a "
+            "day the data does not reach would be made from an earlier one"
+        )
+    try:
+        evaluation = evaluate(
+            panel,
+            targets,
+            [origin],
+            symbol=symbol,
+            horizon=horizon,
+            calendar=calendar,
+            minimum_training=MINIMUM_TRAINING,
+            cohort=Cohort(_FIT_COHORT, (model,)),
+        )
+    except VolabError as error:
+        raise ForecastRefused(str(error)) from error
+    if evaluation.skipped:
+        raise ForecastRefused(evaluation.skipped[0][1])
+    if evaluation.refusals:
+        raise ForecastRefused(evaluation.refusals[0][2])
+    (result,) = evaluation.results
+    value = result.forecasts[model.name]
+    if not math.isfinite(value):
+        raise ForecastRefused(f"the fit gave a non-finite forecast ({value})")
+    return value, result.training_rows
+
+
+def _forecast(
+    model: Model,
+    settings: Settings,
+    calendar: xcals.ExchangeCalendar,
+    panels: dict[str, pd.DataFrame | ForecastRefused],
+    symbol: str,
+    horizon: int,
+    as_of: dt.date,
+    end: dt.date,
+) -> tuple[float, int]:
+    """Read the panel (once per symbol, kept in ``panels``) and targets to ``end``, then fit.
+
+    ``end`` is the caller's ``min(as_of, dev_end)``; nothing here widens it. A store that cannot be
+    read is a refusal for the configuration, not a crash of the stage.
+    """
+    if symbol not in panels:
+        try:
+            panels[symbol] = load_curated_panel(settings, symbol, end=end)
+        except VolabError as error:
+            panels[symbol] = ForecastRefused(str(error))
+    panel = panels[symbol]
+    if isinstance(panel, ForecastRefused):
+        raise panel
+    try:
+        targets = load_targets(settings, symbol, horizon, end=end)
+    except VolabError as error:
+        raise ForecastRefused(str(error)) from error
+    return fit_champion(
+        model, panel, targets, symbol=symbol, horizon=horizon, origin=as_of, calendar=calendar
+    )
+
+
+def _aware_instant(text: str) -> dt.datetime:
+    """An ISO instant that carries a UTC offset, for ``--at``."""
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not an ISO instant") from None
+    if parsed.tzinfo is None:
+        raise argparse.ArgumentTypeError(f"{text!r} must carry a UTC offset")
+    return parsed
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Fit each configuration's pseudo-champion at ``--as-of`` and append one line apiece.
+
+    Prints every champion and every refusal with its reason, then how many lines it wrote. Exit 0
+    when every configuration has its line (written now, or already in the log); exit 1 when any
+    was refused. Exit 2, from ``argparse``, when ``--as-of`` or ``--at`` is missing or malformed.
+    ``--at`` is the instant the lines are stamped with, which the ``run`` verb passes. ``--root``
+    is the directory holding ``data/``: the ledger is read from it and the log written to it. The
+    fingerprint is always taken of the repository itself, so a rehearsal root changes where the
+    ledger is read and the log written, not what is hashed. The store is read to
+    ``min(--as-of, dev_end)``.
     """
     parser = argparse.ArgumentParser(prog="python -m volab.daily.forecast", description=__doc__)
     parser.add_argument(
@@ -309,22 +451,38 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="the date to forecast for (ISO); required, there is no default and no clock here",
     )
     parser.add_argument(
+        "--at",
+        type=_aware_instant,
+        required=True,
+        help="the instant to stamp the lines with (ISO, with a UTC offset); required, no clock",
+    )
+    parser.add_argument(
         "--root",
         type=Path,
         default=_REPO_ROOT,
         help="the directory holding data/ (default: the repository's own)",
     )
     arguments = parser.parse_args(argv)
+    settings = load_settings()
+    # The earlier of the two. A read at or before dev_end is ordinary and needs no key; a date past
+    # it is read to dev_end and nothing later, and ``fit_champion`` then refuses it.
+    end = min(arguments.as_of, settings.splits.dev_end)
+    calendar = get_calendar(settings)
+    log = forecast_log_path(arguments.root)
+    already = _existing_keys(log)
     print(f"as_of {arguments.as_of}")
     print(
         "PSEUDO-CHAMPION: each model below is the dev-window leaderboard winner, NOT the "
         "registered champion; the reveal has not happened"
     )
+    panels: dict[str, pd.DataFrame | ForecastRefused] = {}
+    lines: list[ForecastLine] = []
     refused = 0
-    for symbol in load_settings().universe:
+    for symbol in settings.universe:
         for horizon in HORIZONS:
             try:
                 champion = pseudo_champion(arguments.root, symbol, horizon)
+                model = champion_model(champion)
             except NoChampionError as error:
                 refused += 1
                 print(f"refused {symbol} h{horizon}: {error}")
@@ -335,14 +493,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{champion.cohort} run {champion.run_at}) kind={taken.kind} "
                 f"definition_hash={taken.definition_hash[:12]}"
             )
+            if (arguments.as_of.isoformat(), symbol, horizon) in already:
+                print(f"{symbol} h{horizon}: already in the log, not rewritten")
+                continue
+            try:
+                value, observations = _forecast(
+                    model, settings, calendar, panels, symbol, horizon, arguments.as_of, end
+                )
+            except ForecastRefused as error:
+                refused += 1
+                print(f"refused {symbol} h{horizon}: {error}")
+                continue
+            lines.append(
+                ForecastLine(
+                    as_of=arguments.as_of,
+                    symbol=symbol,
+                    horizon=horizon,
+                    value=value,
+                    observations=observations,
+                    champion=taken,
+                )
+            )
+    written = append_forecasts(lines, root=arguments.root, at=arguments.at)
+    print(f"wrote {written} forecast line(s)")
     if refused:
-        print(f"refusing: {refused} configuration(s) have no champion, so nothing is forecast")
-    else:
         print(
-            "refusing: fitting the champions needs the store, which this stage may not read, "
-            "so no forecast line was written"
+            f"refusing: {refused} configuration(s) could not be forecast, so the day is incomplete"
         )
-    return 1
+    return 1 if refused else 0
 
 
 if __name__ == "__main__":

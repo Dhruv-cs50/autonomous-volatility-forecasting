@@ -11,11 +11,13 @@ nowhere from a parameter, and ``tests/test_daily_forecast.py`` scans the package
 that could.
 
 **It is derived, not named.** ``pseudo_champion`` reads the trial ledger through
-``volab.leaderboard.read_trials`` and ranks with the leaderboard's own ``_ranked`` (a private
-name, imported because the leaderboard exposes no public winner and ``volab.leaderboard`` is not
-this story's to change). It does not re-rank, does not read the store, and does not import the
-code that writes a ledger. The rule is this module's own choice and is written down so it can be
-overruled:
+``volab.leaderboard.read_trials`` and ranks with the leaderboard's own ``ranked_trials``, its
+public accessor for the ranking its table prints. It does not re-rank and does not read the store.
+``champion_model`` then finds the contestant the ledger names, as a model object, so the forecast
+stage can fit it; that is the one place this module reaches code that can write a ledger, and it
+does so only to *read* a cohort's roster (``volab.walkforward.BASELINE_COHORT``, and
+``volab.compare.cohorts.COHORTS`` for the rest, imported on demand because it costs three seconds
+of ``arch``). The rule is this module's own choice and is written down so it can be overruled:
 
 - **the loss is QLIKE**, the loss the pre-registration's decision rule names for the registered
   champion (``docs/holdout-preregistration.md`` section 3). That rule also restricts to the 10%
@@ -38,7 +40,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from volab.errors import VolabError
-from volab.leaderboard import TrialLine, _ranked, read_trials
+from volab.leaderboard import TrialLine, ranked_trials, read_trials
+from volab.models.base import Cohort, Model
+from volab.walkforward import BASELINE_COHORT, BASELINE_COHORT_NAME
 
 # The only kind this package writes. ``volab.daily.forecast`` owns the vocabulary and validates it.
 PSEUDO_KIND = "pseudo"
@@ -111,7 +115,7 @@ def pseudo_champion(root: Path, symbol: str, horizon: int) -> PseudoChampion:
             f"({sorted(run[2] for run in runs)}), and runs are never ranked against each other"
         )
     (run,) = runs
-    ranked = _ranked([t for t in scored if t.run == run])
+    ranked = ranked_trials([t for t in scored if t.run == run])
     first: list[TrialLine] = [t for rank, t in ranked if rank == "1"]
     if not first:
         raise NoChampionError(
@@ -154,3 +158,43 @@ def definition_sources(repo_root: Path) -> list[Path]:
     for directory in _DEFINITION_DIRECTORIES:
         files.extend(sorted((repo_root / directory).rglob("*.py")))
     return sorted(files)
+
+
+def _cohort_named(name: str) -> Cohort | None:
+    """The cohort a ledger line's ``cohort`` field names, or ``None`` if none is known by it.
+
+    The baseline is the walk-forward's own (it is deliberately absent from ``COHORTS``, which is
+    what the shootout CLI resolves names from). The others come from ``volab.compare.cohorts``,
+    imported here and not at the top: it costs three seconds of ``arch`` and a champion from the
+    baseline never needs it.
+    """
+    if name == BASELINE_COHORT_NAME:
+        return BASELINE_COHORT
+    from volab.compare.cohorts import COHORTS
+
+    return COHORTS.get(name)
+
+
+def champion_model(champion: PseudoChampion) -> Model:
+    """The contestant ``champion`` names, taken from the cohort the ledger run was scored in.
+
+    The cohort is looked up by the name on the ledger line, so the model returned is the one that
+    was scored, with its own domain, and not a model that merely shares a name. Raises
+    ``NoChampionError`` when the cohort is not one this package can rebuild or the cohort holds no
+    model of that name: a ledger naming a contestant that no longer exists cannot be fitted, and
+    naming a different one in its place would be the arbitrary pick this module refuses.
+    """
+    cohort = _cohort_named(champion.cohort)
+    if cohort is None:
+        raise NoChampionError(
+            f"cohort {champion.cohort!r} is not one this package can rebuild a model from, so "
+            f"{champion.model!r}, its winner at {champion.symbol} h{champion.horizon}, "
+            "cannot be fitted"
+        )
+    for model in cohort.models:
+        if model.name == champion.model:
+            return model
+    raise NoChampionError(
+        f"cohort {champion.cohort!r} holds no model {champion.model!r}; it holds "
+        f"{list(cohort.contestants)}"
+    )

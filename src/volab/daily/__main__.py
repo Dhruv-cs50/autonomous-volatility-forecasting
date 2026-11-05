@@ -22,10 +22,12 @@ not only by the library.
 a refusal, a closed exchange, a date already done -- it prints what ``plan`` prints and **writes
 nothing at all**: no run record, no directory, not even a call to the clock. For ``work`` it writes
 the start line (through ``record_start``, which fsyncs it) **before the first stage starts**, runs
-the stages through ``run_stages`` -- each its own interpreter, killed past ``STAGE_TIMEOUT_SECONDS``
--- and then writes exactly one completion line, ``done`` if every stage exited zero and ``failed``
-otherwise, carrying each stage's bounded output. If the process is interrupted between the two
-writes, the start line stands alone and the date stays retryable (``completed_dates``).
+the stages through ``run_stages`` (each its own interpreter, killed past
+``STAGE_TIMEOUT_SECONDS``) -- a stage that declares ``needs_at`` is handed the start line's own
+instant as ``--at`` (``with_instant``), so the two share one reading of the clock -- and then writes
+exactly one completion line, ``done`` if every stage exited zero and ``failed`` otherwise, carrying
+each stage's bounded output. If the process is interrupted between the two writes, the start line
+stands alone and the date stays retryable (``completed_dates``).
 
 **Exit codes.** 1 for a refusal, copied from ``volab.walkforward``'s refusal of a ``--to`` past
 ``dev_end`` rather than invented: an unattended job's wrapper reads exit codes, and a sealed date is
@@ -50,7 +52,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from volab.config import load_settings
-from volab.daily import Plan, plan_for
+from volab.daily import Plan, plan_for, with_instant
 from volab.daily.runlog import (
     COMPLETED_OUTCOME,
     completed_dates,
@@ -94,8 +96,12 @@ def _today() -> dt.date:
 def _execute(plan: Plan, log: Path, clock: Callable[[], dt.datetime]) -> int:
     """Run a ``work`` plan's stages between a start line and a completion line."""
     sha, dirty = git_state(_REPO_ROOT)
-    run_id = record_start(log, plan, at=clock(), sha=sha, dirty=dirty)
-    runs = run_stages(plan.stages, timeout_seconds=STAGE_TIMEOUT_SECONDS)
+    started = clock()
+    run_id = record_start(log, plan, at=started, sha=sha, dirty=dirty)
+    # The same instant the start line carries, handed to every stage that asks for it: one clock
+    # call for both, so what a stage records and what the run log records cannot disagree.
+    stages = tuple(with_instant(stage, started) for stage in plan.stages)
+    runs = run_stages(stages, timeout_seconds=STAGE_TIMEOUT_SECONDS)
     succeeded = len(runs) == len(plan.stages) and all(run.exit_code == 0 for run in runs)
     record_completion(
         log,
