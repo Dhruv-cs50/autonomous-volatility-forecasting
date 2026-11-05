@@ -47,9 +47,10 @@ therefore lacks ``--at``, and the one that runs has it; both are derived from th
 its own configuration's business or its own argument's: ``volab.ingest`` and
 ``volab.features`` write the store at ``settings.storage_root`` and accept no root at all,
 while ``volab.daily.forecast`` and ``volab.leaderboard`` each take a ``--root`` that defaults
-to this repository. So the ``root`` ``volab.daily.__main__`` accepts moves the run log alone,
-and no rehearsal can be had by handing it one -- which that module's docstring states and
-``tests/test_daily_forecast.py`` executes. Nor can the two store-writing stages be aimed
+to this repository. So the ``root`` ``volab.daily.__main__`` accepts moves that module's own
+files -- the run log, and the lock that sits beside it -- and reaches no stage, so no rehearsal
+can be had by handing it one; ``tests/test_daily_forecast.py`` executes that. Nor can the
+two store-writing stages be aimed
 elsewhere by configuration: ``volab.config._validate_storage_root`` resolves ``storage.root``
 against the repository root and refuses anything not strictly inside it, and the root it
 resolves against is derived from the installed package, so neither ``load_settings(path=...)``

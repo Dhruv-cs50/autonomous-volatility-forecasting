@@ -16,14 +16,20 @@ executes, and asserts that no module in that closure names a writer entry point 
 the writers' own bodies. It is a floor on carelessness and not a proof; its limit is stated on
 ``_closure_violations``.
 
-**Half two is a rehearsal, not a whole daily run.** The ``run`` verb on a dev date against a
-``tmp_path`` storage root, with the repository's own ``data/`` measured either side *inside the
-test*: both reported ledgers by line count and digest, and every file and directory under
-``data/`` by size and mtime. Two of the four ``LIVE_STAGES`` are **named stand-ins** that only
-print: ``ingest`` (``volab.ingest backfill`` fetches from the network and archives under the
-tracked ``data/vendor_payloads/``) and ``features`` (``volab.features build`` takes no root, and a
-storage root must be inside the repository, so no ``tmp_path`` can be aimed at it). ``leaderboard``
-and ``forecast`` really run. A guard keeps the substitute stages in one-to-one correspondence with
+**Half two is a rehearsal, not a whole daily run.** The ``run`` verb on a dev date rooted at
+``tmp_path``, with the repository's own ``data/`` measured either side *inside the test*: both
+reported ledgers by line count and digest, and every file and directory under ``data/`` by size
+and mtime. ``tmp_path`` is the **repository root** the run's own files hang off -- the run log,
+the lock beside it, the ledger the leaderboard stage reads and the forecast log -- and **not the
+storage root**, which stays the repository's ``data/`` and is never read, because the forecast
+shim fakes both store seams. Saying "``tmp_path`` storage root" was wrong twice over: the
+settings are untouched, and a ``tmp_path`` could not be a storage root if they were.
+
+Two of the four ``LIVE_STAGES`` are **named stand-ins** that only print: ``ingest``
+(``volab.ingest backfill`` fetches from the network and archives under the tracked
+``data/vendor_payloads/``) and ``features`` (``volab.features build`` takes no root, and a storage
+root must be inside the repository, so no ``tmp_path`` can be aimed at it). ``leaderboard`` and
+``forecast`` really run. A guard keeps the substitute stages in one-to-one correspondence with
 ``LIVE_STAGES`` by name, so a new live stage that is not rehearsed goes red, and two tests pin the
 two limits that justify the stand-ins. It is the only test in the suite that mechanically shows a
 daily run's real stages cannot move a reported number.
@@ -953,6 +959,11 @@ def _correspondence_gaps(
     shim must run the live module as shipped**: without that third rule a fake under any other
     module name was not a probe by the prefix test, so it needed no reason and left the set of
     stand-ins looking like exactly the declared two.
+
+    **The reach (R159).** A declared shim is exempt from the module rule, because the point of a
+    shim is that the module differs; so a *fake* forecast stage is not caught here at all, only
+    by ``test_a_whole_daily_run_...`` asserting the forecast log it writes. Nor is a substitute's
+    argv checked against anything -- only its name and its module.
     """
     gaps: list[str] = []
     live_names = [s.name for s in live]
@@ -986,7 +997,8 @@ def _rehearse(
     repo: Path,
     plant_into: Path | None = None,
 ) -> tuple[int, Measurement, Measurement]:
-    """Run the ``run`` verb on a dev date with ``tmp_path`` as the storage root.
+    """Run the ``run`` verb on a dev date rooted at ``tmp_path`` -- its repository root, not its
+    storage root, which the settings keep and nothing here reads.
 
     This is not the real ``LIVE_STAGES``. It is one stage per real stage, same names, same order,
     and **two of the four are named stand-ins** (``_STAND_INS``), each a child interpreter that
@@ -994,7 +1006,10 @@ def _rehearse(
     under the tracked ``data/vendor_payloads/``; and ``features``, because ``volab.features build``
     takes no root and a storage root must be inside the repository, so it cannot be aimed at
     ``tmp_path``. (``plan_for`` appends no ``--root`` to any stage, so handing ``main`` a ``root``
-    moves only the run record.) The other two really run: the shipped ``volab.leaderboard`` stage
+    moves that module's own files -- the run log, and the lock that sits beside it -- and reaches
+    no stage. The leaderboard stage is handed its root here, in this tuple, which is the only
+    reason it reads a ledger under ``tmp_path``.) The other two really run: the shipped
+    ``volab.leaderboard`` stage
     module pointed at ``tmp_path``, and the real forecast ``main`` behind the shim
     ``tests/test_daily_forecast.py`` already uses (fake loaders, so no store is read).
     ``plant_into`` adds a stage that appends a line to that file -- the witness that the
