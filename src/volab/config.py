@@ -86,10 +86,7 @@ class Region(enum.Enum):
 class Splits:
     dev_end: dt.date
     holdout_start: dt.date
-    # The default exists for hand-built values (tests construct ``Splits`` directly) and keeps
-    # the meaning ``Splits`` had before it had an end: a holdout with no end, so no ``live``
-    # region. It fails closed. ``load_settings`` never relies on it; it always passes the file's.
-    holdout_end: dt.date = dt.date.max
+    holdout_end: dt.date
 
     def region_of(self, day: dt.date) -> Region:
         """The region ``day`` falls in; total over every date, and pure.
