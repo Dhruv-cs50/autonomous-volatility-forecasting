@@ -215,6 +215,15 @@ def _sweep_the_group(pid: int) -> None:
 
     The kernel links a same-group descendant to the stage; it cannot link one that left the group,
     which this does not reach (see the module docstring).
+
+    **The suppressed set here and in ``_run_one``'s ``except BaseException`` must stay in step.**
+    This one suppressed ``PermissionError`` from the start -- a group whose only member is a stage
+    that has exited and not yet been reaped refuses the signal -- while the handler three lines
+    above that ``raise`` suppressed only ``ProcessLookupError``, so an interrupt arriving in that
+    window came out as a ``PermissionError`` and the CLI exited 1 with a traceback instead of
+    ``TERMINATED_EXIT_CODE``. Same knowledge, two functions, one written later than the other:
+    R151's duplication-drifts ruling, showing up in error handling rather than in an enumerated
+    set. A third signalling site belongs in here, not beside the others.
     """
     group = -pid  # ``kill`` with a negative pid signals a group; spelt apart from the timeout's
     with contextlib.suppress(ProcessLookupError, PermissionError):
