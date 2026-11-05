@@ -37,7 +37,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from test_daily import _LEDGER_FILENAMES, _appends_to_a_file
+from test_daily import _LEDGER_FILENAMES, _appends_to_a_file, _modules_named_in
 from test_daily_forecast import (
     _END,
     _FITTED,
@@ -173,11 +173,17 @@ def _seeds(sources: Mapping[str, str], stages: tuple[Stage, ...]) -> set[str]:
     A stage is run as ``python -m <module>``, which executes ``<module>.__main__`` when that is a
     package -- a file nothing imports, so an import graph seeded only from ``volab.daily`` never
     reaches it. The stage roots are derived from the stage tuple, not listed.
+
+    **A stage's argv can name a module too** (``python -m runpy volab.walkforward``, ``cProfile
+    -m``, ``pdb -m``), and that module runs as surely as the stage's own, so every argv token is
+    matched against the tree's modules by ``_modules_named_in`` and seeded the same way.
     """
     seeds = {module for module in sources if _is_daily(module)}
     for stage in stages:
-        seeds.add(stage.module)
-        seeds.add(f"{stage.module}.__main__")
+        named = [stage.module, *_modules_named_in(" ".join(stage.argv), sources)]
+        for module in named:
+            seeds.add(module)
+            seeds.add(f"{module}.__main__")
     return seeds & sources.keys()
 
 
@@ -623,12 +629,40 @@ def test_a_docstring_naming_a_writer_entry_point_does_not_fire() -> None:
     assert _new_violations(sources, closure, entries) == []
 
 
-def test_a_comment_naming_a_writer_entry_point_does_not_fire() -> None:
+def test_a_comment_naming_an_entry_point_never_reaches_the_ast_so_the_scan_cannot_see_it() -> None:
+    """Pins that the scan is AST-based; it does **not** test an exclusion, because there is none.
+
+    A comment is not a node, so no scan built on ``ast`` can fire on one, and a test that appended
+    a comment and asserted "no violation" could not fail (the earlier version of this test). What
+    can fail is the premise, asserted here: the planted module parses to the same tree as the real
+    one, and the plant is really in the text (so a ``_planted`` that dropped it would be noticed).
+    The paired test below is the half that can go red.
+    """
     sources, entries, closure = _planted(
         append_to={"volab.daily.runner": "# never calls append_trials\n"}
     )
+    real = _tree_sources()["volab.daily.runner"]
 
+    assert "# never calls append_trials" in sources["volab.daily.runner"]
+    assert ast.dump(ast.parse(sources["volab.daily.runner"])) == ast.dump(ast.parse(real))
     assert _new_violations(sources, closure, entries) == []
+
+
+def test_the_same_text_as_a_string_statement_that_is_not_a_docstring_does_not_hide_a_call() -> None:
+    """The half that can fail: strip nothing textually, so a real call beside a comment fires."""
+    sources, entries, closure = _planted(
+        append_to={"volab.daily.runner": "# never calls append_trials\nappend_trials([])\n"}
+    )
+
+    assert _new_violations(sources, closure, entries) != []
+
+
+def test_a_stage_whose_argv_names_a_module_seeds_that_module_into_the_closure() -> None:
+    """``python -m runpy volab.walkforward`` imports the writer; the seeds read only the module."""
+    sources = _tree_sources()
+    planted = (Stage(name="x", module="runpy", argv=("volab.walkforward",)),)
+
+    assert "volab.walkforward" in _seeds(sources, planted)
 
 
 def test_a_writer_modules_own_definition_of_an_entry_point_does_not_fire() -> None:
