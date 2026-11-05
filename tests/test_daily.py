@@ -218,11 +218,16 @@ def _stages_touching_a_ledger(stages: tuple[Stage, ...]) -> tuple[str, ...]:
     the same ledger as ``python -m volab.walkforward``.
 
     **Stated limit, because a guard whose reach is not stated invites the trust this project
-    withholds:** the derivation underneath is not transitive. A future package that imports
-    ``append_trials`` without naming a ledger file or opening one for appending would not be in
-    the writer set, and so would not be caught here. That is exactly the shape P4-06's forecast
-    stage could arrive in, and closing it is P4-04's derived import check -- which asks what
-    ``volab.daily`` imports rather than what a stage's name looks like.
+    withholds:** the derivation underneath is not transitive. A package that imports
+    ``append_trials`` without naming a ledger file or opening one for appending is not in the
+    writer set, and so is not caught here. That is exactly the shape the forecast stage did
+    arrive in, and it is closed **not here but in** ``tests/test_daily_rehearsal.py``, which
+    builds the transitive import closure of ``volab.daily`` and asks what the modules in it
+    *name*, rather than what a stage's module looks like. What that check found, and what it
+    cannot cover either, is recorded in R163: two writer modules are reachable
+    (``volab.walkforward`` for its fitting seam, and ``volab.compare.sink`` pulled in by
+    ``volab.compare.cohorts``), ``volab.evaluators`` is not, and the no-write guarantee therefore
+    rests on tested discipline rather than on the writers being unreachable.
     """
     writers = _ledger_writing_packages()
     return tuple(

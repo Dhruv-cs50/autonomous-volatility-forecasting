@@ -229,12 +229,18 @@ MUTANTS: tuple[Mutant, ...] = (
         label="the start line is written after the stages, not before",
         relative_path="src/volab/daily/__main__.py",
         before=(
-            "    run_id = record_start(log, plan, at=clock(), sha=sha, dirty=dirty)\n"
-            "    runs = run_stages(plan.stages, timeout_seconds=STAGE_TIMEOUT_SECONDS)\n"
+            "    run_id = record_start(log, plan, at=started, sha=sha, dirty=dirty)\n"
+            "    # The same instant the start line carries, handed to every stage that asks for"
+            " it: one clock\n"
+            "    # call for both, so what a stage records and what the run log records cannot"
+            " disagree.\n"
+            "    stages = tuple(with_instant(stage, started) for stage in plan.stages)\n"
+            "    runs = run_stages(stages, timeout_seconds=STAGE_TIMEOUT_SECONDS)\n"
         ),
         after=(
-            "    runs = run_stages(plan.stages, timeout_seconds=STAGE_TIMEOUT_SECONDS)\n"
-            "    run_id = record_start(log, plan, at=clock(), sha=sha, dirty=dirty)\n"
+            "    stages = tuple(with_instant(stage, started) for stage in plan.stages)\n"
+            "    runs = run_stages(stages, timeout_seconds=STAGE_TIMEOUT_SECONDS)\n"
+            "    run_id = record_start(log, plan, at=started, sha=sha, dirty=dirty)\n"
         ),
         witnesses=(
             "test_the_start_line_is_on_disk_before_the_first_stage_starts",
@@ -256,8 +262,8 @@ MUTANTS: tuple[Mutant, ...] = (
     Mutant(
         label="the verb does not pass the stage timeout to the runner",
         relative_path="src/volab/daily/__main__.py",
-        before="run_stages(plan.stages, timeout_seconds=STAGE_TIMEOUT_SECONDS)",
-        after="run_stages(plan.stages)",
+        before="run_stages(stages, timeout_seconds=STAGE_TIMEOUT_SECONDS)",
+        after="run_stages(stages)",
         witnesses=("test_a_stage_that_hangs_is_recorded_as_timed_out_and_failed_through_the_verb",),
     ),
     Mutant(
