@@ -1106,7 +1106,7 @@ def test_the_fixture_ledgers_the_real_rehearsal_depends_on_exist() -> None:
     assert re.fullmatch(r"[0-9a-f]{32}", _ledger_reading(_REPO_ROOT / "data" / "trials.jsonl")[1])
 
 
-def test_the_rehearsal_has_one_stage_per_live_stage_and_exactly_the_two_declared_stand_ins(
+def test_the_rehearsal_has_one_stage_per_live_stage_and_exactly_two_declared_stand_ins(
     tmp_path: Path,
 ) -> None:
     """Derived from ``LIVE_STAGES``: a stage added there and not to the rehearsal goes red here."""
