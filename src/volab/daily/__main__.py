@@ -57,9 +57,12 @@ lock: not a sealed date and not broken work, and the locked run has written noth
 may simply fire again later. It is distinct from ``completed_elsewhere``, which is 0 -- the date is
 done. 143 (``TERMINATED_EXIT_CODE``, 128 + SIGTERM as a shell reports it) when a SIGTERM ended a
 ``work`` run while its handler was installed: the running stage's process group was killed, no
-completion line was written, and the date is retryable. A SIGTERM before the lock is taken and the
-handler installed, or to a ``plan`` or a non-``work`` ``run``, is not handled: the default
-disposition ends the process, with no stage started. A closed exchange and an already-completed
+completion line was written, and the date is retryable. The handler is installed *before* the lock
+is taken, so there is no stretch in which a SIGTERM arrives with the lock held and no way to
+unwind; one that lands while the lock is being tried exits 143 having written nothing. A SIGTERM
+before the handler is installed (the plan is read and printed first), or to a ``plan`` or a
+non-``work`` ``run``, is not handled: the default disposition ends the process, with
+no stage started. A closed exchange and an already-completed
 date are 0 -- those are the job correctly having nothing to do. The verb list is an ``argparse``
 ``choices`` tuple, as every other CLI in this project uses.
 
@@ -226,7 +229,7 @@ def main(
         print(f"stage {stage.name}: python -m {stage.module} {' '.join(stage.argv)}".rstrip())
     if arguments.command == "run" and plan.outcome == "work":
         try:
-            with run_lock(_lock_path(log)), _sigterm_unwinds():
+            with _sigterm_unwinds(), run_lock(_lock_path(log)):
                 if plan.as_of in completed_dates(log):
                     print("outcome completed_elsewhere")
                     print("another run completed this date while this one waited for the lock")

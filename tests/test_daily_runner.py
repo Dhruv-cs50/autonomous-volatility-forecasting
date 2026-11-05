@@ -86,6 +86,15 @@ _PROBES = {
         "pathlib.Path(sys.argv[1]).write_text(f'{os.getpid()} {grandchild.pid}')\n"
         "time.sleep(60)\n"
     ),
+    # Leaves a plain same-group sleeper running (no ``start_new_session``): writes its pid to
+    # argv[1], then exits 0 without waiting for it.
+    "probe_leaves_a_child": (
+        "import pathlib, subprocess, sys\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'],\n"
+        "                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+        "print('leaving a child behind', flush=True)\n"
+    ),
     # Tries to take the run lock named in argv[1], and exits 0 only if it could not.
     "probe_lock": (
         "import fcntl, os, sys\n"
@@ -358,6 +367,26 @@ def test_a_timeout_kills_the_stages_own_children_too(tmp_path: Path) -> None:
     child, grandchild = (int(pid) for pid in pid_file.read_text(encoding="utf-8").split())
     assert _gone(child)
     assert _gone(grandchild)
+
+
+def test_a_same_group_child_left_by_a_finished_stage_is_killed_with_the_group(
+    tmp_path: Path,
+) -> None:
+    pid_file = tmp_path / "pid"
+
+    started = time.monotonic()
+    try:
+        (run,) = run_stages((_stage("leaver", "probe_leaves_a_child", str(pid_file)),))
+        elapsed = time.monotonic() - started
+        sleeper = int(pid_file.read_text(encoding="utf-8"))
+        gone = _gone(sleeper)
+    finally:
+        if pid_file.exists():
+            _kill_if_alive(int(pid_file.read_text(encoding="utf-8")))
+
+    assert run.exit_code == 0
+    assert elapsed < 1, elapsed
+    assert gone
 
 
 def test_a_stage_that_finishes_inside_its_timeout_is_not_marked_timed_out() -> None:

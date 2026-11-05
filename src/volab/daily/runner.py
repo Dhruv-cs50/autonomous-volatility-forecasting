@@ -38,19 +38,49 @@ group (the child is started in its own session for that reason). The stage is th
 fail-stop applies. The default, ``STAGE_TIMEOUT_SECONDS``, is a ceiling chosen without measuring
 the real stages; it is there to bound a hang, not to time the pipeline.
 
-**The bound, stated rather than implied:**
+**The bound, stated rather than implied.** It has two halves, and they are not the same claim.
 
-- the stage and every descendant **in its process group** are killed (SIGKILL, so nothing gets to
-  clean up);
-- a descendant that **left the group** (``setsid``, ``start_new_session=True``, a double fork
-  into a daemon) is **not killed**: this module has no way to find it, and nothing here claims
-  otherwise. It is orphaned and keeps running, and keeps the pipe open. What the runner does is
-  stop *waiting* for it: once the stage's own process has exited and the pipe has been idle for
-  ``_POLL_SECONDS``, reading ends and the stage is returned. That applies after a timeout and after
-  an ordinary exit alike. The cost is that output such an orphan (or a same-group descendant that
-  outlives its parent) writes after that point is not captured. Before this, such a descendant
-  held the read open until it exited -- 6.05 s for a 0.4 s timeout in a probe, and without bound
-  for a stage that exited by itself, where no timeout applied at all;
+*Everything still in the stage's process group is killed, on every path.* On a timeout the
+``threading.Timer`` sends SIGKILL to the group while the stage runs. On every path -- an ordinary
+exit, a failure, a timeout, an interrupt -- ``_sweep_the_group`` sends SIGKILL to the group once
+the stage's own process has been reaped, so a same-group descendant the stage forgot to wait for
+(a plain ``subprocess.Popen`` it left running) does not outlive the stage. SIGKILL, so nothing gets
+to clean up. It runs after the read loop, so it cannot truncate captured output, and after the
+reap, so it cannot race a live stage. Its own residual: POSIX does not reuse a process-group id
+while the group still has a member, so the only window is the moment after the group has emptied
+completely, when the id could in principle be reused before the sweep's signal lands.
+
+*A descendant that left the group is not killed.* (``setsid``, ``start_new_session=True``, a
+double fork into a daemon.) It is orphaned, keeps running, and keeps the pipe open. This is a
+decision and not an oversight, and nothing here claims otherwise:
+
+- darwin has no cgroups and no ``PR_SET_CHILD_SUBREAPER``, so no kernel object holds "everything
+  the stage started";
+- a reparented process has lost its ancestry: ``ps`` shows a pid and a pgid but nothing links it
+  to a stage that has exited, so any sweep would have to match on a command line or an executable
+  name and could kill a process that merely looks similar -- worse than a descendant that keeps
+  running;
+- a whole-run timeout does not reach it either, since it left the run's session too;
+- a process that deliberately double-forks has asked to outlive its parent, and overriding that is
+  a policy this module has no standing to make.
+
+``grep -rn "start_new_session\\|setsid\\|os.fork\\|daemon" src/`` matches only this file, so no
+stage in this repository escapes its group today; the bound is stated for the stage someone adds
+later. It is pinned as stated by three tests in ``tests/test_daily_forecast.py``:
+``test_a_timeout_returns_promptly_even_when_a_descendant_left_the_group_holding_the_pipe``,
+``test_a_stage_that_exits_leaving_the_pipe_held_is_not_waited_for_past_its_own_exit`` and
+``test_an_escaped_descendant_is_left_running_and_that_is_the_stated_bound``.
+
+What the runner does about the escaped descendant is stop *waiting* for it: once the stage's own
+process has exited and the pipe has been idle for ``_POLL_SECONDS``, reading ends and the stage is
+returned. That applies after a timeout and after an ordinary exit alike. The cost is that output
+such an orphan writes after that point is not captured (a same-group descendant is swept, so its
+output stops too). Before this, such a descendant held the read open until it exited -- 6.05 s for
+a 0.4 s timeout in a probe, and without bound for a stage that exited by itself, where no timeout
+applied at all.
+
+Two more things the same bound applies to:
+
 - an **interrupt** (``KeyboardInterrupt``) or any other ``BaseException`` while a stage runs --
   from the moment the child exists, not from the moment the read loop starts -- kills the stage's
   group, reaps the stage, and then propagates. The stage is in its own session, which is why the
@@ -173,6 +203,17 @@ class StageRun:
         )
 
 
+def _sweep_the_group(pid: int) -> None:
+    """SIGKILL whatever is still in the process group ``pid`` led, after that leader is reaped.
+
+    The kernel links a same-group descendant to the stage; it cannot link one that left the group,
+    which this does not reach (see the module docstring).
+    """
+    group = -pid  # ``kill`` with a negative pid signals a group; spelt apart from the timeout's
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.kill(group, signal.SIGKILL)
+
+
 def _run_one(stage: Stage, timeout_seconds: float) -> StageRun:
     """Run ``stage`` in a fresh interpreter and return its verdict and output tail.
 
@@ -242,6 +283,7 @@ def _run_one(stage: Stage, timeout_seconds: float) -> StageRun:
         if process.stdout is not None:
             process.stdout.close()
         process.wait()  # reaped on every path, so no zombie and no ResourceWarning
+        _sweep_the_group(process.pid)  # only now: the stage is reaped, so nothing live is raced
     retained = b"".join(tail)[-OUTPUT_BOUND_BYTES:]
     dropped = total - len(retained)
     text = retained.decode("utf-8", errors="replace")
