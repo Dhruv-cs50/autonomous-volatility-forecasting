@@ -37,8 +37,9 @@ A Ctrl-C kills the running stage's process group first (``run_stages``), and so 
 for the length of a ``work`` run ``_sigterm_unwinds`` turns SIGTERM into ``SystemExit``, which
 unwinds through ``run_stages`` (that kills the stage's group and reaps the stage) and the lock, and
 leaves the process without having written a completion line. Either way the start line stands
-alone and the date stays retryable. What that does not cover is in ``volab.daily.runner``: a ``SIGKILL`` to
-``run`` runs no handler at all, and a descendant that left the stage's group is not found.
+alone and the date stays retryable. What that does not cover is in ``volab.daily.runner``: a
+``SIGKILL`` to ``run`` runs no handler at all, and a descendant that left the stage's group is not
+found.
 
 **One ``run`` at a time, by a lock that refuses and does not wait.** Before the start line, a
 ``work`` plan takes ``run_lock`` on ``daily_run.lock`` beside the run log (so an injected ``root``
