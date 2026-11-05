@@ -1,4 +1,5 @@
-"""The rehearsal: what R158 Q2 now rests on, and a whole daily run off the real store.
+"""The rehearsal: what R158 Q2 now rests on, and a run of every planned stage, two stood in
+for.
 
 R158 Q2 was the user's decision that the live daily path "never invokes" ``walkforward``,
 ``compare`` or ``evaluators`` -- so that the three reported ledgers are untouchable by construction.
@@ -6,8 +7,8 @@ P4-06c broke the letter of that (R163): the forecast stage imports ``volab.walkf
 ``volab.compare.cohorts``, and importing the second runs ``volab.compare``'s ``__init__``, which
 imports ``volab.compare.sink``. What survives is the thing the decision protected: **the daily path
 appends nothing to ``data/trials.jsonl``, ``data/comparisons.jsonl`` or ``data/decisions.jsonl``.**
-It is now a property of tests and not of the shape of the import graph, and this file is two of
-those tests.
+It is now a property of tests and not of the shape of the import graph, and this file is where
+both halves of that evidence live.
 
 **Half one is a derived check on the property, not on a package list.** It finds the *writer entry
 points* by reading the tree, builds the transitive import closure of everything the daily path
@@ -57,7 +58,7 @@ from test_daily_forecast import (
 
 import volab.daily as daily_package
 import volab.daily.__main__ as daily_cli
-from volab.config import load_settings
+from volab.config import DEFAULT_CONFIG_PATH, load_settings
 from volab.daily import LIVE_STAGES, Stage
 from volab.daily.runlog import completed_dates, run_log_path
 from volab.errors import ConfigError
@@ -912,6 +913,16 @@ _STAND_INS: Mapping[str, str] = MappingProxyType(
 
 _STAND_IN_PREFIX = "stand_in_"
 
+_SHIMS: Mapping[str, str] = MappingProxyType(
+    {
+        "forecast": (
+            "the real `volab.daily.forecast.main`, run behind `tests/test_daily_forecast.py`'s "
+            "shim so that the two store seams are fake and no store is read"
+        ),
+    }
+)
+"""Stages run as the real code behind a shim: neither a probe nor the live module as shipped."""
+
 
 def _stand_in_names(substitutes: tuple[Stage, ...]) -> frozenset[str]:
     """The stages of ``substitutes`` that are probes: their module is a ``stand_in_*`` one."""
@@ -929,9 +940,20 @@ def _substitutes(tmp_path: Path, forecast: Stage) -> tuple[Stage, ...]:
 
 
 def _correspondence_gaps(
-    substitutes: tuple[Stage, ...], live: tuple[Stage, ...], reasons: Mapping[str, str]
+    substitutes: tuple[Stage, ...],
+    live: tuple[Stage, ...],
+    reasons: Mapping[str, str],
+    shims: Mapping[str, str] = _SHIMS,
 ) -> list[str]:
-    """Why ``substitutes`` does not stand in one-to-one, by name, for ``live``. Empty if it does."""
+    """Why ``substitutes`` does not stand in one-to-one, by name, for ``live``. Empty if it does.
+
+    Three rules. The names and their order must match ``live``. The probes -- recognised by the
+    ``stand_in_`` module prefix -- must be exactly the stages ``reasons`` declares, each with a
+    reason that is not blank. And **a stage that is neither a declared stand-in nor a declared
+    shim must run the live module as shipped**: without that third rule a fake under any other
+    module name was not a probe by the prefix test, so it needed no reason and left the set of
+    stand-ins looking like exactly the declared two.
+    """
     gaps: list[str] = []
     live_names = [s.name for s in live]
     if [s.name for s in substitutes] != live_names:
@@ -944,6 +966,16 @@ def _correspondence_gaps(
         for name in sorted(stand_ins)
         if not reasons.get(name, "").strip()
     )
+    live_modules = {stage.name: stage.module for stage in live}
+    for stage in substitutes:
+        if stage.name in reasons or stage.name in shims:
+            continue
+        shipped = live_modules.get(stage.name)
+        if shipped is not None and stage.module != shipped:
+            gaps.append(
+                f"{stage.name!r} is neither a declared stand-in nor a declared shim, yet runs "
+                f"{stage.module!r} rather than the live {shipped!r}"
+            )
     return gaps
 
 
@@ -1068,7 +1100,8 @@ def test_the_rehearsal_has_one_stage_per_live_stage_and_exactly_the_two_declared
     assert _correspondence_gaps(substitutes, LIVE_STAGES, _STAND_INS) == []
     assert _stand_in_names(substitutes) == frozenset({"ingest", "features"})
     assert set(_STAND_INS) == {"ingest", "features"}
-    assert all(reason.strip() for reason in _STAND_INS.values())
+    assert set(_SHIMS) == {"forecast"}
+    assert all(reason.strip() for reason in (*_STAND_INS.values(), *_SHIMS.values()))
 
 
 def test_a_live_stage_the_rehearsal_does_not_stand_in_for_is_a_gap(tmp_path: Path) -> None:
@@ -1081,8 +1114,15 @@ def test_a_live_stage_the_rehearsal_does_not_stand_in_for_is_a_gap(tmp_path: Pat
     assert any("publish" in gap for gap in gaps)
 
 
-def test_a_stand_in_added_without_a_reason_is_a_gap(tmp_path: Path) -> None:
-    """A third probe, or a declared stand-in whose reason is blank, goes red."""
+def test_a_third_stand_in_or_a_blank_reason_is_a_gap(tmp_path: Path) -> None:
+    """Two different ways to be a gap, and what each is actually reported as.
+
+    Measured rather than assumed, after a review seat and then this engineer both got it wrong:
+    a third probe fires **twice** -- once as a set mismatch against the declared reasons, and
+    once as a stand-in with no reason, because a probe nobody declared has no reason by
+    definition. A declared stand-in whose reason is blank fires only the second. So the earlier
+    name was not wrong about the message, only about which case is the interesting one.
+    """
     substitutes = _substitutes(tmp_path, LIVE_STAGES[-1])
     third = (
         Stage(name="ingest", module="stand_in_ingest", argv=()),
@@ -1094,24 +1134,41 @@ def test_a_stand_in_added_without_a_reason_is_a_gap(tmp_path: Path) -> None:
     undeclared = _correspondence_gaps(third, LIVE_STAGES, _STAND_INS)
     blank = _correspondence_gaps(substitutes, LIVE_STAGES, {**_STAND_INS, "features": "  "})
 
-    assert any("leaderboard" in gap for gap in undeclared)
-    assert any("'features' has no reason" in gap for gap in blank)
+    assert any("stand-ins" in gap and "leaderboard" in gap for gap in undeclared)
+    assert any("stand-in 'leaderboard' has no reason" in gap for gap in undeclared)
+    assert any("stand-in 'features' has no reason" in gap for gap in blank)
+    assert not any("stand-ins" in gap for gap in blank), "a blank reason is not a set mismatch"
 
 
 def _root_arguments(source: str) -> list[int]:
-    """The line of every ``add_argument("--root", ...)`` call in ``source``."""
-    return [
-        node.lineno
-        for node in ast.walk(ast.parse(source))
-        if (
+    """The line of every ``add_argument`` call in ``source`` that would give the CLI a root.
+
+    Three spellings are seen, because one was not enough: ``--root`` as **any** of the positional
+    flags (so ``add_argument("-r", "--root")`` counts, which a first-argument test missed), and
+    ``dest="root"`` however the flag itself is spelled.
+
+    **The reach, stated because a guard whose reach is not stated invites trust it has not earned
+    (R159):** this reads one module's source for a call on something named ``add_argument``. A
+    flag added by a parser built in another module, a flag name assembled at run time, and a root
+    taken from the environment rather than from argv are all out of its sight.
+    """
+    found: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        if not (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "add_argument"
-            and node.args
-            and isinstance(node.args[0], ast.Constant)
-            and node.args[0].value == "--root"
-        )
-    ]
+        ):
+            continue
+        flags = [a.value for a in node.args if isinstance(a, ast.Constant)]
+        destinations = [
+            k.value.value
+            for k in node.keywords
+            if k.arg == "dest" and isinstance(k.value, ast.Constant)
+        ]
+        if "--root" in flags or "root" in destinations:
+            found.append(node.lineno)
+    return found
 
 
 def _main_module_source(module: str) -> str:
@@ -1139,12 +1196,58 @@ def test_the_root_scan_fires_on_a_planted_root_argument() -> None:
 def test_a_temporary_directory_cannot_be_a_storage_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The premise behind the ``features`` stand-in.
+    """The premise behind the ``features`` stand-in, by **both** routes.
 
     ``features build`` reads ``load_settings()``, and ``storage.root`` must be strictly inside the
-    repository, so neither the environment nor a settings file can aim it at ``tmp_path``.
+    repository, so neither the environment nor a settings file can aim it at ``tmp_path``. Both
+    are asserted here: the repository root the value is resolved against is read from the
+    installed package, so it does not follow the path ``load_settings`` is handed, and a config
+    file living in ``tmp_path`` and naming ``tmp_path`` is refused exactly as the variable is.
     """
     monkeypatch.setenv("VOLAB_STORAGE_ROOT", str(tmp_path))
 
     with pytest.raises(ConfigError, match="must be inside the repository"):
         load_settings()
+
+    monkeypatch.delenv("VOLAB_STORAGE_ROOT")
+    settings_file = tmp_path / "base.yaml"
+    settings_file.write_text(
+        DEFAULT_CONFIG_PATH.read_text(encoding="utf-8").replace(
+            'root: "data"', f'root: "{tmp_path}"'
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="must be inside the repository"):
+        load_settings(settings_file)
+
+
+def test_a_fake_module_in_place_of_a_stage_that_really_runs_is_a_gap(tmp_path: Path) -> None:
+    """A stage that is not a declared stand-in must carry the live module, or a declared shim.
+
+    The hole this closes: ``_stand_in_names`` recognises a probe by its ``stand_in_`` module
+    prefix, so a fake under any other name was not a stand-in, needed no reason, and left the set
+    of stand-ins looking like exactly the two declared ones.
+    """
+    faked = (
+        *_substitutes(tmp_path, LIVE_STAGES[-1])[:2],
+        Stage(name="leaderboard", module="probe_ok", argv=()),
+        LIVE_STAGES[-1],
+    )
+
+    gaps = _correspondence_gaps(faked, LIVE_STAGES, _STAND_INS)
+
+    assert any("leaderboard" in gap and "probe_ok" in gap for gap in gaps)
+
+
+@pytest.mark.parametrize(
+    "planted",
+    [
+        "parser.add_argument('--root', default=None)\n",
+        "parser.add_argument('-r', '--root', default=None)\n",
+        "parser.add_argument('--storage-root', dest='root', default=None)\n",
+    ],
+)
+def test_the_root_scan_fires_on_every_spelling_it_claims_to_see(planted: str) -> None:
+    """Three ways to give a CLI a root, all of which the scan must see."""
+    assert _root_arguments(planted) == [1]

@@ -54,8 +54,8 @@ elsewhere by configuration: ``volab.config._validate_storage_root`` resolves ``s
 against the repository root and refuses anything not strictly inside it, and the root it
 resolves against is derived from the installed package, so neither ``load_settings(path=...)``
 nor ``VOLAB_STORAGE_ROOT`` can name a temporary directory (``tests/conftest.py`` builds its
-``Settings`` by hand for exactly that reason, and ``tests/test_config.py`` pins three
-refusals of the rule). What follows for a rehearsal -- which of these stages it can really
+``Settings`` by hand for exactly that reason, and ``tests/test_config.py`` pins the
+refusal by both routes). What follows for a rehearsal -- which of these stages it can really
 run and which it must stand in for -- is stated in ``tests/test_daily_rehearsal.py``, not
 claimed here.
 """
