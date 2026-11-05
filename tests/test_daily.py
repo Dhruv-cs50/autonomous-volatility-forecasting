@@ -1187,7 +1187,7 @@ _ENDINGS = [
 
 
 @pytest.mark.parametrize("prefix", _ENDINGS)
-def test_an_append_after_a_torn_final_line_is_well_formed_and_loses_nothing(
+def test_an_append_after_a_torn_final_line_in_the_run_log_is_well_formed_and_loses_nothing(
     settings: Settings, tmp_path: Path, prefix: bytes
 ) -> None:
     """A job killed between the write and the fsync leaves a final line with no newline.

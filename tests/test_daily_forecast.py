@@ -194,7 +194,7 @@ _ENDINGS = [
 
 
 @pytest.mark.parametrize(("prefix", "earlier"), _ENDINGS)
-def test_an_append_after_a_torn_final_line_is_well_formed_and_loses_nothing(
+def test_an_append_after_a_torn_final_line_in_the_forecast_log_is_well_formed_and_loses_nothing(
     tmp_path: Path, prefix: bytes, earlier: set[tuple[str, str, int]]
 ) -> None:
     """The return count is not the claim; the bytes are.

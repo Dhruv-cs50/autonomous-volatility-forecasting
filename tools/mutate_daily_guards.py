@@ -167,7 +167,7 @@ MUTANTS: tuple[Mutant, ...] = (
             "test_a_run_that_never_completed_leaves_its_date_retryable",
             "test_a_run_whose_forecast_refuses_a_configuration_is_recorded_failed_not_done",
             "test_a_stage_that_hangs_is_recorded_as_timed_out_and_failed_through_the_verb",
-            "test_a_torn_final_line_does_not_make_the_log_unreadable",
+            "test_a_torn_fragment_is_still_in_the_file_and_still_skipped_after_an_append",
         ),
     ),
     Mutant(
@@ -201,8 +201,8 @@ MUTANTS: tuple[Mutant, ...] = (
     Mutant(
         label="the run record is rewritten rather than appended",
         relative_path="src/volab/daily/runlog.py",
-        before='    with path.open("a", encoding="utf-8") as handle:',
-        after='    with path.open("w", encoding="utf-8") as handle:',
+        before='    with path.open("ab+") as handle:',
+        after='    with path.open("wb") as handle:',
         witnesses=(
             "test_a_completion_refers_to_the_start_by_id_and_leaves_its_line_byte_identical",
             "test_a_failing_stage_is_recorded_with_what_it_printed_and_the_run_exits_non_zero",
@@ -281,7 +281,10 @@ MUTANTS: tuple[Mutant, ...] = (
             "            continue"
         ),
         after="        parsed = json.loads(line)",
-        witnesses=("test_a_torn_final_line_does_not_make_the_log_unreadable",),
+        witnesses=(
+            "test_a_torn_fragment_is_still_in_the_file_and_still_skipped_after_an_append",
+            "test_an_append_after_a_torn_final_line_in_the_run_log_is_well_formed_and_loses_nothing",
+        ),
     ),
     Mutant(
         label="the start line is written after the stages, not before",
@@ -429,6 +432,30 @@ MUTANTS: tuple[Mutant, ...] = (
         # incidental exit code. The others fail because the plant also makes the module a ledger
         # writer by the derived definition (R151/R159), which is true and not the point.
         moves_ledger=True,
+    ),
+    Mutant(
+        label="the live region is reported as the sealed holdout",
+        relative_path="src/volab/daily/__init__.py",
+        before="    if splits.region_of(as_of) is Region.LIVE:",
+        after="    if False and splits.region_of(as_of) is Region.LIVE:",
+        witnesses=(
+            "test_a_live_date_is_refused_as_live_and_not_as_the_holdout",
+            "test_the_wording_follows_the_configured_holdout_end_and_not_a_hardcoded_date",
+        ),
+    ),
+    Mutant(
+        label="the read loop keeps waiting after the stage's own process has exited",
+        relative_path="src/volab/daily/runner.py",
+        before=(
+            "                        break  # the stage has exited; something else holds the pipe"
+        ),
+        after=(
+            "                        pass  # the stage has exited; something else holds the pipe"
+        ),
+        witnesses=(
+            "test_a_stage_that_exits_leaving_the_pipe_held_is_not_waited_for_past_its_own_exit",
+            "test_a_timeout_returns_promptly_even_when_a_descendant_left_the_group_holding_the_pipe",
+        ),
     ),
     Mutant(
         label="Splits.holdout_end given a default again",
