@@ -42,6 +42,22 @@ the plan is a function of a date and holds no instant (printing it must not ask 
 ``run`` verb appends ``--at INSTANT`` with ``with_instant`` once it has taken the instant for the
 start line. The stage as printed -- by ``plan``, and by ``run`` before it executes anything --
 therefore lacks ``--at``, and the one that runs has it; both are derived from the same ``Stage``.
+
+**The plan hands a stage a date and an instant, and never a root.** Where a stage writes is
+its own configuration's business or its own argument's: ``volab.ingest`` and
+``volab.features`` write the store at ``settings.storage_root`` and accept no root at all,
+while ``volab.daily.forecast`` and ``volab.leaderboard`` each take a ``--root`` that defaults
+to this repository. So the ``root`` ``volab.daily.__main__`` accepts moves the run log alone,
+and no rehearsal can be had by handing it one -- which that module's docstring states and
+``tests/test_daily_forecast.py`` executes. Nor can the two store-writing stages be aimed
+elsewhere by configuration: ``volab.config._validate_storage_root`` resolves ``storage.root``
+against the repository root and refuses anything not strictly inside it, and the root it
+resolves against is derived from the installed package, so neither ``load_settings(path=...)``
+nor ``VOLAB_STORAGE_ROOT`` can name a temporary directory (``tests/conftest.py`` builds its
+``Settings`` by hand for exactly that reason, and ``tests/test_config.py`` pins three
+refusals of the rule). What follows for a rehearsal -- which of these stages it can really
+run and which it must stand in for -- is stated in ``tests/test_daily_rehearsal.py``, not
+claimed here.
 """
 
 from __future__ import annotations
