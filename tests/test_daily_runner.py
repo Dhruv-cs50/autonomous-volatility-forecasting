@@ -323,8 +323,13 @@ def test_a_timeout_kills_the_stages_own_children_too(tmp_path: Path) -> None:
     """A grandchild holding the output pipe would otherwise keep the read loop waiting."""
     pid_file = tmp_path / "pids"
 
+    started = time.monotonic()
     run_stages((_stage("tree", "probe_sleep_tree", str(pid_file)),), timeout_seconds=_SHORT)
+    elapsed = time.monotonic() - started
 
+    # Without the elapsed bound this passes by waiting out the grandchild's own sixty seconds,
+    # after which it is gone of natural causes: the mutation probe found exactly that.
+    assert elapsed < 5, elapsed
     child, grandchild = (int(pid) for pid in pid_file.read_text(encoding="utf-8").split())
     assert _gone(child)
     assert _gone(grandchild)

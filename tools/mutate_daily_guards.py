@@ -89,6 +89,7 @@ MUTANTS: tuple[Mutant, ...] = (
         witnesses=(
             "test_a_date_with_a_completed_run_is_already_done",
             "test_the_cli_reports_a_recorded_completion_as_already_done",
+            "test_an_already_done_date_runs_nothing_and_leaves_the_log_byte_identical",
         ),
     ),
     Mutant(
@@ -111,6 +112,10 @@ MUTANTS: tuple[Mutant, ...] = (
             "test_a_run_recorded_as_failed_does_not_consume_its_date",
             "test_a_run_that_never_completed_leaves_its_date_retryable",
             "test_a_torn_final_line_does_not_make_the_log_unreadable",
+            # The verb tests that assert a failed or abandoned run leaves its date available.
+            "test_a_failing_stage_is_recorded_with_what_it_printed_and_the_run_exits_non_zero",
+            "test_a_run_abandoned_mid_stage_leaves_a_start_with_no_completion_and_a_retryable_date",
+            "test_a_stage_that_hangs_is_recorded_as_timed_out_and_failed_through_the_verb",
         ),
     ),
     Mutant(
@@ -147,6 +152,14 @@ MUTANTS: tuple[Mutant, ...] = (
             "test_a_second_attempt_appends_and_rewrites_nothing",
             "test_the_cli_reports_a_recorded_completion_as_already_done",
             "test_the_join_is_on_the_id_and_survives_interleaved_runs",
+            # The verb writes through the same appender, so every verb test that reads the log
+            # back for a start line followed by a completion fails with it.
+            "test_a_run_of_good_stages_writes_one_start_and_one_done_completion",
+            "test_a_failing_stage_is_recorded_with_what_it_printed_and_the_run_exits_non_zero",
+            "test_the_record_keeps_the_tail_and_the_dropped_count_of_a_flooding_stage",
+            "test_the_start_line_is_on_disk_before_the_first_stage_starts",
+            "test_a_stage_that_hangs_is_recorded_as_timed_out_and_failed_through_the_verb",
+            "test_an_already_done_date_runs_nothing_and_leaves_the_log_byte_identical",
         ),
     ),
     Mutant(
@@ -154,14 +167,20 @@ MUTANTS: tuple[Mutant, ...] = (
         relative_path="src/volab/daily/__main__.py",
         before='    return 1 if plan.outcome == "refused" else 0',
         after="    return 0",
-        witnesses=("test_the_cli_refuses_a_real_date_today_and_exits_one",),
+        witnesses=(
+            "test_the_cli_refuses_a_real_date_today_and_exits_one",
+            "test_a_refused_or_closed_date_runs_nothing_and_leaves_no_file_behind[refused]",
+        ),
     ),
     Mutant(
         label="the exchange date is read as the UTC date",
         relative_path="src/volab/daily/__main__.py",
         before="    return instant.astimezone(_EXCHANGE_TZ).date()",
         after="    return instant.date()",
-        witnesses=("test_the_exchange_date_is_taken_from_the_instant_and_not_from_utc",),
+        witnesses=(
+            "test_the_exchange_date_is_taken_from_the_instant_and_not_from_utc",
+            "test_today_is_the_exchange_date_of_the_seams_instant",
+        ),
     ),
     Mutant(
         label="the start line is written but not flushed or fsynced",
@@ -178,14 +197,21 @@ MUTANTS: tuple[Mutant, ...] = (
             ' and record.get("outcome") == COMPLETED_OUTCOME:'
         ),
         after='        if record.get("kind") == "complete":',
-        witnesses=("test_a_run_recorded_as_failed_does_not_consume_its_date",),
+        witnesses=(
+            "test_a_run_recorded_as_failed_does_not_consume_its_date",
+            "test_a_failing_stage_is_recorded_with_what_it_printed_and_the_run_exits_non_zero",
+            "test_a_stage_that_hangs_is_recorded_as_timed_out_and_failed_through_the_verb",
+        ),
     ),
     Mutant(
         label="the CLI does not read the run log",
         relative_path="src/volab/daily/__main__.py",
         before="    plan = plan_for(settings, as_of, completed=completed_dates(log))",
         after="    plan = plan_for(settings, as_of)",
-        witnesses=("test_the_cli_reports_a_recorded_completion_as_already_done",),
+        witnesses=(
+            "test_the_cli_reports_a_recorded_completion_as_already_done",
+            "test_an_already_done_date_runs_nothing_and_leaves_the_log_byte_identical",
+        ),
     ),
     Mutant(
         label="a torn line raises instead of being skipped",
@@ -210,7 +236,12 @@ MUTANTS: tuple[Mutant, ...] = (
             "    runs = run_stages(plan.stages, timeout_seconds=STAGE_TIMEOUT_SECONDS)\n"
             "    run_id = record_start(log, plan, at=clock(), sha=sha, dirty=dirty)\n"
         ),
-        witnesses=("test_the_start_line_is_on_disk_before_the_first_stage_starts",),
+        witnesses=(
+            "test_the_start_line_is_on_disk_before_the_first_stage_starts",
+            # Interrupted before the stages finish, nothing has been written yet: the abandoned-run
+            # test expects the start line to be there.
+            "test_a_run_abandoned_mid_stage_leaves_a_start_with_no_completion_and_a_retryable_date",
+        ),
     ),
     Mutant(
         label="a timed-out stage is recorded as having exited zero",
@@ -242,7 +273,6 @@ MUTANTS: tuple[Mutant, ...] = (
         before='                    "output": stage.output,',
         after='                    "output": "",',
         witnesses=(
-            "test_a_completion_refers_to_the_start_by_id_and_leaves_its_line_byte_identical",
             "test_a_failing_stage_is_recorded_with_what_it_printed_and_the_run_exits_non_zero",
             "test_the_record_keeps_the_tail_and_the_dropped_count_of_a_flooding_stage",
             "test_the_start_line_is_on_disk_before_the_first_stage_starts",

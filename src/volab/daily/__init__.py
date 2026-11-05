@@ -82,12 +82,14 @@ class Plan:
 
 
 # The pipeline order, which is the order the README documents. The three ledger writers are
-# absent by decision (R158 Q2) and the module docstring says why; the forecast stage joins this
-# tuple with P4-06, once there is a champion to forecast from.
+# absent by decision (R158 Q2) and the module docstring says why. The forecast stage is last and
+# writes only its own log; until P4-06b supplies a champion it refuses, which fails the run
+# rather than recording a day nothing was forecast on.
 LIVE_STAGES: tuple[Stage, ...] = (
     Stage(name="ingest", module="volab.ingest", argv=("backfill",)),
     Stage(name="features", module="volab.features", argv=("build",)),
     Stage(name="leaderboard", module="volab.leaderboard", argv=()),
+    Stage(name="forecast", module="volab.daily.forecast", argv=()),
 )
 
 
