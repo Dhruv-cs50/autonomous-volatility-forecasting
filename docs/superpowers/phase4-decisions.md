@@ -287,3 +287,66 @@ that the tree does not keep.** Three seats, each blind where the others see:
 **What this costs if it is wrong:** a paragraph in each brief, and a story that comes back
 unfinished with a report instead of finished with a workaround. Phase 4 has now had two stories
 come back that way (P4-03 on the clock guard, P4-06a on the stage `argv`), and both were right to.
+
+---
+
+## R163 — the daily path now *invokes* `walkforward`, which R158 Q2 said it never would. The
+guarantee survives; the phrase "by construction" does not
+
+**This is a deviation from a decision the user made, recorded here rather than absorbed into a
+board row, and it is the user's to ratify or reverse.**
+
+R158 Q2 records the user's choice of **option A** for the live path: the daily run "never invokes"
+`volab.walkforward`, `volab.compare` or `volab.evaluators`, and appends instead to a forecast log
+of its own, so that the three reported ledgers are "untouchable **by construction** and not by
+discipline, which is the distinction this project exists to make".
+
+P4-06c broke the letter of that, under an instruction from this orchestrator and not on its own
+initiative. The reasoning, and why the instruction was given:
+
+- A forecast line carries `value` and `observations`. Those require the champion to be **fitted**
+  at the forecast date, which is a store read and a walk-forward fit.
+- P4-06a and P4-06b each refused to fabricate them — correctly (R162) — so the stage sat refusing,
+  and a `run` could never complete a day even on a dev date. A scheduler that can never record a
+  completed day is not a scheduler.
+- The alternative was a second fitting path inside `volab.daily`, duplicating `walkforward`'s
+  refit-at-an-origin logic. **That is worse**: this project's whole argument is that one
+  deterministic pipeline owns the fitting and the scoring, and a second copy of it inside the
+  scheduler is precisely the drift the harness exists to prevent. R151's rule — derive, never
+  re-list — applies to code paths too.
+
+So the forecast stage calls `volab.walkforward.evaluate` and `load_targets` for a single origin
+with a cohort of one, and lazily imports `volab.compare.cohorts` to rebuild the champion's model
+object, because the registry of contestants lives there.
+
+### What is actually still guaranteed, stated exactly
+
+| claim | status |
+|---|---|
+| the daily path appends nothing to `data/trials.jsonl`, `data/comparisons.jsonl` or `data/decisions.jsonl` | **holds**, and is what Q2 was protecting |
+| it is guaranteed **by construction** — the writers are unreachable | **false now.** The writers are reachable through the import graph; what stops a write is that nothing calls them |
+| it is guaranteed by **tests and discipline** | **true**: a tripwire on the writer, a byte-identical check on both ledgers either side of a run, and P4-04's transitive import check |
+
+**Ruling: the guarantee is demoted from *construction* to *tested discipline*, and every document
+that states it must say which it is.** A guarantee that rests on nothing calling a reachable
+function is weaker than one that rests on the function being absent, and the difference is exactly
+the kind this project refuses to let a sentence blur. The board, the design's §2.2 and this ruling
+now all say "tested", not "by construction".
+
+**What the user may want instead**, put plainly because it is their decision and not this
+orchestrator's:
+
+1. **Ratify it.** The fitting stays in `walkforward` where it belongs, and the no-write guarantee
+   rests on the tripwire, the ledger check and the import check.
+2. **Reverse it**, and accept that the forecast stage cannot produce a forecast until Phase 6
+   gives the reveal a fitting path of its own — the scheduler then ships able to plan, run and
+   record, but never to forecast.
+3. **Narrow it**: extract the refit-at-an-origin seam out of `volab.walkforward` into something
+   that imports no sink at all, so that "by construction" becomes true again. This is real work,
+   it touches the module every recorded figure in the project came from, and it is not Phase 4's
+   to start without being asked.
+
+**What this costs if it is wrong:** option 1 leaves a scheduler whose honesty about the ledgers is
+a property of its tests rather than of its shape, in a project whose README says refusal "has to
+live in the data layer, where it can be mechanical". That is a real downgrade, which is why it is
+a numbered ruling and a question to the user rather than a line in a commit message.
