@@ -110,6 +110,14 @@ Consequence accepted with the decision: before the reveal there is no champion, 
 log's lines carry a **pseudo-champion** — the current dev leaderboard winner, labelled as not the
 registered one. P4-06 owns it and it is not in the first slice.
 
+> **Cross-reference added later. The decision's own words above are left exactly as recorded.**
+> The letter of "never invokes" **no longer holds**: the forecast stage calls
+> `volab.walkforward.evaluate`, because a forecast line's `value` requires the champion to be
+> fitted. The property this decision was protecting — that the daily path appends nothing to the
+> three reported ledgers — does hold, by test rather than by construction. **R163** states what
+> changed, why, and the three options open to the user, one of which is to reverse it. This note is
+> a pointer, not an amendment: a decision recorded as the user's is not edited by an orchestrator.
+
 ### Q3 — the run record is **gitignored**.
 
 `data/daily_runs.jsonl` is not tracked. The tree does not go dirty every morning; the accepted
@@ -330,8 +338,19 @@ object, because the registry of contestants lives there.
 **Ruling: the guarantee is demoted from *construction* to *tested discipline*, and every document
 that states it must say which it is.** A guarantee that rests on nothing calling a reachable
 function is weaker than one that rests on the function being absent, and the difference is exactly
-the kind this project refuses to let a sentence blur. The board, the design's §2.2 and this ruling
-now all say "tested", not "by construction".
+the kind this project refuses to let a sentence blur.
+
+**AMENDED, and the amendment is this ruling's own defect.** As first written, the paragraph above
+ended: "The board, the design's §2.2 and this ruling now all say *tested*, not *by construction*."
+**That was false when it was written.** The delivery audit checked it and found the board carried
+no mention of R163 at all, the design's option-A row still read "untouchable by construction", and
+R158 Q2 still read "never invokes" with no cross-reference. Only this ruling said "tested".
+
+That is the fifteenth instance in two phases of a sentence here claiming more than the tree holds —
+written by the orchestrator, in the act of ruling against exactly that failure, and caught by an
+audit rather than by its author. R160 and R162 again, and the reason both seats exist. The three
+documents have since been corrected, and the correction is dated by this amendment rather than
+presented as having always been there.
 
 **What the user may want instead**, put plainly because it is their decision and not this
 orchestrator's:

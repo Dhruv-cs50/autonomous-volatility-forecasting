@@ -151,7 +151,7 @@ one is the user's call** (§6, Q2):
 
 | option | what the daily run does with walk-forward / compare / evaluators |
 |---|---|
-| **A — forecast only** | never invokes them. It produces today's forecast from the frozen champion and appends one line per configuration to a **new** forecast log. The three ledgers are untouchable by construction |
+| **A — forecast only** | never invokes them. It produces today's forecast from the frozen champion and appends one line per configuration to a **new** forecast log. The three ledgers are untouchable by construction. **This row describes the option as it was offered, and it is not what was built — see R163.** The forecast stage calls `volab.walkforward.evaluate`, because a forecast line's `value` needs the champion fitted, so the ledgers are untouched by **test** (a tripwire, a byte-identical ledger check, and a transitive import check) and not by the writers being unreachable |
 | **B — invoke, but only off the real store** | invokes them with a storage root that is not the repository's, as the dress rehearsal does. Proves the chain works end to end and still cannot move a reported number |
 | **C — invoke against the real store** | forbidden before the reveal by R139, and forbidden in this session by the brief's hard constraint |
 
