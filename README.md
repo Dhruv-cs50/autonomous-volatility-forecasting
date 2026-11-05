@@ -232,6 +232,13 @@ uv run --locked mypy src && uv run --locked pytest -q
 `--locked` matters: `--frozen` installs from the lock without comparing it to `pyproject.toml`,
 and a bare `uv run` re-locks silently.
 
+### Running it unattended
+
+`python -m volab.daily` is built to be run by a scheduler, and nothing in this repository installs
+one. A `launchd` plist and a `cron` line, with the install and uninstall commands for you to run
+yourself, are in [`docs/phase4-daily-trigger.md`](docs/phase4-daily-trigger.md), which also says
+what a scheduled run does to the working tree before you create the trigger.
+
 ## Layout
 
 ```
