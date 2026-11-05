@@ -34,14 +34,24 @@ exactly one completion line, ``done`` if every stage exited zero and ``failed`` 
 each stage's bounded output. If the process is interrupted between the two writes, the start line
 stands alone and the date stays retryable (``completed_dates``).
 A Ctrl-C kills the running stage's process group first (``run_stages``); a SIGTERM to ``run``
-does not -- the stage, in its own session, runs on -- and **there is no run lock**, so a retry can
-overlap an abandoned run. ``volab.daily.runner`` states both.
+does not -- the stage, in its own session, runs on, so a retry can overlap an abandoned run.
+
+**One ``run`` at a time, by a lock that refuses and does not wait.** Before the start line, a
+``work`` plan takes ``run_lock`` on ``daily_run.lock`` beside the run log (so an injected ``root``
+gets its own). A second run finds it held, prints ``outcome locked`` and returns at once having
+written nothing -- no start line, so it cannot look like an abandoned run. Once the lock is held
+the log is read again: a date another run completed in the meantime prints
+``completed_elsewhere`` and runs nothing. A plan that is not ``work`` never touches the lock.
+``volab.daily.runner`` states what the lock does and does not cover.
 
 **Exit codes.** 1 for a refusal, copied from ``volab.walkforward``'s refusal of a ``--to`` past
 ``dev_end`` rather than invented: an unattended job's wrapper reads exit codes, and a sealed date is
 not a successful morning. 2 for a run in which a stage failed or timed out, so a wrapper can tell
-"the date is sealed" from "the work broke". A closed exchange and an already-completed date are 0 --
-those are the job correctly having nothing to do. The verb list is an ``argparse`` ``choices``
+"the date is sealed" from "the work broke". 3 (``RUN_LOCKED_EXIT_CODE``) when another run holds the
+lock: not a sealed date and not broken work, and the locked run has written nothing, so a wrapper
+may simply fire again later. It is distinct from ``completed_elsewhere``, which is 0 -- the date is
+done. A closed exchange and an already-completed date are 0 -- those are the job correctly having
+nothing to do. The verb list is an ``argparse`` ``choices``
 tuple, as every other CLI in this project uses.
 
 ``root`` is injectable for the same reason ``volab.compare``'s ``main`` takes a ``sink``, and it
@@ -74,11 +84,15 @@ from volab.daily.runlog import (
     record_start,
     run_log_path,
 )
-from volab.daily.runner import STAGE_TIMEOUT_SECONDS, run_stages
+from volab.daily.runner import STAGE_TIMEOUT_SECONDS, LockHeld, run_lock, run_stages
 from volab.store import git_state
 
 # What ``run`` exits with when it ran and a stage did not succeed. 1 is the refusal's.
 STAGE_FAILED_EXIT_CODE = 2
+
+# What ``run`` exits with when another run holds the lock: not 1 (a sealed date) and not 2 (the
+# work broke), because "someone else is already doing it" is neither.
+RUN_LOCKED_EXIT_CODE = 3
 
 # The exchange's own timezone, because "today" for a job that asks the XNYS calendar whether it is
 # a session must be the date in New York, not on the machine. ``volab.sessions`` keeps its copy
@@ -105,6 +119,11 @@ def _now() -> dt.datetime:
 def _today() -> dt.date:
     """Today's date in the exchange's timezone, from the seam and not from a clock of its own."""
     return _date_in_exchange_tz(_now())
+
+
+def _lock_path(log: Path) -> Path:
+    """Beside the run log, so an injected ``root`` gets its own lock and ``data/**`` ignores it."""
+    return log.with_name("daily_run.lock")
 
 
 def _execute(plan: Plan, log: Path, clock: Callable[[], dt.datetime]) -> int:
@@ -162,7 +181,17 @@ def main(
     for stage in plan.stages:
         print(f"stage {stage.name}: python -m {stage.module} {' '.join(stage.argv)}".rstrip())
     if arguments.command == "run" and plan.outcome == "work":
-        return _execute(plan, log, _now if clock is None else clock)
+        try:
+            with run_lock(_lock_path(log)):
+                if plan.as_of in completed_dates(log):
+                    print("outcome completed_elsewhere")
+                    print("another run completed this date while this one waited for the lock")
+                    return 0
+                return _execute(plan, log, _now if clock is None else clock)
+        except LockHeld:
+            print("outcome locked")
+            print(f"another daily run holds {_lock_path(log)}; this run has written nothing")
+            return RUN_LOCKED_EXIT_CODE
     return 1 if plan.outcome == "refused" else 0
 
 

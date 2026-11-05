@@ -11,8 +11,11 @@ of the file write one, always under ``tmp_path`` and always with ``LIVE_STAGES``
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import json
 import os
+import signal
+import subprocess
 import sys
 import time
 import tracemalloc
@@ -72,6 +75,18 @@ _PROBES = {
         "grandchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
         "pathlib.Path(sys.argv[1]).write_text(f'{os.getpid()} {grandchild.pid}')\n"
         "time.sleep(60)\n"
+    ),
+    # Tries to take the run lock named in argv[1], and exits 0 only if it could not.
+    "probe_lock": (
+        "import fcntl, os, sys\n"
+        "descriptor = os.open(sys.argv[1], os.O_RDWR)\n"
+        "try:\n"
+        "    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "except BlockingIOError:\n"
+        "    print('lock refused')\n"
+        "    sys.exit(0)\n"
+        "print('lock taken')\n"
+        "sys.exit(7)\n"
     ),
     # The ordering witness. argv[1] is the run-log path. Exits 0 only if that file already holds
     # exactly one line and it is a start line: not absent, not empty, not already completed.
@@ -568,3 +583,115 @@ def test_an_already_done_date_runs_nothing_and_leaves_the_log_byte_identical(
     assert "already_done" in capsys.readouterr().out
     assert log.read_bytes() == before
     assert not marker.exists()
+
+
+# --- the run lock -----------------------------------------------------------------------------
+
+_HOLDER = (
+    "import fcntl, os, pathlib, sys, time\n"
+    "descriptor = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT)\n"
+    "fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+    "pathlib.Path(sys.argv[2]).write_text('held')\n"
+    "time.sleep(60)\n"
+)
+
+
+def _hold_the_lock(root: Path, marker: Path) -> subprocess.Popen[bytes]:
+    """A real second process that holds ``root``'s run lock until it is killed.
+
+    Returns only once the holder's marker file exists, which it writes after its ``flock``
+    succeeded; if it never does, the test fails here rather than passing for the wrong reason.
+    """
+    lock = daily_cli._lock_path(run_log_path(root))
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    holder = subprocess.Popen([sys.executable, "-c", _HOLDER, str(lock), str(marker)])
+    try:
+        deadline = time.monotonic() + 10
+        while not marker.exists():
+            assert holder.poll() is None, "the holder exited before taking the lock"
+            assert time.monotonic() < deadline, "the holder never took the lock"
+            time.sleep(0.02)
+    except BaseException:
+        holder.kill()
+        holder.wait()
+        raise
+    return holder
+
+
+def _kill_and_reap(holder: subprocess.Popen[bytes]) -> None:
+    holder.kill()
+    holder.wait()
+
+
+def test_a_second_run_refuses_while_another_holds_the_lock_and_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    marker = tmp_path / "ran"
+    _use_stages(monkeypatch, _stage("a", "probe_marker", str(marker)))
+    holder = _hold_the_lock(tmp_path, tmp_path / "held")
+    try:
+        code = _run(tmp_path, A_SESSION_IN_DEV, clock=_clock(_START, _END))
+    finally:
+        _kill_and_reap(holder)
+
+    assert code == daily_cli.RUN_LOCKED_EXIT_CODE
+    assert "locked" in capsys.readouterr().out
+    assert not run_log_path(tmp_path).exists()
+    assert not marker.exists()
+
+
+def test_a_lock_left_behind_by_a_killed_run_does_not_block_the_next_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _use_stages(monkeypatch, _stage("a", "probe_exit", "0"))
+    holder = _hold_the_lock(tmp_path, tmp_path / "held")
+    holder.send_signal(signal.SIGKILL)
+    holder.wait()
+    assert daily_cli._lock_path(run_log_path(tmp_path)).exists()
+
+    code = _run(tmp_path, A_SESSION_IN_DEV, clock=_clock(_START, _END))
+
+    assert code == 0
+    start, complete = _records(tmp_path)
+    assert (start["kind"], complete["kind"], complete["outcome"]) == ("start", "complete", "done")
+
+
+def test_the_lock_is_released_so_the_next_run_can_take_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _use_stages(monkeypatch, _stage("a", "probe_exit", "0"))
+    other_day = dt.date(2025, 12, 31)
+
+    assert _run(tmp_path, A_SESSION_IN_DEV, clock=_clock(_START, _END)) == 0
+    assert _run(tmp_path, other_day, clock=_clock(_START, _END)) == 0
+
+
+def test_a_stage_cannot_take_the_run_lock_while_the_run_holds_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    lock = daily_cli._lock_path(run_log_path(tmp_path))
+    _use_stages(monkeypatch, _stage("probe", "probe_lock", str(lock)))
+
+    code = _run(tmp_path, A_SESSION_IN_DEV, clock=_clock(_START, _END))
+
+    (stage,) = _records(tmp_path)[1]["stages"]  # type: ignore[misc]
+    assert stage["output"] == "lock refused\n"
+    assert (stage["exit_code"], code) == (0, 0)
+
+
+def test_a_run_that_takes_the_lock_leaves_the_date_done_and_the_lock_file_behind(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _use_stages(monkeypatch, _stage("a", "probe_exit", "0"))
+    lock = daily_cli._lock_path(run_log_path(tmp_path))
+
+    assert _run(tmp_path, A_SESSION_IN_DEV, clock=_clock(_START, _END)) == 0
+
+    assert completed_dates(run_log_path(tmp_path)) == frozenset({A_SESSION_IN_DEV})
+    # Never unlinked: unlinking lets two processes hold locks on two inodes under one name.
+    assert lock.exists()
+    descriptor = os.open(lock, os.O_RDWR)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)  # and it is free again
+    finally:
+        os.close(descriptor)

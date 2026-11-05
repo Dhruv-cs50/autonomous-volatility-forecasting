@@ -56,10 +56,18 @@ the real stages; it is there to bound a hang, not to time the pipeline.
   the process without unwinding, so the stage -- in its own session, which is also why the
   terminal's Ctrl-C does not reach it -- keeps running with the start line written and no
   completion. Nothing handles that.
-- there is **no run lock**. Two ``run`` processes for one date (an abandoned stage's run and the
-  next morning's retry, or two launchd firings) can overlap and both fit and append; the
-  forecast log's duplicate-key refusal makes a second *forecast* line fail, but nothing stops the
-  stages themselves running twice.
+- **a run lock keeps a second ``run`` out, and a killed run cannot wedge it** (``run_lock``). It is
+  ``flock(LOCK_EX | LOCK_NB)`` on a file that is never unlinked, and the second run **refuses and
+  does not wait**: ``LockHeld`` is raised at once, and the CLI turns it into a distinct exit code
+  without having written a start line, because a start with no completion would claim an
+  abandoned run for a run that never started a stage. The kernel drops a ``flock`` when the last
+  descriptor on the open file description closes, which happens when the holder dies however it
+  dies -- SIGKILL included -- so the file left behind is inert: the next run opens it and takes the
+  lock. There is no staleness test, no timeout and no pid check. The pid written into the file is
+  for a person looking at a held lock and **decides nothing**. The descriptor is opened with
+  ``os.open``, which is non-inheritable, so a stage never holds the run's lock open. What the lock
+  does not cover: a ``SIGKILL``ed ``run`` releases it while its stage, in its own session, may
+  still be running, so the next run can start a stage beside that orphan.
 
 **This module reads no wall clock and records nothing.** It never asks what the date or time is
 (nothing it returns depends on either); the only time it uses is a *duration*, as a
@@ -72,6 +80,7 @@ which writes all of it into the completion line.
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import os
 import select
 import signal
@@ -79,7 +88,9 @@ import subprocess
 import sys
 import threading
 from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
 
 from volab.daily import Stage
 from volab.daily.runlog import StageResult
@@ -104,6 +115,35 @@ STAGE_TIMEOUT_SECONDS = 2 * 60 * 60
 # child's -9, which a stage could also have earned by being OOM-killed; ``timed_out`` is what
 # distinguishes the two.
 TIMED_OUT_EXIT_CODE = 124
+
+
+class LockHeld(Exception):
+    """Another run holds the lock. Carries the lock path."""
+
+
+@contextlib.contextmanager
+def run_lock(path: Path) -> Iterator[None]:
+    """Hold an exclusive ``flock`` on ``path`` for the ``with`` body; raise ``LockHeld`` if held.
+
+    Never waits. The file is created if absent and **never unlinked**: unlinking would let two
+    processes lock two inodes under one name. ``flock`` and not ``lockf``, because POSIX record
+    locks are dropped by *any* close of *any* descriptor to the file in the process. The kernel
+    releases the lock when the descriptor closes -- here, or when the process dies -- so a file
+    left behind by a killed run is inert and the next call takes it. The pid written into it is
+    for a person to read and is **not consulted** by anything.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)  # non-inheritable: stages lack it
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise LockHeld(path) from None
+        os.ftruncate(descriptor, 0)
+        os.write(descriptor, f"{os.getpid()}\n".encode())
+        yield
+    finally:
+        os.close(descriptor)
 
 
 @dataclass(frozen=True)
