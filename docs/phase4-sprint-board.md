@@ -216,14 +216,30 @@ trailing newline. Reproduced: a forecast log ending `{"as_of": "2026-11-0` took 
 run log, torn bytes plus a start and a `done` completion gave `completed_dates() == frozenset()`.
 So a retry of a partly-written day loses its first new line *and* hides that key from the duplicate
 check — the day can be recorded `done` with a configuration silently missing — and a run log in that
-state never reads as complete, so the whole pipeline re-runs forever. **Both existing tests pass
-against the broken code**: one asserts a return count and never reads the file back, the other
-tears and reads but never appends. Fixing it is **P4-08a**.
+state never reads as complete, so the whole pipeline re-runs forever. **Both existing tests passed
+against the broken code**: one asserted a return count and never read the file back, the other tore
+and read but never appended.
+
+**FIXED in P4-08a (`23a5190`), red first.** Six new tests were run against the unfixed code and
+each failed on the glue for the stated reason — `b'{"kind": "complete", "ref": "ab{"kind": "start"…'`
+as one line, and the duplicate-key consequence reproduced as `('2026-11-04', 'SPY', 5) in set()`.
+The fix is one shared writer, `runlog.append_text`, which opens `"ab+"`, reads the last byte, and
+writes `b"\n" + text` in a **single** write when the file is non-empty and does not end in a
+newline — so the fragment stays on its own line where `_lines` and `_existing_keys` already skip it,
+nothing is truncated or rewritten, and a crash cannot land between the separator and the record. The
+forecast writer now calls it instead of carrying a copy. Each test reads the bytes back and asserts
+the prefix survives, the file ends in a newline with no blank line, the fragment is on its own line
+and still skipped, every appended line parses, and the derived views agree. **What it still does not
+guarantee, now said in the docstrings:** the torn line remains unparseable and the record it carried
+is lost — the fix only stops it taking the next one with it; the tail check is not atomic, so two
+writers racing on one file are not made safe (nothing here runs two); and `fsync` is a request to the
+OS, not a promise about hardware. Pre-existing torn files are not repaired.
 
 The rest, each either fixed here or carried:
 
 | finding | state |
 |---|---|
+| **A torn final line corrupted the next append** (above) | **FIXED** (`23a5190`) |
 | **The `root` injection and "a whole daily run" claim more than they cover.** `LIVE_STAGES` hands no stage a `--root`, so under `main(["run"], root=tmp)` the real forecast stage would read the repository's trial ledger and write the repository's `data/forecasts.jsonl`; `ingest` would write `data/raw` and the tracked payloads. The rehearsal substitutes a probe for `ingest` and `features` and hands the forecast shim an explicit `--root`, which its helper admits in a docstring while the module docstring and the test name do not | **OPEN — P4-08b.** The test is sound; the claim around it is not |
 | **"No code path can write `registered`" is a literal lint, not a "cannot".** `"reg"+"istered"`, `f'regist{"ered"}'`, `"REGISTERED".lower()`, a generator over `_KINDS`, and `take_fingerprint(kind=var)` all pass the scan, and both `take_fingerprint` and `Fingerprint` accept any `kind` in `_KINDS` | **OPEN — P4-08b.** The fix is to make the claim true, not to widen the lint |
 | **The clock guard misses more than its docstring admits**: `pd.Timestamp("now")`, `os.stat().st_mtime`, `uuid.uuid1()`, `os.times()`, `os.clock_gettime()`, `threading.Timer`, `importlib.import_module("time")` — and `runner.py` says "this module takes no clock" while arming a `Timer` | **OPEN — P4-08b** |
