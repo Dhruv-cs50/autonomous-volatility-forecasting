@@ -534,7 +534,11 @@ def _functions_named(source: str, name: str) -> int:
 def test_the_clock_is_called_in_exactly_one_function_in_the_whole_package() -> None:
     """One seam, named, so every refusal downstream is a pure function of a date.
 
-    Asserted as an exact map rather than a count: a second call inside ``_today`` would be
+    The seam is ``_now``, which returns an **instant**: the ``run`` verb's start and completion
+    lines need a real ``datetime``, and a seam that returned only a date left a run no legal
+    source for one. ``_today`` is now ``_date_in_exchange_tz(_now())`` and calls no clock itself.
+
+    Asserted as an exact map rather than a count: a second call inside ``_now`` would be
     harmless, and a call anywhere else is the defect, so the thing to pin is *where*.
     """
     sources = {
@@ -544,11 +548,11 @@ def test_the_clock_is_called_in_exactly_one_function_in_the_whole_package() -> N
 
     sites = {name: _clock_call_sites(text) for name, text in sources.items()}
     assert {name: sorted(found) for name, found in sites.items() if found} == {
-        "__main__.py": ["_today"]
+        "__main__.py": ["_now"]
     }
-    # And exactly one function is called ``_today``, so the map above cannot be satisfied by a
+    # And exactly one function is called ``_now``, so the map above cannot be satisfied by a
     # second seam of the same name -- which is how a reviewer got past the first version.
-    assert _functions_named(sources["__main__.py"], "_today") == 1
+    assert _functions_named(sources["__main__.py"], "_now") == 1
 
 
 def test_the_clock_guard_can_fail() -> None:
@@ -624,7 +628,15 @@ def test_a_completion_refers_to_the_start_by_id_and_leaves_its_line_byte_identic
         "kind": "complete",
         "ref": run_id,
         "outcome": "done",
-        "stages": [{"name": "ingest", "exit_code": 0}],
+        "stages": [
+            {
+                "name": "ingest",
+                "exit_code": 0,
+                "output": "",
+                "dropped_bytes": 0,
+                "timed_out": False,
+            }
+        ],
         "ended_at": _LATER.isoformat(),
     }
     assert completed_dates(path) == frozenset({A_SESSION_IN_DEV})
@@ -742,8 +754,32 @@ def test_the_exchange_date_is_taken_from_the_instant_and_not_from_utc() -> None:
     ) == dt.date(2026, 11, 5)
 
 
-def test_the_one_clock_call_goes_through_that_helper() -> None:
-    assert daily_cli._today() == daily_cli._date_in_exchange_tz(dt.datetime.now(tz=dt.UTC))
+def test_the_one_clock_call_is_an_aware_utc_instant_that_is_now() -> None:
+    """``_now`` is the seam: a ``datetime``, not a date, in UTC, and the current moment.
+
+    The bracketing pins "current" without a sleep: a seam returning a fixed or stale instant falls
+    outside it, and one returning a date or a naive datetime fails the type and offset checks.
+    """
+    before = dt.datetime.now(tz=dt.UTC)
+    instant = daily_cli._now()
+    after = dt.datetime.now(tz=dt.UTC)
+
+    assert isinstance(instant, dt.datetime)
+    assert instant.utcoffset() == dt.timedelta(0)
+    assert before <= instant <= after
+
+
+def test_today_is_the_exchange_date_of_the_seams_instant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_today`` takes its answer from ``_now`` and from nothing else.
+
+    At 02:00 UTC on 5 November it is still the 4th in New York; the replaced seam is what proves
+    ``_today`` neither reads the machine's clock itself nor takes the UTC date.
+    """
+    monkeypatch.setattr(daily_cli, "_now", lambda: dt.datetime(2026, 11, 5, 2, 0, tzinfo=dt.UTC))
+
+    assert daily_cli._today() == dt.date(2026, 11, 4)
 
 
 def test_the_cli_takes_its_default_date_from_the_clock_seam(

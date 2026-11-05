@@ -53,10 +53,20 @@ COMPLETED_OUTCOME = "done"
 
 @dataclass(frozen=True)
 class StageResult:
-    """What one stage did. ``exit_code`` is the stage's own verdict, not an interpretation."""
+    """What one stage did. ``exit_code`` is the stage's own verdict, not an interpretation.
+
+    ``output`` is the bounded tail of what the stage printed and ``dropped_bytes`` how much fell
+    off its front (zero means ``output`` is whole); ``timed_out`` says the exit code is the
+    runner's, because the stage was killed, and not the stage's own. They are in the record
+    because an unattended job's log is the only place a failing stage's reason survives. The
+    defaults let a caller with only a verdict -- a test, a rehearsal -- still build one.
+    """
 
     name: str
     exit_code: int
+    output: str = ""
+    dropped_bytes: int = 0
+    timed_out: bool = False
 
 
 def run_log_path(root: Path) -> Path:
@@ -119,14 +129,27 @@ def record_completion(
     stages: tuple[StageResult, ...],
     at: dt.datetime,
 ) -> None:
-    """Write the completion line for ``run_id``. The start line is left exactly as it was."""
+    """Write the completion line for ``run_id``. The start line is left exactly as it was.
+
+    Each stage is written with its bounded output, so the line is as large as the stages made it:
+    at most ``OUTPUT_BOUND_BYTES`` of output per stage, which ``volab.daily.runner`` enforces.
+    """
     _append(
         path,
         {
             "kind": "complete",
             "ref": run_id,
             "outcome": outcome,
-            "stages": [{"name": stage.name, "exit_code": stage.exit_code} for stage in stages],
+            "stages": [
+                {
+                    "name": stage.name,
+                    "exit_code": stage.exit_code,
+                    "output": stage.output,
+                    "dropped_bytes": stage.dropped_bytes,
+                    "timed_out": stage.timed_out,
+                }
+                for stage in stages
+            ],
             "ended_at": at.isoformat(),
         },
     )

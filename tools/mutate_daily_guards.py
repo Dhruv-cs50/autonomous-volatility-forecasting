@@ -1,4 +1,4 @@
-"""Plant nine defects in ``volab.daily`` and check each one fails exactly its own witness.
+"""Plant defects in ``volab.daily`` and check each one fails exactly its own witness.
 
 **Why this is committed.** P4-01 and P4-02's evidence is the sentence "nine planted mutants, each
 failing exactly the witnesses named against it and no other test", and R32 says a stated number must
@@ -15,9 +15,9 @@ to find defects. R131's caution applies all the same: a plant-and-revert tempora
 every concurrent agent can see, so run this with ``src/`` to yourself, never beside another
 session's suite run.
 
-It writes nothing outside the three source files it plants into -- ``__init__.py``, ``runlog.py``
-and ``__main__.py`` -- plus a ``.orig`` sidecar beside each while that file is planted, and
-pytest's own caches. No ledger, no store read, no network.
+It writes nothing outside the four source files it plants into -- ``__init__.py``, ``runlog.py``,
+``runner.py`` and ``__main__.py`` -- plus a ``.orig`` sidecar beside each while that file is
+planted, and pytest's own caches. No ledger, no store read, no network.
 
 **It refuses to start unless the suite is already green**, because a witness that was red before
 the plant would read as "bites". And it writes the original text to ``<file>.orig`` before planting,
@@ -25,6 +25,11 @@ so a ``SIGKILL`` between the plant and the restore leaves the original on disk r
 a dead process's memory; the sidecar is removed once the restore is verified byte for byte.
 
     uv run --locked python tools/mutate_daily_guards.py
+
+The witnesses live in ``tests/test_daily.py`` and ``tests/test_daily_runner.py``, and both files
+are run for every mutant. Two mutants (the verb not passing its timeout, the kill not reaching a
+grandchild) make a probe stage sleep out its sixty seconds before the test can fail, so a full run
+takes a few minutes.
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ import sys
 from dataclasses import dataclass
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
+_SUITE = ("tests/test_daily.py", "tests/test_daily_runner.py")
 
 
 @dataclass(frozen=True)
@@ -193,13 +199,90 @@ MUTANTS: tuple[Mutant, ...] = (
         after="        parsed = json.loads(line)",
         witnesses=("test_a_torn_final_line_does_not_make_the_log_unreadable",),
     ),
+    Mutant(
+        label="the start line is written after the stages, not before",
+        relative_path="src/volab/daily/__main__.py",
+        before=(
+            "    run_id = record_start(log, plan, at=clock(), sha=sha, dirty=dirty)\n"
+            "    runs = run_stages(plan.stages, timeout_seconds=STAGE_TIMEOUT_SECONDS)\n"
+        ),
+        after=(
+            "    runs = run_stages(plan.stages, timeout_seconds=STAGE_TIMEOUT_SECONDS)\n"
+            "    run_id = record_start(log, plan, at=clock(), sha=sha, dirty=dirty)\n"
+        ),
+        witnesses=("test_the_start_line_is_on_disk_before_the_first_stage_starts",),
+    ),
+    Mutant(
+        label="a timed-out stage is recorded as having exited zero",
+        relative_path="src/volab/daily/runner.py",
+        before="            exit_code = TIMED_OUT_EXIT_CODE",
+        after="            exit_code = 0",
+        witnesses=(
+            "test_a_stage_past_its_timeout_is_a_failed_stage_and_the_run_stops",
+            "test_a_stage_that_hangs_is_recorded_as_timed_out_and_failed_through_the_verb",
+        ),
+    ),
+    Mutant(
+        label="the verb does not pass the stage timeout to the runner",
+        relative_path="src/volab/daily/__main__.py",
+        before="run_stages(plan.stages, timeout_seconds=STAGE_TIMEOUT_SECONDS)",
+        after="run_stages(plan.stages)",
+        witnesses=("test_a_stage_that_hangs_is_recorded_as_timed_out_and_failed_through_the_verb",),
+    ),
+    Mutant(
+        label="the timeout kills the stage but not the stage's children",
+        relative_path="src/volab/daily/runner.py",
+        before="                os.killpg(process.pid, signal.SIGKILL)",
+        after="                process.kill()",
+        witnesses=("test_a_timeout_kills_the_stages_own_children_too",),
+    ),
+    Mutant(
+        label="the stage output is dropped from the completion line",
+        relative_path="src/volab/daily/runlog.py",
+        before='                    "output": stage.output,',
+        after='                    "output": "",',
+        witnesses=(
+            "test_a_completion_refers_to_the_start_by_id_and_leaves_its_line_byte_identical",
+            "test_a_failing_stage_is_recorded_with_what_it_printed_and_the_run_exits_non_zero",
+            "test_the_record_keeps_the_tail_and_the_dropped_count_of_a_flooding_stage",
+            "test_the_start_line_is_on_disk_before_the_first_stage_starts",
+            "test_a_stage_that_hangs_is_recorded_as_timed_out_and_failed_through_the_verb",
+        ),
+    ),
+    Mutant(
+        label="the clock seam returns a local date instead of a UTC instant",
+        relative_path="src/volab/daily/__main__.py",
+        before="    return dt.datetime.now(tz=dt.UTC)",
+        after="    return dt.date.today()",
+        witnesses=("test_the_one_clock_call_is_an_aware_utc_instant_that_is_now",),
+    ),
+    Mutant(
+        label="a failed run exits zero",
+        relative_path="src/volab/daily/__main__.py",
+        before="    return 0 if succeeded else STAGE_FAILED_EXIT_CODE",
+        after="    return 0",
+        witnesses=(
+            "test_a_failing_stage_is_recorded_with_what_it_printed_and_the_run_exits_non_zero",
+            "test_a_stage_that_hangs_is_recorded_as_timed_out_and_failed_through_the_verb",
+        ),
+    ),
+    Mutant(
+        label="run executes a plan that was not work",
+        relative_path="src/volab/daily/__main__.py",
+        before='    if arguments.command == "run" and plan.outcome == "work":',
+        after='    if arguments.command == "run" and plan.outcome != "refused":',
+        witnesses=(
+            "test_a_refused_or_closed_date_runs_nothing_and_leaves_no_file_behind[closed]",
+            "test_an_already_done_date_runs_nothing_and_leaves_the_log_byte_identical",
+        ),
+    ),
 )
 
 
 def _failing_tests() -> frozenset[str]:
-    """The names of every failing test in ``tests/test_daily.py``, the whole file.
+    """The names of every failing test in the two daily test files, whole.
 
-    **The whole file and not ``-k <witness>``**, which is what the first version of this script
+    **The whole files and not ``-k <witness>``**, which is what the first version of this script
     ran. Selecting the witness can only establish that the witness fails; the claim being made is
     that a planted defect fails **that witness and no other**, and a selected run cannot see the
     others. The difference matters in both directions: a mutant that also breaks four unrelated
@@ -207,7 +290,7 @@ def _failing_tests() -> frozenset[str]:
     incidental reason would read the same.
     """
     completed = subprocess.run(
-        [sys.executable, "-B", "-m", "pytest", "-q", "--tb=no", "-rf", "tests/test_daily.py"],
+        [sys.executable, "-B", "-m", "pytest", "-q", "--tb=no", "-rf", *_SUITE],
         cwd=REPO,
         capture_output=True,
         text=True,
@@ -218,7 +301,7 @@ def _failing_tests() -> frozenset[str]:
     return frozenset(
         line.split("::", 1)[1].split()[0]
         for line in completed.stdout.splitlines()
-        if line.startswith("FAILED tests/test_daily.py::")
+        if line.startswith(tuple(f"FAILED {path}::" for path in _SUITE))
     )
 
 
