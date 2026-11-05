@@ -222,3 +222,68 @@ over his own work still did not see them.
 **What this costs if it is wrong:** a review dispatch per story. Against it: three of the four
 overclaims were in the board, which is the document the next agent will work from, and one of them
 ("already_done") would have shipped a scheduler that re-ran a day it had already completed.
+
+---
+
+## R161 — a guard shaped around its first caller will refuse its second, and the seam moves rather
+than the guard
+
+P4-01 put the clock behind one seam, `_today()` in `volab.daily.__main__`, and a derived AST guard
+in `tests/test_daily.py` asserted that **exactly one function in the package reaches a clock**.
+That was right, and it was also shaped entirely around the only caller that existed: the plan,
+which needs a **date**.
+
+P4-03 then had to build the `run` verb, and `record_start` / `record_completion` need
+`started_at` and `ended_at` — **instants**. The package had no legal source for one. Every route
+round it (a lambda default, a function nested inside `_today`, an aliased import, `stat().st_mtime`)
+passes the AST scan and is plainly evasion. The engineer **stopped and reported the contradiction
+instead of evading the guard**, which is the behaviour this project wants and the reason the story
+came back unfinished rather than finished and wrong.
+
+**Ruling: when a guard makes a legitimate requirement unbuildable, move the seam and keep the
+guard's force; never widen the guard to let the new caller through.** Here that meant:
+
+- `_now() -> dt.datetime` becomes the one clock call — the most general thing a caller can need;
+- `_today()` becomes `_date_in_exchange_tz(_now())`, a **pure** function of the seam;
+- the guard's expected map moves from `_today` to `_now`, and nothing else about it changes: it
+  still fails a clock call anywhere else, still fails an `import time`, still catches a bare
+  reference and a literal `getattr`, still keeps its red witnesses and its floors.
+
+The seam is now one function returning the least-processed value, with every narrowing downstream
+of it and pure. That is the shape to reach for first next time: **a seam that returns the raw thing
+can serve a caller nobody has written yet, and a seam that returns a convenience cannot.**
+
+**What this costs if it is wrong:** one more hop between the clock and a date. Against it: the
+alternative on the table was an injected clock parameter threaded through the package, which is
+four more places a test can forget to inject and the guard cannot see.
+
+---
+
+## R162 — the next story's builder is a review seat, and it catches what the other two cannot
+
+R160 recorded that a review seat reads prose against execution and that a mutation probe cannot do
+that job. This sprint added a third seat, unplanned: **the engineer who is the first to depend on a
+claim.**
+
+Two of this board's own claims were falsified in wave 1, both by the builder of the neighbouring
+story and neither by a reviewer or a probe:
+
+| claim | who found it, and how |
+|---|---|
+| design §3.2: a stage's output is "captured into the run record" | the runner's builder, when it had bounded output in hand and found `record_completion` wrote only a `name` and an `exit_code`. The output had nowhere to go. Fixed in P4-03b: `StageResult` now carries `output`, `dropped_bytes` and `timed_out` |
+| the runner, implicitly: that a stage ends | the same engineer, reporting that a stage with no timeout can hang an unattended job forever. Nothing claimed otherwise, which is the point — the gap was in what nobody had said. Fixed in P4-03b: `STAGE_TIMEOUT_SECONDS`, a killed child, and a timed-out stage recorded as failed |
+
+Neither is the kind of defect a mutation probe can find: no test was wrong, and no planted change
+to existing code would have failed anything. Neither is quite what a review seat finds either —
+both were discovered by *needing the thing the claim promised* and finding it absent.
+
+**Ruling: a story's brief names the claims it is about to depend on, and the engineer reports any
+that the tree does not keep.** Three seats, each blind where the others see:
+
+1. the **mutation probe** — do the tests notice a change in the code?
+2. the **review seat** — does the prose describe what the code executes?
+3. the **next builder** — does the claim hold up when something finally leans on it?
+
+**What this costs if it is wrong:** a paragraph in each brief, and a story that comes back
+unfinished with a report instead of finished with a workaround. Phase 4 has now had two stories
+come back that way (P4-03 on the clock guard, P4-06a on the stage `argv`), and both were right to.
