@@ -193,7 +193,7 @@ how much each would mislead the next reader, and **none of them fixed in the pas
 | 1 | **R163 was absent from this board, the design still said "by construction", and R158 Q2 had no cross-reference** — while R163 itself claimed all three already said "tested". That claim was false when written, by the orchestrator, in the act of ruling against exactly that failure | **FIXED** in the same pass as this table, because a false claim about where a correction lives is worse than no claim: R163 now carries a dated amendment, the design's option-A row says what was actually built, and R158 Q2 carries a pointer with the user's own wording untouched |
 | 2 | **P4-04 was marked `todo` and P4-06c `in progress`, both committed**, and the wave table was two waves behind | **FIXED** above |
 | 3 | **P4-04's acceptance text contradicted the check that shipped** — it demanded no `walkforward` writer import, which R163 makes impossible | **FIXED** in the row itself, with the original wording quoted so the change is visible |
-| 4 | **"21 of 21 mutants" covers `tests/test_daily.py` and `tests/test_daily_runner.py` only.** The trigger guard, the registered-kind guard, the closure and pin tests, the rehearsal and the forecast stage have **no mutant at all** — while this board's Method promises a mutation for each derived guard | **OPEN — P4-08.** The figure is true and narrower than it reads |
+| 4 | ~~**"21 of 21 mutants" covers `tests/test_daily.py` and `tests/test_daily_runner.py` only.**~~ The trigger guard, the registered-kind guard, the closure and pin tests, the rehearsal and the forecast stage have **no mutant at all** — while this board's Method promises a mutation for each derived guard | **CLOSED — P4-08c (`8a88d0f`): 26 mutants, all biting exactly their named tests.** The five new ones each target a guard that had none: a `launchctl bootstrap` planted in `src/volab/errors.py` (fails only the trigger scan), `PSEUDO_KIND = "registered"`, an `import volab.evaluators.sink` in `champion.py` (fails only the writer-module pin), a stage the rehearsal **really runs** appending to the **real** `data/trials.jsonl`, and a default restored to `Splits.holdout_end` — which is **P4-05b's owed witness, now seen red**. The script also stopped hard-coding its test files: it resolves each witness name to the file defining it and refuses to start if a name is defined in none or in two. And it now protects the ledgers from its own plants: it copies both aside before the first plant, restores them byte for byte after any mutant that moves them, and **refuses to continue if a ledger moves under a mutant not declared `moves_ledger`** |
 | 5 | **The clock guard misses `p.stat().st_mtime`, `os.path.getmtime`, `os.times()` and `uuid.uuid1()`.** The audit ran each through the scan and got an empty set. `st_mtime` is named on this board as an evasion an engineer *refused*, and nothing stops it | **OPEN — P4-08.** A measured hole in the phase's central guard |
 | 6 | **The registered-kind guard misses `"reg" + "istered"`, `list(_KINDS).pop()` and `"REGISTERED".lower()`** | **OPEN — P4-08** |
 | 7 | **The forecast tripwire's `decisions.jsonl` comparison is vacuous**: the file does not exist, `_digest` returns `None` for a missing file, so it compares `None == None`. The tripwire also patches only `walkforward.append_trials` | **OPEN — P4-08.** A test that cannot fail is not a test (R159's not-empty rule, applied to a digest) |
@@ -250,7 +250,21 @@ The rest, each either fixed here or carried:
 | **The trigger document misdescribed the tree**: "one verb today", `run` "being built", and a claim that every real date is in the **holdout** region when `holdout_end` 2026-10-30 puts today in **`live`** | **FIXED.** That region error was the orchestrator's own, introduced while correcting a different staleness in the same document |
 | **The refusal says "the holdout is sealed" for a `live` date too** | **OPEN — P4-08b.** A reporting defect on the run's own output |
 | Vacuous or mis-named tests: `test_a_comment_naming_a_writer_entry_point_does_not_fire` cannot fail under any AST scan; `..._abandoned_mid_stage` patches `run_stages` to raise so no stage is ever in flight; `..._past_dev_end_...writes_nothing` passes with the `min()` bound removed; three tests assert the repository's forecast log is absent and will turn red the day the job legitimately writes it | **OPEN — P4-08b** |
-| `tools/README.md` says "thirteen planted defects" and that the probe runs "the whole of `tests/test_daily.py`"; the script holds 21 and runs two files | **OPEN — P4-08c**, with the mutants for the four uncovered guards |
+| `tools/README.md` said "thirteen planted defects" and that the probe runs "the whole of `tests/test_daily.py`" | **FIXED** (`8a88d0f`) |
+| **An eleventh guard hole, found by the probe story itself**: `"".join(("launch", "ctl"))` evades the trigger scan, whose folding handles `+` but not a `str.join` of literals. It was found because the script's own plant text tripped the guard until spelled that way | **OPEN — P4-08b1** |
+
+**One honesty note the probe story insisted on, and it is the right instinct.** The witness lists
+are **descriptive, not predictive**: they record what each plant was *measured* to break, and an
+earlier commit widened six of them to match what the probe observed, which makes "fails exactly its
+named tests" true partly by construction of the list. The script's docstring now says so, and says
+what the figure is actually worth — **every plant is noticed by something that names it** — rather
+than claiming one-to-one precision. The figure also covers only the six test files the witnesses
+name, which it now derives rather than hard-codes.
+
+**The probe's own caveat: `8a88d0f`'s 26-of-26 was measured in a `git archive` copy at `0c807b8`,
+not in this tree**, because its older mutants plant into `runlog.py` and P4-08a was editing that
+file — a restore would have overwritten live work (R131). The orchestrator re-runs it in place once
+no engineer is editing `src/`, and the in-place figure is the one that counts.
 
 **The seat's own limits, stated (R150):** it ran no full suite and no probe, and **no test or command
 in this phase has ever run `forecast.main` against the real store** — every end-to-end test fakes
