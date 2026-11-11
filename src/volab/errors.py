@@ -5,6 +5,8 @@ everything from the data layer with one clause, while tests can assert on the
 specific failure rather than on a message string.
 """
 
+import enum
+
 
 class VolabError(Exception):
     """Base class for every exception raised by volab."""
@@ -96,3 +98,26 @@ class ModelSkip(VolabError):
     pass a model problem off as a data problem. Witness:
     ``test_a_model_skip_is_recorded_against_the_model_and_leaves_the_origin``.
     """
+
+
+class ProposalRefused(VolabError):
+    """Raised when an agent proposal is not expressible in the closed vocabulary.
+
+    The payload arrived and was rejected before anything was built from it, so nothing ran and
+    nothing was written. ``code`` is the ``volab.agent.vocabulary.RefusalCode`` member that says
+    which branch refused, so a refusal is classifiable rather than only a sentence (R189); it is
+    typed ``enum.Enum`` here because this module must not import the agent package, which sits
+    above it.
+
+    A ``VolabError`` and nothing else -- deliberately not also a ``ValueError`` (ruling R30, the
+    reasoning recorded in ``ParseRefused``). The taxonomy's design property is that one ``except``
+    clause catches the whole data layer, and a second base weakens it. ``src/volab/`` holds
+    eleven ``except ValueError`` sites that would convert or swallow a refusal that was also a
+    ``ValueError``, and a swallowed refusal is a gate that stopped gating without saying so. The
+    cost, if that reasoning is wrong, is that a caller written against ``except ValueError``
+    stops catching this, which is the point.
+    """
+
+    def __init__(self, message: str, *, code: enum.Enum) -> None:
+        super().__init__(message)
+        self.code = code

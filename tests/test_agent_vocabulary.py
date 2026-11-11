@@ -1,0 +1,473 @@
+"""The closed vocabulary, ``Proposal``, ``validate`` and ``gate`` (P5-B2, R184, R185, R189, R192).
+
+What these tests are for. The agent must not be able to *express* a peek, so ``validate`` is a
+positive allowlist and refuses unknown keys rather than consulting a list of forbidden ones. This
+module pins that, and pins the three literals ``vocabulary.py`` must carry because it may not
+import anything that reaches ``volab.store``:
+
+* ``HORIZONS`` against ``volab.features.targets.HORIZONS``;
+* ``REFERENCE_CONTESTANTS`` against the real cohorts (imported here only -- tests may import
+  anything);
+* ``_EXACT_HAR_TRANSFORMS`` against ``fit_ols``: every vocabulary column is fittable beside the
+  HAR base and every excluded name is refused. That witness runs twice -- on a synthetic frame,
+  which is a real witness everywhere, and on the real ``har_daily`` table up to ``dev_end``. **The
+  real-store version fails rather than skips when the store is absent** (the convention of
+  ``test_coverage_real.py``), so in CI it is a witness only if the store is built there; the
+  synthetic version is the one that always runs.
+
+Each of the first two pairs follows the idiom of ``test_preregistration_fence.py``: a literal in
+the source and a derived truth in the test, so neither can be edited alone.
+"""
+
+from __future__ import annotations
+
+import copy
+import re
+from typing import Any
+
+import pandas as pd
+import pytest
+import real_panel
+
+from volab.agent.vocabulary import (
+    _EXACT_HAR_TRANSFORMS,
+    AGENT_COHORT_PATTERN,
+    CANARY_PAYLOADS,
+    HORIZONS,
+    MAX_EXTRA_REGRESSORS,
+    REFERENCE_CONTESTANTS,
+    VOCABULARY,
+    GateVerdict,
+    Proposal,
+    RefusalCode,
+    agent_cohort_name,
+    gate,
+    validate,
+)
+from volab.compare.cohorts import COHORTS, SHOOTOUT
+from volab.errors import ConfigError, ProposalRefused, SchemaError, VolabError
+from volab.features.build import FEATURE_COLUMNS, HAR_COLUMNS
+from volab.features.targets import HORIZONS as REAL_HORIZONS
+from volab.features.targets import target_column
+from volab.paths import Tier, validate_segment
+from volab.store import load_panel
+from volab.walkforward import BASELINE_COHORT, fit_ols
+
+UNIVERSE = ("SPY", "QQQ", "IWM")
+SPRINT = "2026-11-10-sprint-one"
+
+
+def good(**overrides: Any) -> dict[str, Any]:
+    """A payload that validates, with ``overrides`` applied."""
+    payload: dict[str, Any] = {
+        "family": "harx",
+        "extra_regressors": [VOCABULARY[0]],
+        "symbol": "SPY",
+        "horizon": 5,
+        "reference": ["har_levels", "random_walk"],
+    }
+    payload.update(overrides)
+    return payload
+
+
+def refusal_of(raw: object) -> ProposalRefused:
+    with pytest.raises(ProposalRefused) as caught:
+        validate(raw, sprint_id=SPRINT, index=0, universe=UNIVERSE)
+    return caught.value
+
+
+# -- the three literals, each tied to its real source ------------------------------------------
+
+
+def test_the_horizons_literal_equals_the_real_horizons() -> None:
+    """``vocabulary`` cannot import ``volab.features.targets`` (it reaches ``volab.store``), so it
+    carries a literal and this is the other side of it."""
+    assert HORIZONS == REAL_HORIZONS
+
+
+def test_the_reference_contestants_are_real_and_har_levels_leads_them() -> None:
+    """Every literal name resolves to a contestant of a real cohort, and ``har_levels`` is first
+    in both the literal and the shootout (R87: the first contestant's ``observations`` is
+    ``OriginResult.training_rows``). Renaming a contestant, or the literal, fails this."""
+    real = {name for cohort in COHORTS.values() for name in cohort.contestants}
+    real |= set(BASELINE_COHORT.contestants)
+    assert set(REFERENCE_CONTESTANTS) <= real
+    assert len(set(REFERENCE_CONTESTANTS)) == len(REFERENCE_CONTESTANTS)
+    assert REFERENCE_CONTESTANTS[0] == "har_levels" == SHOOTOUT.contestants[0]
+
+
+def test_the_vocabulary_is_the_feature_columns_minus_the_exact_har_transforms_in_order() -> None:
+    assert tuple(c for c in FEATURE_COLUMNS if c not in _EXACT_HAR_TRANSFORMS) == VOCABULARY
+    assert set(FEATURE_COLUMNS) >= _EXACT_HAR_TRANSFORMS, "an excluded name that is not a feature"
+    assert len(VOCABULARY) == len(set(VOCABULARY))
+
+
+def test_the_vocabulary_names_no_target_column() -> None:
+    """Derived, not typed: the target set is computed from ``volab.features.targets``. A positive
+    allowlist rejects ``target_rv_proxy_h5`` and every name nobody anticipated; this is the
+    witness that the allowlist itself admits no forward quantity (R185)."""
+    targets = {target_column(h) for h in REAL_HORIZONS}
+    assert set(VOCABULARY) & targets == set()
+
+
+# -- the derived witness for _EXACT_HAR_TRANSFORMS ---------------------------------------------
+
+
+def _synthetic_frame(rows: int = 120) -> pd.DataFrame:
+    """Independent noise for every vocabulary column; the HAR base built exactly as
+    ``features/har.py`` builds it, so the three excluded names are exact transforms of it."""
+    import numpy as np
+
+    rng = np.random.default_rng(7)
+    frame = pd.DataFrame({name: rng.normal(size=rows) for name in VOCABULARY}, index=range(rows))
+    d1 = pd.Series(rng.uniform(1e-5, 1e-3, size=rows))
+    d5 = d1.rolling(5).sum()
+    d22 = d1.rolling(22).sum()
+    frame["rv_proxy_d1"], frame["rv_proxy_d5"], frame["rv_proxy_d22"] = d1, d5, d22
+    frame["har_d_proxy"], frame["har_w_proxy"], frame["har_m_proxy"] = d1 / 1, d5 / 5, d22 / 22
+    frame["y"] = rng.normal(size=rows)
+    return frame
+
+
+def _beside_the_base() -> tuple[str, ...]:
+    """The vocabulary columns that are not themselves a member of the HAR base. See
+    ``test_no_vocabulary_column_is_already_a_member_of_the_har_base`` for why this filter exists."""
+    return tuple(c for c in VOCABULARY if c not in HAR_COLUMNS)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="CONCERN for the architect: VOCABULARY = FEATURE_COLUMNS minus the three rv_proxy_* "
+    "names still contains har_d/w/m_proxy, which ARE the base: naming one repeats a base column "
+    "(a duplicate design column). The fix is one line, adding HAR_COLUMNS to the exclusion; "
+    "strict so that fixing it forces this marker's removal.",
+)
+def test_no_vocabulary_column_is_already_a_member_of_the_har_base() -> None:
+    assert not set(VOCABULARY) & set(HAR_COLUMNS)
+
+
+def _assert_fittable_exactly_when_allowed(
+    frame: pd.DataFrame, response: str, constant: frozenset[str] = frozenset()
+) -> None:
+    """``constant`` names columns known to be constant in ``frame``; they are asserted to be
+    refused instead (a constant is collinear with the intercept)."""
+    for column in _beside_the_base():
+        if column in constant:
+            with pytest.raises(SchemaError):
+                fit_ols(frame, [*HAR_COLUMNS, column], response)
+        else:
+            fit_ols(frame, [*HAR_COLUMNS, column], response)  # must not raise SchemaError
+    for column in sorted(_EXACT_HAR_TRANSFORMS):
+        with pytest.raises(SchemaError):
+            fit_ols(frame, [*HAR_COLUMNS, column], response)
+
+
+def test_every_vocabulary_column_is_fittable_beside_the_har_base_on_a_synthetic_frame() -> None:
+    """The witness that always runs: every vocabulary column not itself in the base fits beside
+    it, and each excluded name makes the design singular; ``_EXACT_HAR_TRANSFORMS`` is derived."""
+    _assert_fittable_exactly_when_allowed(_synthetic_frame(), "y")
+
+
+def test_every_vocabulary_column_is_fittable_beside_the_har_base_on_the_real_panel() -> None:
+    """The same witness on the real ``har_daily`` table, read only to ``dev_end``. Fails (does not
+    skip) if the store is not built, so it is a witness only where the store exists. The response
+    is the next session's ``rv_proxy_d1``: any column will do, the singularity is in the
+    regressors."""
+    config = real_panel.settings()
+    frame = load_panel(
+        "har_daily",
+        end=config.splits.dev_end,
+        symbols=["SPY"],
+        tier=Tier.FEATURES,
+        settings=config,
+    )
+    frame = frame.reset_index(drop=True)
+    frame["y"] = frame["rv_proxy_d1"].shift(-1)
+    constant = frozenset(c for c in VOCABULARY if frame[c].nunique() <= 1)
+    _assert_fittable_exactly_when_allowed(frame, "y", constant)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="CONCERN for the architect, MEASURED on the real SPY table: has_distribution is a "
+    "vocabulary column that is constant (one distinct value over 2312 rows), so it is collinear "
+    "with the intercept and every proposal naming it is refused by fit_ols as singular. The "
+    "witness in the test above derives such columns from the data rather than listing them.",
+)
+def test_no_vocabulary_column_is_constant_on_the_real_panel() -> None:
+    config = real_panel.settings()
+    frame = load_panel(
+        "har_daily", end=config.splits.dev_end, symbols=["SPY"], tier=Tier.FEATURES, settings=config
+    )
+    assert [c for c in VOCABULARY if frame[c].nunique() <= 1] == []
+
+
+# -- validate: the accepted shape, then one test per RefusalCode -------------------------------
+
+
+def test_a_good_payload_becomes_a_frozen_proposal_with_a_harness_assigned_id() -> None:
+    proposal = validate(
+        good(extra_regressors=[VOCABULARY[1], VOCABULARY[0]]),
+        sprint_id=SPRINT,
+        index=3,
+        universe=UNIVERSE,
+    )
+    assert isinstance(proposal, Proposal)
+    assert proposal.proposal_id == f"{SPRINT}-03"
+    assert proposal.extra_regressors == (VOCABULARY[1], VOCABULARY[0])
+    assert proposal.reference == ("har_levels", "random_walk")
+    assert (proposal.family, proposal.symbol, proposal.horizon) == ("harx", "SPY", 5)
+    with pytest.raises(AttributeError):
+        proposal.horizon = 22  # type: ignore[misc]
+
+
+def test_a_proposal_id_the_model_supplies_is_refused_as_an_unknown_key() -> None:
+    refused = refusal_of(good(proposal_id="mine"))
+    assert refused.code is RefusalCode.UNKNOWN_KEY and "proposal_id" in str(refused)
+
+
+def test_a_payload_that_is_not_a_mapping_is_refused() -> None:
+    refused = refusal_of(["family", "harx"])
+    assert refused.code is RefusalCode.NOT_A_MAPPING and "list" in str(refused)
+
+
+def test_an_end_key_is_refused_by_being_unknown() -> None:
+    """``end`` is the peek. It is refused because it is not one of the five known keys, not
+    because it is on a list -- there is no such list -- so a key invented in 2027 is refused
+    today by the same branch."""
+    refused = refusal_of(good(end="2026-06-30"))
+    assert refused.code is RefusalCode.UNKNOWN_KEY and "end" in str(refused)
+
+
+@pytest.mark.parametrize("key", ["start", "every", "code", "cohort", "anything_invented_in_2027"])
+def test_every_key_that_is_not_one_of_the_five_is_refused_as_unknown(key: str) -> None:
+    refused = refusal_of(good(**{key: "x"}))
+    assert refused.code is RefusalCode.UNKNOWN_KEY and key in str(refused)
+
+
+def test_a_missing_key_is_refused_and_named() -> None:
+    raw = good()
+    del raw["horizon"]
+    refused = refusal_of(raw)
+    assert refused.code is RefusalCode.MISSING_KEY and "horizon" in str(refused)
+
+
+def test_a_column_outside_the_vocabulary_is_refused_and_named() -> None:
+    refused = refusal_of(good(extra_regressors=["definitely_not_a_column"]))
+    assert refused.code is RefusalCode.OUT_OF_VOCABULARY
+    assert "definitely_not_a_column" in str(refused)
+
+
+def test_a_forward_target_column_is_refused_as_out_of_vocabulary() -> None:
+    refused = refusal_of(good(extra_regressors=[target_column(5)]))
+    assert refused.code is RefusalCode.OUT_OF_VOCABULARY and target_column(5) in str(refused)
+
+
+@pytest.mark.parametrize("name", sorted(_EXACT_HAR_TRANSFORMS))
+def test_an_exact_har_transform_is_refused_as_out_of_vocabulary(name: str) -> None:
+    refused = refusal_of(good(extra_regressors=[name]))
+    assert refused.code is RefusalCode.OUT_OF_VOCABULARY and name in str(refused)
+
+
+def test_a_bare_string_for_the_regressors_is_refused_rather_than_iterated_by_character() -> None:
+    refused = refusal_of(good(extra_regressors=VOCABULARY[0]))
+    assert refused.code is RefusalCode.OUT_OF_VOCABULARY and "str" in str(refused)
+
+
+def test_a_repeated_regressor_is_refused_and_named() -> None:
+    refused = refusal_of(good(extra_regressors=[VOCABULARY[0], VOCABULARY[0]]))
+    assert refused.code is RefusalCode.DUPLICATE_REGRESSOR and VOCABULARY[0] in str(refused)
+
+
+def test_more_than_the_cap_of_regressors_is_refused_and_the_count_named() -> None:
+    names = list(VOCABULARY[: MAX_EXTRA_REGRESSORS + 1])
+    refused = refusal_of(good(extra_regressors=names))
+    assert refused.code is RefusalCode.TOO_MANY_REGRESSORS
+    assert str(len(names)) in str(refused) and str(MAX_EXTRA_REGRESSORS) in str(refused)
+
+
+def test_exactly_the_cap_of_regressors_is_accepted() -> None:
+    names = list(VOCABULARY[:MAX_EXTRA_REGRESSORS])
+    proposal = validate(good(extra_regressors=names), sprint_id=SPRINT, index=0, universe=UNIVERSE)
+    assert proposal.extra_regressors == tuple(names)
+
+
+def test_no_regressors_is_refused() -> None:
+    refused = refusal_of(good(extra_regressors=[]))
+    assert refused.code is RefusalCode.NO_REGRESSORS
+
+
+def test_a_symbol_outside_the_universe_is_refused_and_named() -> None:
+    refused = refusal_of(good(symbol="TSLA"))
+    assert refused.code is RefusalCode.SYMBOL_NOT_IN_UNIVERSE and "TSLA" in str(refused)
+
+
+@pytest.mark.parametrize("horizon", [10, 0, True, 5.0, "5", None])
+def test_a_horizon_that_is_not_a_configured_integer_is_refused(horizon: object) -> None:
+    refused = refusal_of(good(horizon=horizon))
+    assert refused.code is RefusalCode.HORIZON_NOT_CONFIGURED and repr(horizon) in str(refused)
+
+
+def test_an_unknown_family_is_refused_and_named() -> None:
+    refused = refusal_of(good(family="garch"))
+    assert refused.code is RefusalCode.UNKNOWN_FAMILY and "garch" in str(refused)
+
+
+def test_an_unknown_reference_contestant_is_refused_and_named() -> None:
+    refused = refusal_of(good(reference=["har_levels", "oracle"]))
+    assert refused.code is RefusalCode.UNKNOWN_REFERENCE and "oracle" in str(refused)
+
+
+def test_a_reference_that_does_not_begin_with_har_levels_is_refused_as_misordered() -> None:
+    refused = refusal_of(good(reference=["random_walk", "har_levels"]))
+    assert refused.code is RefusalCode.REFERENCE_ORDER and "har_levels" in str(refused)
+
+
+def test_an_empty_reference_is_refused_as_misordered() -> None:
+    assert refusal_of(good(reference=[])).code is RefusalCode.REFERENCE_ORDER
+
+
+def test_a_repeated_reference_is_refused_as_misordered() -> None:
+    refused = refusal_of(good(reference=["har_levels", "har_levels"]))
+    assert refused.code is RefusalCode.REFERENCE_ORDER
+
+
+def test_every_refusal_code_has_a_test_that_raises_it() -> None:
+    """The codes this module's tests exercise, spelled out, against the enum: a code added later
+    without a test makes this fail."""
+    exercised = {
+        RefusalCode.NOT_A_MAPPING,
+        RefusalCode.UNKNOWN_KEY,
+        RefusalCode.MISSING_KEY,
+        RefusalCode.OUT_OF_VOCABULARY,
+        RefusalCode.DUPLICATE_REGRESSOR,
+        RefusalCode.TOO_MANY_REGRESSORS,
+        RefusalCode.NO_REGRESSORS,
+        RefusalCode.SYMBOL_NOT_IN_UNIVERSE,
+        RefusalCode.HORIZON_NOT_CONFIGURED,
+        RefusalCode.UNKNOWN_FAMILY,
+        RefusalCode.UNKNOWN_REFERENCE,
+        RefusalCode.REFERENCE_ORDER,
+    }
+    assert exercised == set(RefusalCode)
+
+
+def test_a_refusal_is_a_volab_error_and_deliberately_not_a_value_error() -> None:
+    """Ruling R30, recorded in ``ParseRefused``: a second base weakens the one-``except`` property
+    and ``src/volab`` holds ``except ValueError`` sites that would swallow it."""
+    refused = refusal_of("not a mapping")
+    assert isinstance(refused, VolabError)
+    assert not isinstance(refused, ValueError)
+
+
+def test_validate_does_not_mutate_the_payload() -> None:
+    raw = good()
+    before = copy.deepcopy(raw)
+    validate(raw, sprint_id=SPRINT, index=0, universe=UNIVERSE)
+    assert raw == before
+
+
+# -- gate: refusal as data ---------------------------------------------------------------------
+
+
+def test_gate_accepts_a_good_payload_with_a_proposal_and_no_code() -> None:
+    verdict = gate(good(), sprint_id=SPRINT, index=1, universe=UNIVERSE, canary=False)
+    assert isinstance(verdict, GateVerdict)
+    assert verdict.accepted and verdict.code is None and verdict.reason == "accepted"
+    assert verdict.proposal is not None and verdict.proposal.proposal_id == f"{SPRINT}-01"
+    assert verdict.canary is False
+
+
+def _missing_horizon() -> dict[str, Any]:
+    raw = good()
+    del raw["horizon"]
+    return raw
+
+
+@pytest.mark.parametrize("raw", ["a string", ["a", "list"], None, _missing_horizon(), 7, b"x"])
+def test_gate_never_raises_for_a_malformed_payload(raw: object) -> None:
+    verdict = gate(raw, sprint_id=SPRINT, index=0, universe=UNIVERSE, canary=True)
+    assert not verdict.accepted and verdict.proposal is None
+    assert verdict.reason and verdict.reason != "accepted"
+    assert isinstance(verdict.code, RefusalCode)
+    assert verdict.canary is True
+
+
+def test_gate_carries_the_refusal_of_validate_as_its_reason() -> None:
+    raw = good(end="2026-06-30")
+    verdict = gate(raw, sprint_id=SPRINT, index=0, universe=UNIVERSE, canary=False)
+    assert verdict.reason == str(refusal_of(raw)) and verdict.code is RefusalCode.UNKNOWN_KEY
+
+
+# -- the canary --------------------------------------------------------------------------------
+
+
+def test_the_canary_payloads_are_refused_across_at_least_six_distinct_codes() -> None:
+    """The floor that matters is on distinct *codes*. A floor on distinct refusal strings was
+    rejected (R189): it would pass while exercising one branch six times, because the echoed names
+    differ -- a floor that looks like evidence and is not."""
+    verdicts = [
+        gate(p, sprint_id=SPRINT, index=0, universe=UNIVERSE, canary=True) for p in CANARY_PAYLOADS
+    ]
+    assert len(CANARY_PAYLOADS) >= 6
+    assert not any(v.accepted for v in verdicts)
+    assert len({v.code for v in verdicts}) >= 6
+    assert {
+        RefusalCode.OUT_OF_VOCABULARY,
+        RefusalCode.UNKNOWN_KEY,
+        RefusalCode.TOO_MANY_REGRESSORS,
+        RefusalCode.DUPLICATE_REGRESSOR,
+        RefusalCode.HORIZON_NOT_CONFIGURED,
+        RefusalCode.SYMBOL_NOT_IN_UNIVERSE,
+    } == {v.code for v in verdicts}
+
+
+def test_each_canary_is_one_defect_in_an_otherwise_valid_payload() -> None:
+    """A canary that was also malformed some other way would be refused by an earlier branch and
+    prove nothing about its own: removing the single defect must leave something acceptable."""
+    for payload in CANARY_PAYLOADS:
+        verdict = gate(payload, sprint_id=SPRINT, index=0, universe=UNIVERSE, canary=True)
+        fixed = dict(payload)
+        match verdict.code:
+            case RefusalCode.UNKNOWN_KEY:
+                fixed.pop("end")
+            case RefusalCode.OUT_OF_VOCABULARY | RefusalCode.DUPLICATE_REGRESSOR:
+                fixed["extra_regressors"] = [VOCABULARY[0]]
+            case RefusalCode.TOO_MANY_REGRESSORS:
+                fixed["extra_regressors"] = [VOCABULARY[0]]
+            case RefusalCode.HORIZON_NOT_CONFIGURED:
+                fixed["horizon"] = 5
+            case RefusalCode.SYMBOL_NOT_IN_UNIVERSE:
+                fixed["symbol"] = "SPY"
+            case _:
+                pytest.fail(f"unexpected canary code {verdict.code}")
+        validate(fixed, sprint_id=SPRINT, index=0, universe=UNIVERSE)
+
+
+# -- the reserved cohort namespace -------------------------------------------------------------
+
+
+def test_an_agent_cohort_name_matches_the_pattern_and_is_a_legal_path_segment() -> None:
+    """R196: the namespace carries no glob metacharacter, so ``validate_segment`` accepts it if a
+    cohort name ever becomes a path segment."""
+    name = agent_cohort_name(SPRINT, 3)
+    assert re.fullmatch(AGENT_COHORT_PATTERN, name)
+    assert name.startswith("agent-2026-11-10-") and name.endswith("-03")
+    assert validate_segment("cohort", name) == name
+
+
+def test_an_agent_cohort_name_is_deterministic_and_varies_with_sprint_and_index() -> None:
+    assert agent_cohort_name(SPRINT, 1) == agent_cohort_name(SPRINT, 1)
+    assert agent_cohort_name(SPRINT, 1) != agent_cohort_name(SPRINT, 2)
+    assert agent_cohort_name(SPRINT, 1) != agent_cohort_name("2026-11-10-other", 1)
+
+
+def test_a_sprint_id_with_no_leading_date_has_no_cohort_name() -> None:
+    with pytest.raises(ConfigError):
+        agent_cohort_name("sprint-one", 0)
+
+
+@pytest.mark.parametrize("registered", [*COHORTS, BASELINE_COHORT.name])
+def test_an_agent_cohort_name_is_never_a_registered_cohort_name(registered: str) -> None:
+    assert not re.fullmatch(AGENT_COHORT_PATTERN, registered)
+    assert agent_cohort_name(SPRINT, 0) != registered
