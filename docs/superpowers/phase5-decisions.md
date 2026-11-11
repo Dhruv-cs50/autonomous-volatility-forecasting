@@ -764,3 +764,55 @@ trial line later, a new reader, Phase 6 writing holdout rows somewhere the filte
 the first bullet stops being true without any test noticing. The binding Phase 6 requirements in
 the design (count both agent ledgers at the reveal; give holdout comparison records a
 `last_origin` before any agent reads that file) exist to keep it true.
+
+---
+
+## R209 — the sprint machine's three departures from the design, ratified
+
+P5-D4 (`a029ac5`) built the sprint machine and reported three places where what it built differs from
+what the design says. Each is ratified, because each is more accurate than the text it departs from.
+
+**1. Exactly one canary per sprint *that reaches the gate*.** R189 says exactly one per sprint. A
+sprint the Supervisor stops before configuring anything never reaches the gate, so it has no traffic
+to substitute a canary into and carries none. The guarantee R189 wants, that the gate never goes
+untested on a sprint's traffic, holds unchanged: a sprint with no traffic has nothing for the gate to
+be untested on. The design's wording is corrected to this.
+
+**2. An accepted canary always fires before anything is evaluated.** The gate step gates every payload
+before the run step begins, so a canary the gate accepts voids the sprint while nothing has run.
+R189's provision that "proposals already evaluated keep their ledger lines" therefore cannot arise
+inside one sprint. The provision stands as a statement of the ledger's append-only rule, but it is
+not exercised, and the PR does not claim it is.
+
+**3. `completed` is in `SprintResult.outcome` and is never returned.** A sprint that runs to the end
+is `no_candidate`, `awaiting_approval` or `failed`, and the implementer could not identify what
+`completed` was meant to distinguish from `no_candidate`. Neither could I. It is a dead value in the
+interface, kept for now so P5-E1 and P5-E2 build against an unchanged type, and recorded for removal
+when the phase closes.
+
+*Cost if wrong:* a reader taking R189's original wording literally would expect a canary event on
+every sprint, including a stopped one. This record and the corrected design say otherwise.
+
+---
+
+## R210 — a crash between a child returning and its checkpoint resubmits the proposal, and the duplicate is counted
+
+The sprint checkpoints after each step, so a process killed after a child has returned but before
+the `run:progress` checkpoint is written **resubmits that proposal on resume**. The resubmission
+runs a fresh child, which appends a second set of ledger lines for the same cohort, and all of them
+land in the cohort's approval evidence.
+
+**Ruling: this is the honest outcome, and it is documented rather than de-duplicated.** The child
+genuinely ran twice, and the agent ledger exists to count every evaluation that ran (R183).
+Suppressing the second set would make the ledger say one evaluation happened when two did, which is
+the understatement the ledger is there to prevent. De-duplication would be a policy, and this phase
+counts rather than policies (design, "What is not structural", item 7).
+
+Two consequences are binding on P5-E1. It must recompute the fingerprint over **every** surviving
+line for the cohort, duplicates included, exactly as the sprint did. And a crash-window resubmission
+is a case **no test covers today**; the implementer stated so, and it is on the list of what the
+rehearsal does not prove.
+
+*Cost if wrong:* a proposal hit by the crash window carries doubled trial lines and looks as though
+it was evaluated more often than it was intended to be. That is true of what happened, so it is not
+an overclaim. The reader has to know the window exists, and this record is where they learn it.

@@ -31,12 +31,12 @@ states the sha it was verified at, and a line number is treated as perishable (R
 | P5-B2 | The closed vocabulary, `Proposal`, `validate`, `gate`, canary payloads | implementer | 1h | — | done (`aae33db`, `60796ca`) |
 | P5-C1 | The evaluation child and the two agent ledgers | implementer | 1h | B1, B2 | done (`3e15fd7`) |
 | P5-C2 | The sprint event log and the pending approval | implementer | 45m | B2 | done (`6da1eaa`) |
-| P5-C3 | `LedgerCounts`, the ledger reader, the leaderboard's added line | implementer | 1h | A2, C1 | todo |
+| P5-C3 | `LedgerCounts`, the ledger reader, the leaderboard's added line | implementer | 1h | A2, C1 | done (`35c5424`) |
 | P5-D1 | The `Completer` port, the urllib edge client, the fake | implementer | 45m | — | done (`91de85b`) |
 | P5-D2 | The `Checkpointer` port and two credential-free implementations | implementer | 1h | — | done (`91de85b`) |
-| P5-D3 | Subprocess-per-evaluation | implementer | 45m | C1 | todo |
-| P5-D4 | The six roles, the seven-step machine, the sprint | implementer | 1h | C2, D1, D2, D3 | todo |
-| P5-D5 | The canary bites, and an accepted canary voids the sprint | implementer | 45m | D4 | todo |
+| P5-D3 | Subprocess-per-evaluation | implementer | 45m | C1 | done (`2618462`) |
+| P5-D4 | The six roles, the seven-step machine, the sprint | implementer | 1h | C2, D1, D2, D3 | done (`a029ac5`) |
+| P5-D5 | The canary bites, and an accepted canary voids the sprint | implementer | 45m | D4 | **closed, delivered within D4** — `tests/test_agent_sprint.py` asserts `voided_by_canary`, one `canary_accepted` event and no further gating; no separate dispatch, which saved one subagent on an 8 GB machine |
 | P5-E1 | `python -m volab.promote` and its three refusals | implementer | 1h | C2, D4 | todo |
 | P5-E2 | `python -m volab.agent`: `sprint` and `show` | implementer | 45m | D4 | todo |
 | P5-E3 | The exit criterion: a full sprint end to end, witnessed | implementer | 1h | E1, E2 | todo |
