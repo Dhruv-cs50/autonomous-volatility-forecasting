@@ -2240,6 +2240,8 @@ def test_a_shootout_run_writes_trials_and_comparisons_under_one_join_key(
     code = shootout.main(["--symbol", "SPY", "--horizon", "1", "--horizon", "5", *WINDOW])
     printed = capsys.readouterr().out
     assert code == 0, printed
+    # R186: the ledger's trial count is printed with the agent ledgers' beside it.
+    assert "  agent ledgers: 0 agent trial(s) in data/agent_trials.jsonl" in printed
     trials = shootout.lines(TRIAL_LEDGER)
     comparisons = shootout.lines(COMPARISON_LEDGER)
     assert len(trials) == 2 * len(TOY_COHORT.models) * len(LOSSES)

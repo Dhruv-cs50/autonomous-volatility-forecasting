@@ -673,6 +673,8 @@ def test_a_run_writes_one_decision_line_per_alpha_and_configuration(run: _Run, c
     code = run.main("--symbol", "SPY", "--horizon", "1", "--horizon", "5", *WINDOW)
     printed = capsys.readouterr().out
     assert code == 0, printed
+    # R186: the ledger's trial count is printed with the agent ledgers' beside it.
+    assert "  agent ledgers: 0 agent trial(s) in data/agent_trials.jsonl" in printed
     lines = run.lines(DECISION_LEDGER)
     configurations = 2
     assert len(lines) == len(ALPHAS) * configurations

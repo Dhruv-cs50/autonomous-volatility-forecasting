@@ -15,6 +15,13 @@ to sum to it, so a cohort added later grows the number and cannot restart it
 ``phase2-baseline``** (R86): the 72 lines written before the key existed are that run, and
 ``test_the_committed_ledger_reads_correctly_and_is_not_touched`` reads them.
 
+**One line beneath the headline names the agent ledgers** (R183, R186): the counts of
+``data/agent_trials.jsonl`` and ``data/agent_comparisons.jsonl``, and the combined trial total
+(trials plus agent trials; comparison records are not trials), from ``volab.counts``. It is added
+and the headline's text is unchanged. The claim is exactly that the leaderboard headline prints both
+counts; the writer CLIs that call ``count_trials`` directly were not migrated and no import ban
+enforces anything further.
+
 **What is printed rather than omitted.** An MCS size the comparison refused prints as a refusal
 with its reason (R94): an absent row reads as "no result", a printed refusal as "we declined to
 claim". A DM pair or SPA test the record does not claim prints as WITHHELD with the stored facts
@@ -52,8 +59,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from volab.counts import agent_ledgers_line, count_all
 from volab.errors import VolabError
-from volab.walkforward import BASELINE_COHORT_NAME, LOSSES, TRIAL_LEDGER, count_trials
+from volab.walkforward import BASELINE_COHORT_NAME, LOSSES, TRIAL_LEDGER
 
 # Repeated from ``volab.compare.sink``, which is not imported (see the module docstring).
 COMPARISON_LEDGER = Path("data") / "comparisons.jsonl"
@@ -403,7 +411,8 @@ def render(root: Path) -> tuple[list[str], bool]:
     trials, legacy = read_trials(root)
     comparisons = read_comparisons(root)
 
-    headline = count_trials(root)
+    combined = count_all(root)
+    headline = combined.trials
     by_cohort = Counter(t.cohort for t in trials)
     if sum(by_cohort.values()) != headline:
         raise LeaderboardError(
@@ -417,6 +426,9 @@ def render(root: Path) -> tuple[list[str], bool]:
         f"HEADLINE: {headline} trial(s) on the ledger -- every line of "
         f"{TRIAL_LEDGER.as_posix()}, all cohorts",
         f"  by cohort: {breakdown}" if trials else "  by cohort: none",
+        # Added beneath the headline, whose text is unchanged (R186). Printed as zeros when the
+        # agent ledgers are absent: an omitted line cannot be read as "no agent trials".
+        agent_ledgers_line(combined),
     ]
     if legacy:
         lines.append(

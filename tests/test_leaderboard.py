@@ -190,6 +190,34 @@ def test_the_headline_is_every_ledger_line_with_the_cohort_breakdown_beside_it(t
     assert "by cohort: alpha 8, beta 8" in text
 
 
+def test_a_line_beneath_the_headline_names_the_agent_ledgers_counts(tmp_path) -> None:
+    """Additive (R186): the headline's own text is unchanged, and the next line carries the agent
+    ledgers' counts and the combined trial total, which is trials plus agent trials only."""
+    import volab.candidate as candidate
+
+    _run(tmp_path, cohort="alpha")
+    for ledger, count in (
+        (candidate.AGENT_TRIAL_LEDGER, 3),
+        (candidate.AGENT_COMPARISON_LEDGER, 2),
+    ):
+        (tmp_path / ledger).write_text('{"x": 1}\n' * count, encoding="utf-8")
+    lines, _ = leaderboard.render(tmp_path)
+    headline = next(i for i, line in enumerate(lines) if line.startswith("HEADLINE:"))
+    assert lines[headline + 2] == (
+        "  agent ledgers: 3 agent trial(s) in data/agent_trials.jsonl, 2 agent comparison "
+        "record(s) in data/agent_comparisons.jsonl; 11 trial(s) across both trial ledgers"
+    ), "8 trials + 3 agent trials; the 2 comparison records are not trials"
+
+
+def test_the_agent_line_is_printed_as_zeros_when_the_agent_ledgers_are_absent(tmp_path) -> None:
+    _run(tmp_path, cohort="alpha")
+    assert (
+        "  agent ledgers: 0 agent trial(s) in data/agent_trials.jsonl, 0 agent comparison "
+        "record(s) in data/agent_comparisons.jsonl; 8 trial(s) across both trial ledgers"
+    ) in _text(tmp_path)
+    assert not (tmp_path / "data" / "agent_trials.jsonl").exists()
+
+
 def test_adding_a_cohort_cannot_reset_the_headline(tmp_path) -> None:
     """R59: a number that restarts per cohort is a number that hides the earlier cohorts' trials."""
     _run(tmp_path, cohort="alpha")

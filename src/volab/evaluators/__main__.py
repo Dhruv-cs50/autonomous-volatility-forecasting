@@ -48,6 +48,7 @@ import pandas as pd
 from volab.compare import analyse, describe
 from volab.compare.cohorts import COHORTS, MonteCarlo, answering, monte_carlo_error
 from volab.config import Settings, load_settings
+from volab.counts import agent_ledgers_line, count_all
 from volab.errors import DatasetNotFound
 from volab.evaluators import (
     ALPHAS,
@@ -68,7 +69,6 @@ from volab.sessions import get_calendar, sessions_between
 from volab.store import load_panel
 from volab.walkforward import (
     Evaluation,
-    count_trials,
     git_state,
     load_for,
     run_configuration,
@@ -475,7 +475,7 @@ def _run(settings: Settings, arguments: argparse.Namespace, sink: JsonlSink) -> 
             decisions_written += sink.append_decisions(
                 decisions, at=started_at, sha=sha, dirty=dirty
             )
-            ledger = count_trials(sink.root)
+            ledger = count_all(sink.root).trials
             for decision in decisions:
                 for line in describe(decision.fz0, trials=ledger):
                     print(line)
@@ -483,7 +483,9 @@ def _run(settings: Settings, arguments: argparse.Namespace, sink: JsonlSink) -> 
                     print(line)
 
     print(f"{trials_written} trial line(s) and {decisions_written} decision record(s) appended")
-    print(f"ledger now {count_trials(sink.root)} trial line(s)")
+    counted = count_all(sink.root)
+    print(f"ledger now {counted.trials} trial line(s)")
+    print(agent_ledgers_line(counted))
     print(f"ran in {time.perf_counter() - started:.1f}s")
     return 1 if failures else 0
 
