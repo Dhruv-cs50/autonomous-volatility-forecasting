@@ -188,3 +188,36 @@ a failure path nobody has written yet.
 **What it costs if it is wrong.** Nothing operationally: the sentence is strictly more informative
 than the one it replaces. The cost of *not* making it is an operator who reads "INTACT" after a
 key-holder has read raw holdout bars, and a next run that believes it is the first look.
+
+## R221 — The looks count is the **log's**, not the attempt's, and that is the correct reading
+
+**The residual R220 left, reported by its implementer rather than hidden.** `tally.looks` counts
+every `look_open` in the whole audit log, not the ones this attempt took. So an attempt that was
+refused for want of a key (exit 10, which touches no filesystem) would still print the
+looks-were-taken sentence if an *earlier* attempt had left looks in the log.
+
+**The ruling: leave it, and keep the wording that makes it honest.** The sentence says "the log
+holds N sealed looks", which is a true statement about the log, and the question an operator needs
+answered is not "did this process read something" but **"has the holdout been seen at all"** — for
+which the log is the right scope. If an earlier attempt took looks then holdout data *has* been
+seen, a later run *is* not a first look, and both halves of the sentence hold regardless of which
+attempt did it.
+
+**The direction of the failure is what settles it.** The dangerous sentence is "nothing was read",
+and it prints only when the log holds **zero** looks — in which case nothing was read, by anyone,
+ever. So the imprecision can only ever over-warn, never under-warn. Attributing looks to a
+`reveal_id` would be more precise and is deliberately not done: it would add a second reading of the
+log to the one `audit_tally` already gives, for a gain of precision in the safe direction only.
+
+**One footgun from the same change, and it gets a guard rather than a comment.**
+`SEAL_SENTENCES[COUNTED_WITH_LOOKS]` is now a template holding `{looks}`, so anything printing the
+dict directly emits a literal `{looks}`. Production goes through `seal_sentence(tally, committed=…)`
+and must keep doing so. That is a witness, not a convention: nothing under `src/volab/` may
+reference `SEAL_SENTENCES` outside `seal_sentence` itself.
+
+**Also recorded, because the implementer reported it against its own work.** Its mutant run showed
+rows 13, 14, 0 and the printing-crash row failing under M1 and M3 — which was a bug in its own
+table guard, fixed afterwards, so those four are **not** real catches and are not counted as such.
+And M3 (the looks count hard-coded to 16) slips past exit rows 11 and 10 by luck, because that
+carved store happens to take exactly 16 looks; the unit test with a tally of 7 is what actually
+kills it. Both are the kind of thing a report usually rounds up, and neither was.
