@@ -30,7 +30,7 @@ import dataclasses
 import datetime as dt
 import inspect
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import numpy as np
@@ -726,18 +726,38 @@ def test_a_horizon_below_one_is_refused(synthetic_store: SyntheticStore) -> None
 # ---- no signed forward return reaches a fit ------------------------------------------------
 
 
-def _forward_returns(toy: Toy) -> tuple[dict[dt.date, float], list[dt.date]]:
-    """``log(close_{t+h} / close_t)`` per session of the toy's SPY bars, and those sessions."""
+# The transforms a leak can arrive under, searched one at a time and each matched exactly.
+# Deliberately closed, and deliberately not a rescale: see ``_unknowable_forward_returns_in``.
+_LEAK_TRANSFORMS: tuple[tuple[str, Callable[[float], float]], ...] = (
+    ("as is", lambda value: value),
+    # A sign convention: a loss is minimised and a return maximised, and the evaluator seam is
+    # where the two meet.
+    ("negated", lambda value: -value),
+    # The response of this project is a *variance*, so a squared return is the shape a leak takes
+    # when it arrives as a target rather than as a feature.
+    ("squared", lambda value: value * value),
+    # Log against simple returns: the panel is in log returns and a vendor series need not be.
+    ("as a simple return", math.expm1),
+)
+
+
+def _forward_returns(toy: Toy) -> tuple[dict[tuple[dt.date, int], float], list[dt.date]]:
+    """``log(close_{t+k} / close_t)`` for every ``k`` in 1..h, by ``(t, k)``, and the sessions.
+
+    Every ``k`` and not the horizon alone: the h-day return is not the only look-ahead that
+    matters, and tomorrow's one-day return is the classic one.
+    """
     calendar = get_calendar(toy.settings)
     bars = toy.panel[toy.panel["symbol"] == "SPY"]
     days = list(as_of_dates(bars))
     sessions = sessions_between(calendar, min(days), max(days))
     close = pd.Series(bars["close"].astype("float64").to_list(), index=days).reindex(sessions)
-    found: dict[dt.date, float] = {}
-    for index in range(len(sessions) - toy.horizon):
-        start, finish = close.iloc[index], close.iloc[index + toy.horizon]
-        if not (pd.isna(start) or pd.isna(finish)):
-            found[sessions[index]] = math.log(finish / start)
+    found: dict[tuple[dt.date, int], float] = {}
+    for horizon in range(1, toy.horizon + 1):
+        for index in range(len(sessions) - horizon):
+            start, finish = close.iloc[index], close.iloc[index + horizon]
+            if not (pd.isna(start) or pd.isna(finish)):
+                found[sessions[index], horizon] = math.log(finish / start)
     return found, sessions
 
 
@@ -756,23 +776,51 @@ def _numbers(view_frame: pd.DataFrame | pd.Series) -> np.ndarray:
 
 def _unknowable_forward_returns_in(
     cells: np.ndarray,
-    forward: dict[dt.date, float],
+    forward: dict[tuple[dt.date, int], float],
     sessions: list[dt.date],
     origin: dt.date,
-    horizon: int,
-) -> list[dt.date]:
-    """Base sessions whose signed h-day return is among ``cells`` but unknowable at ``origin``.
+) -> list[tuple[dt.date, int, str]]:
+    """Every ``(base session, k, transform)`` whose k-day return is among ``cells`` but unknowable.
 
-    A base session ``t`` has its return knowable once ``t + h <= origin``; any later one is the
-    future. Equality is to 1e-12 absolute, which a coincidence among float features does not reach.
+    A base session ``t``'s k-day return is knowable once ``t + k <= origin``; any later one is the
+    future. Three choices here, each deliberate, because the width of this detector is the only
+    thing standing between the panel and the holdout read.
+
+    **Every ``k`` from 1 to the horizon, not the horizon alone.** A detector that searches only for
+    the h-day return is blind to a leaked one-day-ahead return, which is the classic look-ahead.
+
+    **A closed family of transforms** (:data:`_LEAK_TRANSFORMS`), each searched separately. A leak
+    need not arrive as the return itself: a sign convention, a variance target or a log-against-
+    simple mix-up transforms it on the way in, and matching only the bit-identical float
+    demonstrates catching only the one case nobody writes by accident.
+
+    **The tolerance stays at 1e-12 absolute, and widening it would make this detector worse.** HAR
+    features are built to track ``|r|`` and ``r**2``, so a loose match against transforms of future
+    returns flags features that are doing their job -- a detector that cries wolf is one that gets
+    muted. The width gained here is in *what* is searched for, never in how near a cell must be. An
+    unknown rescale ``c * r`` is consequently out of reach and stays out of reach: this catches
+    leaks that arrive whole, and that is the honest limit of it.
     """
     position = {day: index for index, day in enumerate(sessions)}
     found = []
-    for day, value in forward.items():
+    for (day, horizon), value in forward.items():
         if position[day] + horizon <= position[origin]:
             continue  # completed by the origin: knowable, and allowed to be in a feature
-        if abs(value) > 1e-6 and bool(np.isclose(cells, value, rtol=0.0, atol=1e-12).any()):
-            found.append(day)
+        if abs(value) > 1e-6:  # a degenerate return is not worth searching for
+            for label, transform in _LEAK_TRANSFORMS:
+                planted = transform(value)
+                # The floor above is on the *return*, and this one is on the transformed value,
+                # because the two guards do different jobs. 1e-6 on the return skips a flat
+                # session, whose return many unrelated cells sit near. 1e-9 here keeps the 1e-12
+                # match a strict one: a cell within 1e-12 of a target this size agrees to a
+                # thousandth of it, which is a value match and not a zero-against-zero artefact.
+                # Putting the 1e-6 floor on the transformed value instead would silently disable
+                # the squared member -- ``r ** 2`` of a 3e-4 return is 9e-8 -- which is how this
+                # was first written and what the witness caught.
+                if abs(planted) > 1e-9 and bool(
+                    np.isclose(cells, planted, rtol=0.0, atol=1e-12).any()
+                ):
+                    found.append((day, horizon, label))
     return found
 
 
@@ -800,56 +848,97 @@ def test_no_horizon_return_reaches_a_fit() -> None:
     forward, sessions = _forward_returns(toy)
     # Non-vacuous: there are many distinct signed returns to look for, and both signs.
     assert len(forward) > 100 and min(forward.values()) < 0 < max(forward.values())
+    # And every k is actually present, so the search is the wide one and not the horizon alone.
+    assert {horizon for _, horizon in forward} == {1, 2, 3, 4, 5}
 
     for view in spy.views:
         assert "horizon_return" not in view.training.columns
         assert "horizon_return" not in view.row.index
         cells = _view_cells(view.training, view.row, view.returns)
         assert cells.size > 0
-        leaked = _unknowable_forward_returns_in(cells, forward, sessions, view.origin, 5)
+        leaked = _unknowable_forward_returns_in(cells, forward, sessions, view.origin)
         assert not leaked, f"{view.origin}: the view carries the signed return of {leaked[:3]}"
         # The one return series a contestant gets ends at the origin.
         assert max(view.returns.index) <= view.origin
 
 
-def test_the_leak_detector_can_fail() -> None:
+@pytest.mark.parametrize("label", [label for label, _ in _LEAK_TRANSFORMS])
+def test_the_leak_detector_can_fail(label: str) -> None:
     """The red case for the test above: plant the return in a view and watch it be found.
 
     Without this the detector is a check nobody has seen fire (R32), and "no cell equals the
     forward return" is exactly the sentence that is true of a detector with a bug in it.
+
+    **Parametrised over :data:`_LEAK_TRANSFORMS` rather than listing its members** (R151), so a
+    transform added to the family cannot arrive without a witness, and a member that the detector
+    does not actually search for fails here. Planting the bit-identical float alone -- which this
+    test used to do -- demonstrates catching only the one leak nobody writes by accident.
+    """
+    transform = dict(_LEAK_TRANSFORMS)[label]
+    toy = make_toy(5)
+    spy = Spy()
+    run_cohort(toy, Cohort("seam-decisions", (spy,)))
+    forward, sessions = _forward_returns(toy)
+    view = spy.views[len(spy.views) // 2]
+    planted = transform(forward[view.origin, 5])
+    # Otherwise the detector's own floor, not its blindness, would be what the test measured.
+    assert abs(forward[view.origin, 5]) > 1e-6, "the return itself must clear the detector's floor"
+    assert abs(planted) > 1e-9, f"the {label} plant does not clear the detector's floor"
+
+    # Under a column name nobody would think to forbid ...
+    cells = _view_cells(view.training.assign(tomorrows_news=planted), view.row, view.returns)
+    assert (view.origin, 5, label) in _unknowable_forward_returns_in(
+        cells, forward, sessions, view.origin
+    )
+    # ... and in the origin's own row.
+    row = view.row.copy()
+    row["tomorrows_news"] = planted
+    cells = _view_cells(view.training, row, view.returns)
+    assert (view.origin, 5, label) in _unknowable_forward_returns_in(
+        cells, forward, sessions, view.origin
+    )
+
+
+def test_the_leak_detector_catches_a_return_shorter_than_the_horizon() -> None:
+    """A one-day-ahead return is a leak too, and searching only for the h-day return misses it.
+
+    This is the second half of the widening: the detector reads every ``k`` in 1..h, so the
+    tomorrow's-return case -- the look-ahead most likely to be written by accident -- is caught at
+    ``k = 1`` rather than being invisible because it is not the configured horizon.
     """
     toy = make_toy(5)
     spy = Spy()
     run_cohort(toy, Cohort("seam-decisions", (spy,)))
     forward, sessions = _forward_returns(toy)
     view = spy.views[len(spy.views) // 2]
-    value = forward[view.origin]
-    assert abs(value) > 1e-6
-
-    # Under a column name nobody would think to forbid ...
-    planted = view.training.assign(tomorrows_news=value)
-    cells = _view_cells(planted, view.row, view.returns)
-    assert _unknowable_forward_returns_in(cells, forward, sessions, view.origin, 5) == [view.origin]
-    # ... and in the origin's own row.
-    row = view.row.copy()
-    row["tomorrows_news"] = value
-    cells = _view_cells(view.training, row, view.returns)
-    assert _unknowable_forward_returns_in(cells, forward, sessions, view.origin, 5) == [view.origin]
-    # A forward return that has already completed by the origin is knowable and is not flagged.
-    completed = [
-        day
-        for day in forward
-        if sessions.index(day) + 5 <= sessions.index(view.origin) and abs(forward[day]) > 1e-6
-    ]
-    assert completed
-    known = view.training.assign(prior=forward[completed[0]])
-    cells = _view_cells(known, view.row, view.returns)
-    assert completed[0] not in _unknowable_forward_returns_in(
-        cells, forward, sessions, view.origin, 5
+    tomorrow = forward[view.origin, 1]
+    assert abs(tomorrow) > 1e-6
+    cells = _view_cells(view.training.assign(tomorrows_news=tomorrow), view.row, view.returns)
+    assert (view.origin, 1, "as is") in _unknowable_forward_returns_in(
+        cells, forward, sessions, view.origin
     )
 
 
-# ---- the package's own boundaries ----------------------------------------------------------
+def test_the_leak_detector_allows_a_return_already_complete_at_the_origin() -> None:
+    """The other direction, without which the detector could pass by flagging everything.
+
+    A forward return that has already completed by the origin is knowable, is a legitimate
+    feature, and must not be reported.
+    """
+    toy = make_toy(5)
+    spy = Spy()
+    run_cohort(toy, Cohort("seam-decisions", (spy,)))
+    forward, sessions = _forward_returns(toy)
+    view = spy.views[len(spy.views) // 2]
+    completed = [
+        (day, horizon)
+        for (day, horizon), value in forward.items()
+        if sessions.index(day) + horizon <= sessions.index(view.origin) and abs(value) > 1e-6
+    ]
+    assert completed
+    cells = _view_cells(view.training.assign(prior=forward[completed[0]]), view.row, view.returns)
+    reported = _unknowable_forward_returns_in(cells, forward, sessions, view.origin)
+    assert not [entry for entry in reported if entry[:2] == completed[0]]
 
 
 def _package_sources() -> list[Path]:
