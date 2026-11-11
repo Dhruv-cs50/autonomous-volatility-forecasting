@@ -702,18 +702,35 @@ for?** The answer depends on which window, and the distinction is the whole poin
 
 **So the precise claim is:** *the agent cannot express a request for, or receive any function of,
 data past `dev_end`; it can search the dev window as hard as it likes, and every evaluation that
-reaches a fit is counted.* The PR states it in those words. Stating only the first half would be
-the overclaim.
+completes without an audit refusal is counted.* The PR states it in those words. Stating only the
+first half would be the overclaim.
 
 **Narrowed after review, because the first wording claimed more than the code does (R214).** It
-originally said "every step of that search is counted". That is false for proposals refused **before**
-a fit: by the gate, by the child's coverage check, or by the audit. Those write **no trial line**,
+originally said "every step of that search is counted". That is false for proposals refused
+**before** a fit, by the gate or by the child's coverage check. Those write **no trial line**,
 consistent with how `run_configuration` has treated a coverage refusal since Phase 2. Yet a coverage
 refusal returns dev-window facts to the Critic through its `reason` ("the first origin that qualifies
 is 2023-05-16"), so a refused proposal is still a search step the agent learns from. It is recorded
 only on `data/agent_sprints.jsonl`, which is gitignored and is not a reported number. **The search is
 therefore counted at the level of evaluations, not of proposals.** That is dev-window information,
 not holdout, so the first half of the claim is untouched.
+
+**Corrected a second time, because the first narrowing was itself an overclaim (found by the
+delivery audit).** It said "every evaluation that *reaches a fit* is counted", and it listed "the
+audit" among the refusals that happen *before* a fit. Both were wrong. An **audit refusal comes after
+`evaluate` has run**: the child fits its models, `run_configuration` finds a read past the cutoff, and
+returns `written=0`. R203 says so in as many words: exit `5` means "models fitted and nothing
+appended". A child **killed after fitting**, by a timeout or a crash, also leaves no trial line,
+because trials are appended once, after `evaluate` returns (R210 covers only the later crash window,
+between a child returning and its checkpoint). So the accurate statement is narrower again: **every
+evaluation that completes without an audit refusal is counted.** Audit-refused and killed evaluations
+fit models on dev data and leave no ledger line. That is still dev-window only, so the holdout half
+of R208 stands untouched.
+
+The lesson, recorded because it happened twice in one sentence: **narrowing a claim is itself a
+claim, and it needs the same check as the original.** The first narrowing was written from the
+review's finding without tracing where the audit sits in the code, and it repeated the error it was
+correcting.
 
 **Amended: the read surface includes counts, refusals and orderings, and the first draft of this
 record missed one.** The same peer pointed at a clause in this record's own premise: *"the trial
@@ -1040,6 +1057,8 @@ holds values derived from bars past `dev_end` for origins within `h` sessions of
 filter, outside this phase's audit. Also whether the sprint log, being gitignored, survives a
 multi-machine workflow, which matters for "recorded" in the narrowed R208.
 
-*Cost if wrong:* the narrowing makes the claim weaker and true. Leaving it as "every step is counted"
+*Cost if wrong:* the narrowing makes the claim weaker. The *first* narrowing written here was not
+yet true either: it said "every evaluation that reaches a fit is counted", which an audit
+refusal falsifies, and it was corrected a second time in R208 after the delivery audit. Leaving it as "every step is counted"
 would have been the overclaim this project treats as its one unforgivable defect, in the sentence the
 PR leads with.
