@@ -221,3 +221,37 @@ table guard, fixed afterwards, so those four are **not** real catches and are no
 And M3 (the looks count hard-coded to 16) slips past exit rows 11 and 10 by luck, because that
 carved store happens to take exactly 16 looks; the unit test with a tally of 7 is what actually
 kills it. Both are the kind of thing a report usually rounds up, and neither was.
+
+## R222 — HR-5's dress rehearsal is **delivered as witnesses, not as a `tools/` script**, and that is stronger
+
+**HR-5's acceptance, from the board:** "the **whole** procedure runs against a pseudo-holdout carved
+inside dev, on a **separate storage root**, leaving no mark on the real audit log".
+
+**It is met, by `tests/carved.py` and `tests/test_reveal_cli.py`.** The carved world sets `dev_end`
+2024-03-28 with a ten-session "holdout" of 2024-04-01..2024-04-12, mirroring the real store's shape
+— raw runs through `holdout_end`, curated, features and targets stop at `dev_end`, which is exactly
+the state the reveal exists to move on from. Eighteen CLI witnesses run real `take`s over it on a
+`tmp_path` root, including the full span with its planned looks logged before they are taken, the
+ledger footprint the shape predicts, a missing key, a crash during scoring, a second attempt
+needing a commit first, every exit's seal sentence, and a refused configuration. The real audit log
+stays absent throughout, which the tripwire readings in this sprint's commits record either side of
+every run.
+
+**Why a `tools/` script was never the right shape, and the ratchet says so.**
+`tests/test_import_discipline.py` AST-scans `tools/*.py` for `allow_holdout` and for the unlock
+variable, and fails on either. The rehearsal must hold a key — it is a rehearsal *of a keyed read*.
+So a `tools/` rehearsal is implementable only by widening a ratchet that exists to keep probes out
+of the sealed window, which trades a real guarantee for a convenience. The witnesses hold the key
+through `monkeypatch.setattr(store, "_unlock_granted", lambda allow_holdout: allow_holdout)` — the
+identity form, so it proves the key was actually passed — while the suite's own police stay armed
+and no marker is added anywhere.
+
+**What this does not claim.** The rehearsal exercises the procedure, not the real window: the carved
+store has ten holdout sessions against the real 209, three symbols against three, and one cohort
+pair. It cannot predict the real run's figures and does not try to. What it establishes is that the
+procedure runs end to end, that the span is the declared one, and that every refusal path leaves the
+record and the sentence the design says it should.
+
+**The remaining gap is honest and stays on the board.** `tests/carved.py`'s docstring is the place a
+reader meets the construction, and `HR-5` is marked done against these witnesses rather than
+against a script that does not exist.
