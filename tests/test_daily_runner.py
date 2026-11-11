@@ -469,6 +469,45 @@ def test_a_second_interrupt_inside_the_cleanup_still_reaps_the_stage_and_closes_
             process.wait()
 
 
+def test_the_timeout_itself_kills_the_group_not_only_the_sweep_after_the_reap(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The timeout's own kill, isolated from the sweep that would otherwise stand in for it.
+
+    ``test_a_timeout_kills_the_stages_own_children_too`` passes whether the group dies at the
+    deadline or at the reap, because ``_sweep_the_group`` kills it either way -- so on its own it
+    stopped witnessing the timeout's ``killpg``, and deleting that call would leave it green.
+    With the sweep monkeypatched out, only the deadline's kill can reach the grandchild.
+
+    **The ``finally`` is load-bearing, not tidiness.** The sweep is removed for the duration, so
+    it is the only thing left that reaps the tree -- and the case this test exists to catch is
+    exactly the one where the timeout fails to. Without it a regression leaks a sleeping
+    grandchild per run. It kills the group rather than the two pids, because a descendant of the
+    grandchild would not be in the file.
+    """
+    pid_file = tmp_path / "pids"
+    monkeypatch.setattr(runner, "_sweep_the_group", lambda pid: None)
+    leader = None
+
+    try:
+        started = time.monotonic()
+        run_stages((_stage("tree", "probe_sleep_tree", str(pid_file)),), timeout_seconds=_SHORT)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 5, elapsed
+        leader, grandchild = (int(pid) for pid in pid_file.read_text(encoding="utf-8").split())
+        assert _gone(leader)
+        assert _gone(grandchild)
+    finally:
+        if leader is None and pid_file.exists():
+            leader = int(pid_file.read_text(encoding="utf-8").split()[0])
+        if leader is not None:
+            # The same shape as ``_sweep_the_group``: PermissionError because an exited-but-
+            # unreaped group leader refuses the signal.
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.kill(-leader, signal.SIGKILL)
+
+
 def test_a_stage_that_finishes_inside_its_timeout_is_not_marked_timed_out() -> None:
     (run,) = run_stages((_stage("quick", "probe_exit", "0"),), timeout_seconds=30)
 
