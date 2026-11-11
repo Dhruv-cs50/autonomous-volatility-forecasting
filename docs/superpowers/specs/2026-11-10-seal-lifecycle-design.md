@@ -246,15 +246,15 @@ Step 3 of `load_panel` becomes, in full:
 ```python
     # 3. The seal, before any filesystem access whatsoever. One bound, one comparison: the three
     #    regions are the three values the bound can take, not three branches.
-    past_dev_end = end > resolved.splits.dev_end
-    revealed = past_dev_end and _reveal_committed(configured_splits)
+    past_dev_end = end > effective.dev_end
+    revealed = past_dev_end and _reveal_committed(effective)
     unlocked = not revealed and _unlock_granted(allow_holdout)
-    limit = _read_limit(resolved.splits, revealed=revealed, unlocked=unlocked)
+    limit = _read_limit(effective, revealed=revealed, unlocked=unlocked)
     if end > limit:
-        region = resolved.splits.region_of(end)
+        region = effective.region_of(end)
         raise HoldoutViolation(
-            f"end {end} is in the {region.value} region (dev_end {resolved.splits.dev_end}, "
-            f"holdout_end {resolved.splits.holdout_end}) and this read may see no later than "
+            f"end {end} is in the {region.value} region (dev_end {effective.dev_end}, "
+            f"holdout_end {effective.holdout_end}) and this read may see no later than "
             f"{limit}: " + (
                 f"reading the holdout window needs both allow_holdout=True and {_UNLOCK_ENV}=1"
                 if region is Region.HOLDOUT
@@ -303,17 +303,20 @@ Why this shape:
 - **`dt.date.max` for revealed.** Not "today": `as_of` filtering already bounds the answer to data
   that exists, and a clock inside `store.py` would be a new dependency on the one thing
   `volab.daily` went to trouble to admit at a single seam.
-- **The `Splits` default keeps hand-built values working.** `conftest.synthetic_store` builds
-  `Splits(dev_end=2023-12-31, holdout_start=2024-01-02)`, so `holdout_end` is `dt.date.max` and
-  `unlocked` yields `dt.date.max` — today's behaviour, unchanged, for every existing test. A
-  witness for the live region must therefore pass an explicit `holdout_end`; there is no live
-  region without one.
+- **One `Splits`, used for all four things.** `effective` (below) feeds `_read_limit`, the
+  `region_of` in the message, the `past_dev_end` test and the predicate. Clamping only the bound
+  while classifying with the caller's raw splits is the specific mistake to avoid: it would let the
+  refusal call a refused 2027 date "holdout, needs both keys" when no key reaches it.
+- **Hand-built `Splits` keep working, and that is what the clamp is for.** Every hand-built
+  `Splits(...)` in `tests/` — one in `conftest.py`, two in `test_store_guard.py`, three in
+  `test_conftest_policy.py`, and one each in `test_config.py`, `test_daily.py`, `test_evaluators.py`
+  and `test_sessions.py` — omits `holdout_end`, so every one of them carries `dt.date.max`. The
+  clamp makes their effective `holdout_end` the repository's `2026-10-30`; since no test passes an
+  `end` later than that (the latest is `HOLDOUT_DAY`, 2024-03-01), every existing test behaves
+  exactly as it does today. A witness for the live region must pass an explicit `holdout_end` no
+  later than `2026-10-30`; there is no live region without one.
 
-### `configured_splits`, and a new step 0b
-
-`revealed` is asked about the **repository's** configuration, not the caller's: the reveal is a
-property of the repository. `load_panel` already resolves `load_settings()` on both branches of
-step 0, at 0.63 ms, so this is free:
+### `effective`: the caller's splits, clamped to the repository's. **Not a step 0b.**
 
 ```python
     if settings is None:
@@ -322,30 +325,57 @@ step 0, at 0.63 ms, so this is free:
         resolved = settings
         configured = load_settings()
         if resolved.splits.dev_end > configured.splits.dev_end:
-            raise HoldoutViolation(...)            # step 0, unchanged
-        if resolved.splits.holdout_end > configured.splits.holdout_end:
-            raise HoldoutViolation(...)            # step 0b, NEW
-    configured_splits = configured.splits
+            raise HoldoutViolation(...)            # step 0, unchanged, and it still comes first
+
+    # 0b. ``holdout_end`` has just become load-bearing for read permission, which it was not when
+    #     P4-05 landed it. A caller who hands over a Settings whose holdout_end is later than the
+    #     repository's would widen what the two keys reach -- into the live region, before the
+    #     reveal, which is exactly what requirement 1 forbids -- without adding a key. Clamped
+    #     rather than refused, for the reason step 0's own comment gives about dev_end: a more
+    #     conservative boundary is allowed, and ``Splits.holdout_end`` defaults to ``dt.date.max``
+    #     precisely so a hand-built value has no live region. Refusing a later value instead would
+    #     raise on every hand-built Splits in the suite, dev reads included.
+    effective = dataclasses.replace(
+        resolved.splits,
+        holdout_end=min(resolved.splits.holdout_end, configured.splits.holdout_end),
+    )
 ```
 
-**Step 0b is new and it is necessary.** `holdout_end` has just become load-bearing for read
-permission, which it was not when P4-05 landed it. Under the bound above, a caller who hands over
-a `Settings` with `holdout_end = dt.date.max` and holds the two keys reads live data before the
-reveal — the exact failure requirement 1 forbids, reached without any key being added. Step 0
-blocks the same trick on `dev_end`; step 0b blocks it on `holdout_end`.
+**Why a clamp here and a refusal at step 0.** Step 0 refuses a later `dev_end` because, with the
+boundary moved, `_unlock_granted` would never be called and *nothing* — not this module, not the
+suite's police — would intercept the read; there is no conservative reading of that value to fall
+back on. `holdout_end` is different: the bound is computed in exactly one place, so taking the
+`min` is a complete fix, and the conservative reading is the committed one. The clamp is not a
+silent clip of the caller's *request* — `end > limit` still refuses, loudly, with the region named.
+It is a clip of the caller's *permission*, in the safe direction only.
 
-Note the direction is **opposite** to `config._refuse_an_earlier_holdout_end`, and both are right
-in their own place. config protects "a date the committed file seals must not silently become
-live"; `store` protects "the window the keys open must not extend past the sealed window". A
-builder who copies either rule into the other place will get it backwards, exactly as the parent
-design warned for `dev_end`. The error message must say which direction it is refusing and why.
+**The predicate is asked about `effective`, not about the repository's splits**, and this is what
+delivers the scoping claim in §5. A committed record pins the three dates it is a reveal *of*
+(§3), so:
+
+- a call with no `settings`, or with the repository's own, asks about `2025-12-31 / 2026-01-02 /
+  2026-10-30` and matches the real record — the seal lifts;
+- a call with `conftest.synthetic_store`'s splits asks about `2023-12-31 / 2024-01-02 /
+  2026-10-30` and matches nothing — the seal stays shut, **forever, in process, whatever is
+  committed**. Asking about the repository's splits instead would have lifted the seal for every
+  synthetic-store read in the suite on the day the real record landed, and W8 — which tests the
+  pure parse — would not have caught it.
+
+A hand-built `Splits` therefore fails closed on the lift as well as on the live region, which is
+the same direction `holdout_end`'s default already fails in.
 
 **The residual hole, which `store.py` cannot close — see §9, Q2.** `VOLAB_SPLITS_HOLDOUT_END` may
 move `holdout_end` *later*, by P4-05's ratified rule, and config's refusal compares against the
-file's literal. So the environment can still widen what the two keys reach, because `load_settings()`
-itself reports the overridden value and step 0b compares against that. Closing it means changing
-config to refuse the variable in **both** directions, which is a one-line change to a ratified rule
-and belongs to its own story, not to HR-3.
+file's literal. The clamp compares against `load_settings()`, which reports the overridden value,
+so the environment can still widen what a key-holder reaches. Closing it means changing config to
+refuse the variable in **both** directions: a one-line change to a ratified rule, and its own
+story.
+
+Note the clamp's direction is **opposite** to `config._refuse_an_earlier_holdout_end`, and both are
+right in their own place. config protects "a date the committed file seals must not silently become
+live"; `store` protects "the window the keys open must not extend past the sealed window". A builder
+who copies either rule into the other place gets it backwards, exactly as the parent design warned
+for `dev_end`.
 
 ---
 
@@ -396,9 +426,13 @@ past `dev_end` freely and the fixture's guarantee would evaporate — and worse,
 lift, `synthetic_store`'s `dev_end` of 2023-12-31 would unseal too. Two things prevent that, and
 HR-3 owns both:
 
-1. **The lift is scoped to the splits it reveals** (§3): a record pinning `dev_end 2025-12-31`
+1. **The lift is scoped to the splits it reveals**, in the record *and in the wiring*. The record
+   pins all three dates (§3) and step 3 asks `_reveal_committed(effective)` — the **caller's**
+   clamped splits, never the repository's (§4). A record pinning `dev_end 2025-12-31` therefore
    says nothing about a `Splits` whose `dev_end` is 2023-12-31, so `synthetic_store` stays sealed
-   forever regardless of what is committed. This is why `reveal_open` carries all three dates.
+   forever regardless of what is committed, in process, with no fixture involved. Asking about the
+   repository's splits instead would have made every synthetic-store read in the suite free on the
+   day the real record landed, and the pure-parse witness (W8) would not have caught it.
 2. **The suite is made reveal-invariant**, following the `_unlock_granted` precedent exactly.
    `_reveal_committed` is a plain module-level function, called by name and never aliased or bound,
    for the same documented reason `_unlock_granted` is; and `_forbid_holdout_unlock` adds, for an
@@ -413,6 +447,10 @@ HR-3 owns both:
    dependency on git state that the fixture does not currently know it has. Tests of the predicate
    itself call `_reveal_committed_in` or `_completed_reveal_in` directly and are untouched by the
    police, which is why those two exist as separate functions.
+
+   **The police does not reach a subprocess.** W10 spawns a child with no conftest, so that child
+   stubs `_reveal_committed` itself. Any future out-of-process witness has to do the same, or it
+   will change behaviour on reveal day for reasons that have nothing to do with what it tests.
 
 ### Two existing tests change shape, and here is exactly how
 
@@ -453,8 +491,8 @@ ongoing record of live reads is protection 3's forecast log, HR-4's, not this on
 
 ## 6. The exact interfaces HR-3 implements
 
-All in `src/volab/store.py` unless stated. New stdlib imports: `contextvars`, `re`, `secrets`, and
-`Iterator`/`Mapping` from `collections.abc`. New imports from `volab.config`:
+All in `src/volab/store.py` unless stated. New stdlib imports: `contextvars`, `dataclasses`, `re`,
+`secrets`, and `Iterator`/`Mapping` from `collections.abc`. New imports from `volab.config`:
 `DEFAULT_CONFIG_PATH`, `Region`, `Splits`. All numpy-free, scipy-free, arch-free; nothing here
 touches Parquet.
 
@@ -484,7 +522,8 @@ def _reveal_committed_in(repo_root: Path, splits: Splits) -> bool:
     Every failure mode is False. Takes a root for testability; ``load_panel`` never calls it."""
 
 def _reveal_committed(splits: Splits) -> bool:
-    """Memoised ``_reveal_committed_in(_REPO_ROOT, splits)``.
+    """Memoised ``_reveal_committed_in(_REPO_ROOT, splits)``. Asked about the **caller's**
+    effective splits, so only a record scoped to them lifts anything (§4).
 
     A plain module-level function, called by name and never bound or aliased anywhere, for the
     reason ``_unlock_granted`` is: the suite's policing fixture replaces it and must be sure
@@ -583,6 +622,11 @@ precedents are `tests/test_import_discipline.py` (AST over the package) and
 `tests/test_compare.py::test_no_module_level_table_in_cohorts_is_keyed_by_a_contestant_and_a_horizon`
 (runtime introspection over a module's globals). Both patterns are used below.
 
+Twenty-one witnesses, seven of them shape witnesses. Each names the file it belongs in by the
+module it exercises: `tests/test_store_guard.py` for everything through `load_panel`,
+`tests/test_store_seal.py` (new) for the pure functions and the git-asking layers,
+`tests/test_import_discipline.py` for W13's AST scan if it is more at home beside the ratchet.
+
 ### Live is unreachable before the reveal
 
 - **W1 `test_the_read_limit_is_the_whole_table`** — `_read_limit` parametrised over three regions ×
@@ -603,6 +647,21 @@ precedents are `tests/test_import_discipline.py` (AST over the package) and
   holding a key. See §9 Q1 on why it is written this way.
 - **W4** — the reshaped `test_both_keys_return_holdout_rows_…`, which keeps the positive half: the
   holdout *is* reachable with the keys before the reveal, and leaves an ordered pair of lines.
+- **W19 `test_a_caller_cannot_widen_the_unlocked_window_by_passing_a_later_holdout_end`** — the
+  clamp's witness, which step 0b would have had and the clamp must not go without. `synthetic_store`
+  with `Splits(dev_end=2023-12-31, holdout_start=2024-01-02, holdout_end=dt.date.max)`,
+  `_unlock_granted` stubbed `True`, `end=2026-10-31` → `HoldoutViolation` naming the **live**
+  region, because `effective.holdout_end` is the repository's `2026-10-30`. And its negative half:
+  the same call at `end=2024-03-01` succeeds, so the clamp did not narrow anything it should not
+  have — which is the assertion that keeps every existing hand-built-`Splits` test honest rather
+  than merely passing.
+- **W20 `test_a_revealed_window_is_free_and_unaudited`** — the "after" column, end-to-end through
+  `load_panel` rather than through `_read_limit`. `_reveal_committed` stubbed to return `True`,
+  `synthetic_store` with `holdout_end=2024-12-31`, rows written at `2025-01-02` (the live region),
+  no key held: the read **returns rows** and the audit file **does not exist**. This is the only
+  witness for the `audited = past_dev_end and not revealed` wiring; W1 covers the bound purely and
+  says nothing about it. Unmarked is correct here, because `2025-01-02` is below the repository's
+  own `dev_end` and `_police_holdout_read` therefore has nothing to object to.
 
 ### A forged, partial or mis-scoped record does not lift the seal
 
@@ -618,8 +677,14 @@ precedents are `tests/test_import_discipline.py` (AST over the package) and
   into a `tmp_path` used as `settings.storage_root`; the seal holds. This is HR-5's rehearsal in
   miniature and it is the witness for the forgery route the parent design found.
 - **W8 `test_a_record_scoped_to_other_splits_does_not_lift_the_seal`** — a committed, perfect pair
-  pinning `dev_end 2025-12-31` against a `Splits` whose `dev_end` is 2023-12-31 → `False`. This is
-  what keeps `synthetic_store` sealed after the real reveal.
+  pinning `dev_end 2025-12-31` against a `Splits` whose `dev_end` is 2023-12-31 → `False`. Paired
+  with **W21**, which exercises the same property through `load_panel`'s wiring rather than through
+  the pure function: W8 alone would pass even if step 3 asked about the repository's splits.
+- **W21 `test_a_record_for_other_splits_does_not_free_a_read_that_passes_them`** — W8's property
+  through the wiring: `_reveal_committed_in` stubbed so that *only* the repository's splits match a
+  committed record, then a `synthetic_store` read past `2023-12-31` with no key → refused. Fails if
+  step 3 is wired to `configured.splits` instead of `effective`, which is the mistake W8 cannot
+  see.
 - **W9 `test_every_git_failure_leaves_the_window_sealed`** — the subprocess runner patched to raise
   `TimeoutExpired`, `OSError`, `SubprocessError`, and to return a non-zero code; plus
   `_reveal_committed_in(tmp_path, splits)` on a directory that is not a repository. All `False`,
@@ -631,6 +696,11 @@ precedents are `tests/test_import_discipline.py` (AST over the package) and
   `tmp_path` store, replaces `store._scan` with a function that `os.kill(os.getpid(), SIGKILL)`s,
   and attempts a past-`dev_end` read. The parent asserts the log holds **exactly one** line, its
   `kind` is `look_open`, and no `look_close` exists.
+
+  **The child gets no conftest**, so it must stub both halves itself: `_unlock_granted → True` and
+  `_reveal_committed → lambda splits: False`. Without the second, this test would start failing on
+  reveal day for the wrong reason — `audited` would be `False`, no line would be written, and the
+  failure would read as a log-ordering defect.
 
   **The mutant this discriminates is the order, not the flush.** Measured both arms directly:
 
@@ -650,8 +720,10 @@ precedents are `tests/test_import_discipline.py` (AST over the package) and
 
 - **W12 `test_the_seal_is_one_comparison_against_one_bound`** — AST over `src/volab/store.py`:
   inside `load_panel`, exactly one `Compare` whose left is `Name("end")` with a `Gt` op against
-  `Name("limit")`; and in the whole module, exactly one call site each of `_read_limit`,
-  `_reveal_committed` and `_unlock_granted`.
+  `Name("limit")`; in the whole module, exactly one call site each of `_read_limit` and
+  `_unlock_granted`; and the functions containing a call to `_reveal_committed` are exactly
+  `{load_panel, reveal_is_committed}` — the guard and the read-only public accessor, nothing
+  else.
 - **W13 `test_nothing_but_git_and_the_splits_decides_the_seal`** — AST over the bodies of
   `_read_limit`, `_completed_reveal_in`, `_reveal_committed_in` and `_reveal_committed`: no
   reference to `os.environ`, `os.getenv`, `storage_root`, `AUDIT_FILENAME` or `Settings`, and no
@@ -659,8 +731,11 @@ precedents are `tests/test_import_discipline.py` (AST over the package) and
 - **W14 `test_only_one_function_opens_the_audit_log`** — `AUDIT_FILENAME` is referenced in exactly
   one function body in `store.py`, and no module under `src/volab` other than `store.py` names it.
   So HR-4 cannot grow a second writer with a different ordering.
-- **W15 `test_no_public_name_can_change_the_seals_state`** — `{n for n in vars(store) if not
-  n.startswith("_")}` equals an explicit frozen set. A new public lever is then a failing test
+- **W15 `test_no_public_name_can_change_the_seals_state`** — `{n for n, v in vars(store).items()
+  if not n.startswith("_") and callable(v) and getattr(v, "__module__", "") == "volab.store"}`
+  equals an explicit frozen set. Restricted to this module's own callables deliberately: a plain
+  `vars(store)` sweep also holds `dt`, `pd`, `duckdb`, `Settings` and every other import, so any
+  import change would fail it and the ratchet would be loosened to make it pass. A new public lever is then a failing test
   rather than a review that has to notice it. Pattern taken from the `(str, int)`-keyed-dict
   witness: the shape is refused, not one instance of it.
 - **W16 `test_the_predicates_path_is_what_git_actually_tracks`** — `REVEAL_RECORD_GIT_PATH` appears
@@ -713,8 +788,8 @@ A refusal list, so the implementer has one. Each item is something a reasonable 
    is a *research* boundary, not the seal, and it must stay pinned forever — its docstring says so
    and it is right. The reveal reads through HR-4's own code, not through the shootout's.
 10. **Must not edit `src/volab/daily/` or `src/volab/config.py`.** The daily refusal and the
-    `VOLAB_SPLITS_HOLDOUT_END` direction are separate stories (§9 Q2, Q3). Step 0b lives in
-    `store.py`.
+    `VOLAB_SPLITS_HOLDOUT_END` direction are separate stories (§9 Q2, Q3). The `holdout_end` clamp
+    lives in `store.py`.
 11. **Must not let the predicate raise.** A malformed, enormous, binary or absent log is "not
     revealed". A `HoldoutViolation` or a `JSONDecodeError` escaping the predicate would make a
     corrupt log a failure of the read path.
@@ -731,7 +806,14 @@ A refusal list, so the implementer has one. Each item is something a reasonable 
 16. **Must not shrink the audit record.** `ts`, `outcome`, `dataset`, `tier`, `end`, `start`,
     `symbols`, `caller_module`, `caller_lineno`, `git_sha`, `git_dirty` all survive; `schema`,
     `kind`, `look_id` and `reveal_id` are added, and `outcome` moves to the close line.
-17. **Must not mark a story done on assertion.** The two reshaped tests in `test_store_guard.py`
+17. **Must not turn the `holdout_end` clamp into a refusal.** Every hand-built `Splits` in `tests/`
+    omits `holdout_end` and therefore carries `dt.date.max`; refusing a later value would raise
+    `HoldoutViolation` on every one of them, dev reads included. §4 explains why the asymmetry with
+    step 0 is correct rather than lazy.
+18. **Must not ask the predicate about `load_settings().splits` inside `load_panel`.** It is asked
+    about `effective`. The difference is invisible to the pure-parse witness and is the whole of the
+    lift's scoping (§4, W21).
+19. **Must not mark a story done on assertion.** The two reshaped tests in `test_store_guard.py`
     are part of the diff, not a follow-up.
 
 ---
@@ -783,8 +865,12 @@ def plan_for(
     completed: frozenset[dt.date] = frozenset(),
     revealed: bool = False,                       # NEW, defaulting to the sealed answer
 ) -> Plan: ...
-    # the refusal becomes:  as_of > (settings.splits.holdout_end if revealed else dev_end)
-    # and after the reveal there is no upper bound at all, matching store's dt.date.max
+    # the refusal becomes:
+    #     if not revealed and as_of > settings.splits.dev_end:
+    #         return Plan(..., outcome="refused", ...)
+    # i.e. NO upper bound once revealed, matching store's dt.date.max. Writing it as
+    # `as_of > (holdout_end if revealed else dev_end)` would refuse every live date after the
+    # reveal -- the bug this story exists to fix, reintroduced one line lower down.
 
 # src/volab/daily/__main__.py  -- the single seam, beside _today()
 revealed = reveal_is_committed()
@@ -836,7 +922,7 @@ The exposure is narrow: it needs a shell that also sets `VOLAB_HOLDOUT_UNLOCK` a
 `VOLAB_*` override and fail any unmarked test that reaches for a key; and the same person could
 edit `config/base.yaml` instead, which `_refuse_a_later_dev_end` already admits. But it is a real
 widening and `store.py` cannot close it, because `load_settings()` reports the overridden value and
-step 0b can only compare against that.
+the clamp can only compare against that.
 
 **Recommendation: a one-line story making `_refuse_an_earlier_holdout_end` refuse the variable in
 *both* directions** — `holdout_end` becomes a committed literal, full stop. That is already what
@@ -866,7 +952,8 @@ Nothing needs changing now — no line exists yet.
 ## 10. What I deliberately left to the builder
 
 - The exact wording of the refusal messages, beyond the requirement that the live message must not
-  mention the keys and the holdout message must, and that step 0b must name its direction.
+  mention the keys and the holdout message must, and that step 0b's clamp must say in a comment
+  which direction it clips and why the asymmetry with step 0's refusal is deliberate.
 - Whether `_completed_reveal_in` scans the text once collecting ids or twice; only its contract is
   fixed.
 - The mechanics of W6's temp repository — a fixture or a helper in `tests/`.
