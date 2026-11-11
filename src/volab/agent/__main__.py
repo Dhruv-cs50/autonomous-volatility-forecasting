@@ -49,6 +49,10 @@ against it ends with every child refused.
 * ``2`` -- usage: argparse's own status, and a sprint id that does not begin with an ISO date.
 * ``3`` -- no provider key (:data:`EXIT_NO_KEY`).
 * ``4`` -- the sprint id already has a ``complete`` line; ids are used once.
+* ``5`` -- **the gate accepted a canary, so the sprint was voided** (R189). Distinct from ``1``
+  on purpose: an accepted canary means the guardrail stopped refusing illegal proposals, the
+  one outcome a shell caller or a CI job must never read as success. Every outcome other than
+  ``failed`` and this one used to exit 0, so this was invisible outside the sprint log.
 
 **Ledger counts.** ``volab.counts.count_all`` is the repository's counter, but it imports
 ``volab.walkforward.count_trials`` and so reaches ``volab.store`` (the fence reports
@@ -90,6 +94,7 @@ EXIT_FAILED = 1
 EXIT_USAGE = 2
 EXIT_NO_KEY = 3
 EXIT_ALREADY_COMPLETE = 4
+EXIT_VOIDED_BY_CANARY = 5
 
 CHECKPOINTS = Path("data") / "agent_checkpoints"
 VERBS = ("sprint", "show")
@@ -232,6 +237,8 @@ def _sprint(
             f"  to promote, in a separate process: "
             f"python -m volab.promote --proposal-id {result.pending.proposal_id}"
         )
+    if result.outcome == "voided_by_canary":
+        return EXIT_VOIDED_BY_CANARY
     return EXIT_FAILED if result.outcome == "failed" else EXIT_OK
 
 

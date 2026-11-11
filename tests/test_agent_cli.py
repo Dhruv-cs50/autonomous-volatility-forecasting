@@ -31,7 +31,7 @@ import volab.agent.__main__ as cli
 from volab.agent._llm import API_KEY_VARIABLE, FakeCompleter
 from volab.agent._runner import ChildRun
 from volab.agent.sprintlog import events
-from volab.agent.vocabulary import Proposal
+from volab.agent.vocabulary import VOCABULARY, GateVerdict, Proposal
 from volab.config import Settings, load_settings
 from volab.counts import AGENT_TRIAL_LEDGER, count_all
 
@@ -342,3 +342,41 @@ def test_the_cli_git_state_agrees_with_the_store_git_state_it_duplicates() -> No
     repository = Path(volab.__file__).resolve().parents[2]
 
     assert cli._git_state(repository) == store_git_state(repository)
+
+
+def test_a_sprint_voided_by_an_accepted_canary_exits_non_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An accepted canary must be visible to a shell caller, not just to a reader of the log.
+
+    R189 and the design say a sprint whose gate accepts a canary "exits non-zero". The sprint itself
+    returned ``outcome="voided_by_canary"`` correctly, but the CLI mapped every outcome except
+    ``failed`` to exit 0 -- so the one signal that the gate stopped refusing illegal proposals
+    reached a script or a CI job as success. Found by the delivery audit, not by the story that
+    built it, because the unit test asserted the ``SprintResult`` and nothing asserted the exit
+    code.
+    """
+
+    def accept_everything(
+        raw: object, *, sprint_id: str, index: int, universe: tuple[str, ...], canary: bool
+    ) -> GateVerdict:
+        proposal = Proposal(
+            f"{sprint_id}-{index:02d}", "harx", (VOCABULARY[0],), "SPY", 5, ("har_levels",)
+        )
+        return GateVerdict(True, proposal, "accepted", None, canary)
+
+    monkeypatch.setattr(agent, "gate", accept_everything)
+    status = run_cli(
+        "--root",
+        str(tmp_path),
+        "sprint",
+        "--sprint-id",
+        SPRINT_ID,
+        completer_factory=lambda: FakeCompleter(script()),
+        submit_fn=StubSubmit(tmp_path),
+    )
+
+    assert ": voided_by_canary" in capsys.readouterr().out
+    assert status != cli.EXIT_OK, "an accepted canary exited 0"
+    assert status == cli.EXIT_VOIDED_BY_CANARY
+    assert cli.EXIT_VOIDED_BY_CANARY not in {cli.EXIT_OK, cli.EXIT_FAILED}
