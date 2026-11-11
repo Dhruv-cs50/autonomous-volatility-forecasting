@@ -143,3 +143,48 @@ produces this wording" but **"the wording matches the on-disk and committed reco
 outcome the CLI can produce. A table keyed on exit codes is an enumeration, and this project has
 been bitten by stale enumerations before; a check derived from the record cannot go stale when
 someone renumbers a code or adds a failure path next year.
+
+## R220 — A counted attempt that **took looks** is not the same state as one that took none, and R219's table grows a fifth row
+
+**How this was found.** The exit-15 story (a configuration refused during scoring) returns *before*
+`record_reveal_completed`, so `seal_state` derives `COUNTED` and the operator's last line reads
+"seal: INTACT … it is counted and lifts nothing". By then `read_bars` and `derive_and_read` have
+already taken their sealed looks. The implementer reported this rather than smoothing it over, and
+noted the sharper half: **its new exit-table row asserted the false sentence**, so the witness
+pinned the defect as though it were the contract. That is the same failure as the ledger over-count
+test this project shipped once already — a test that asserts a bug is worse than no test.
+
+**The hazard is R218's, in the direction R219 was not looking.** R219 removed "says lifted when
+intact". This is "says intact when the data has been seen", which is the original hazard: a reader
+concludes the holdout is untouched when a key-holder has read part of it.
+
+**It is not confined to exit 15.** `window_not_ingested` (11) fires at look **16 of 38** and
+`canary_disagrees` (12) after stage A's **13** looks, and an unhandled exception mid-span exits 1 the
+same way. Every one of those leaves sealed looks taken and no completion line. Only
+`keys_not_held` (10) genuinely takes none, because a step-3 refusal in `load_panel` touches no
+filesystem before raising.
+
+**The ruling: `seal_state` reads `tally.looks` as well as `tally.attempts` and `tally.completed`,
+and `COUNTED` splits in two.**
+
+| on disk | at HEAD | what the operator is told |
+|---|---|---|
+| neither line | — | nothing written; the reveal is untouched and still available |
+| `reveal_open`, **no look lines** | — | the attempt is counted and **nothing was read**; the seal is intact |
+| `reveal_open` **and look lines**, no completion | — | **sealed looks were taken, so holdout data has been seen.** The seal is intact at HEAD and this attempt is counted, but **a later run is not a first look** — the log says how many were taken and the write-up must say so |
+| both lines | not committed | the holdout has been read and this run **was** the reveal; the seal lifts when `data/holdout_access.jsonl` is committed |
+| both lines | committed | lifted; the holdout is ordinary history |
+
+**Why not simply write `reveal_complete` on exit 15 instead.** That was the other candidate and it
+is wrong: "lifted" means the holdout is ordinary history to be read freely, which is far too strong
+for a run that took 16 of 38 looks and computed no registered figure. The honest statement is
+narrower than either existing sentence, so it needs its own row rather than being rounded to the
+nearest one. `record_reveal_completed` stays exactly where R218 put it.
+
+**It stays derived, per R219.** The new row is a function of the tally, not of the exit code, so
+exits 1, 11, 12 and 15 all acquire the correct sentence without any of them naming it — and so does
+a failure path nobody has written yet.
+
+**What it costs if it is wrong.** Nothing operationally: the sentence is strictly more informative
+than the one it replaces. The cost of *not* making it is an operator who reads "INTACT" after a
+key-holder has read raw holdout bars, and a next run that believes it is the first look.
