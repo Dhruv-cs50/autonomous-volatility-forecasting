@@ -694,16 +694,27 @@ def test_a_hand_built_splits_with_a_far_future_end_has_no_live_region() -> None:
     assert splits.region_of(dt.date.max) is Region.HOLDOUT
 
 
-def test_a_live_date_is_refused_by_the_existing_guard_exactly_as_a_holdout_date_is(
+def test_a_live_date_is_refused_without_offering_a_key_and_a_holdout_date_with_one(
     synthetic_store,
 ) -> None:
-    """``live`` has a name and no path: no read past ``holdout_end`` is any more open than before.
+    """``live`` has a name, no path, and **no key**: the two refusals must not read alike.
 
-    The settings are the store's, given the repository's own splits so that ``dev_end`` is the
-    real boundary. Each read is refused at step 3, before any filesystem access, with the
-    message the guard has always used, which names ``dev_end`` and not the region. That the two
-    messages differ only in the date is the point: the guard's answer does not depend on the
-    region.
+    Until the seal lifecycle landed, the guard gave one message for every date past ``dev_end``,
+    and this test asserted exactly that -- "the guard's answer does not depend on the region" was
+    its stated point. HR-3 reverses it, so the test asserts the opposite property, and the half
+    that matters is a **negative**:
+
+    * a **holdout** date is refused *with* the two keys named, because holding both is the one
+      pre-reveal route into that window;
+    * a **live** date is refused *without* them, because no argument and no environment variable
+      opens live -- only a committed reveal record does.
+
+    A live refusal that mentioned a key would be telling the reader to try something that cannot
+    work, so ``allow_holdout`` and ``VOLAB_HOLDOUT_UNLOCK`` must be **absent** from it. That
+    absence is the assertion with teeth here; the rest is wording.
+
+    The settings are the store's, given the repository's own splits so ``dev_end`` is the real
+    boundary. Both reads are refused at step 3, before any filesystem access.
     """
     splits = load_settings().splits
     settings = dataclasses.replace(synthetic_store.settings, splits=splits)
@@ -712,14 +723,28 @@ def test_a_live_date_is_refused_by_the_existing_guard_exactly_as_a_holdout_date_
     assert splits.region_of(holdout_day) is Region.HOLDOUT
     assert splits.region_of(live_day) is Region.LIVE
 
-    messages = []
-    for day in (holdout_day, live_day):
-        with pytest.raises(HoldoutViolation) as raised:
-            load_panel("bars_daily", symbols=["SPY"], end=day, settings=settings)
-        assert f"end {day} is past dev_end 2025-12-31; reading the holdout window" in str(
-            raised.value
-        )
-        assert "allow_holdout=True and VOLAB_HOLDOUT_UNLOCK=1" in str(raised.value)
-        messages.append(str(raised.value).replace(str(day), "<end>"))
+    with pytest.raises(HoldoutViolation) as refused_holdout:
+        load_panel("bars_daily", symbols=["SPY"], end=holdout_day, settings=settings)
+    holdout_message = str(refused_holdout.value)
 
-    assert messages[0] == messages[1]
+    with pytest.raises(HoldoutViolation) as refused_live:
+        load_panel("bars_daily", symbols=["SPY"], end=live_day, settings=settings)
+    live_message = str(refused_live.value)
+
+    # Both still name the boundary that was crossed.
+    assert f"end {holdout_day} is past dev_end 2025-12-31" in holdout_message
+    assert f"end {live_day} is past dev_end 2025-12-31" in live_message
+
+    # The holdout keeps the keys, because they are its one pre-reveal route.
+    assert "allow_holdout=True and VOLAB_HOLDOUT_UNLOCK=1" in holdout_message
+
+    # Live names its region and the only thing that opens it, and offers no key at all.
+    assert "live region" in live_message
+    assert "reveal record" in live_message
+    assert "allow_holdout" not in live_message
+    assert "VOLAB_HOLDOUT_UNLOCK" not in live_message
+
+    # And the two no longer read alike once the date is factored out, which is the change.
+    assert holdout_message.replace(str(holdout_day), "<end>") != live_message.replace(
+        str(live_day), "<end>"
+    )
