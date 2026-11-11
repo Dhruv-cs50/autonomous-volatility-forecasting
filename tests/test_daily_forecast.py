@@ -2229,7 +2229,9 @@ def test_a_holdout_date_is_refused_as_sealed(day: dt.date) -> None:
     assert "no key" in plan.reason
 
 
-@pytest.mark.parametrize("day", [dt.date(2026, 11, 2), dt.date(2026, 11, 4), dt.date(2027, 1, 4)])
+@pytest.mark.parametrize(
+    "day", [dt.date(2026, 11, 2), dt.date(2026, 11, 4), dt.date(2027, 1, 4)], ids=str
+)
 def test_a_live_date_is_refused_as_live_and_not_as_the_holdout(day: dt.date) -> None:
     plan = plan_for(_settings_with(holdout_end=_HOLDOUT_END), day)
 
@@ -2250,7 +2252,7 @@ def test_the_wording_follows_the_configured_holdout_end_and_not_a_hardcoded_date
     assert "live" in plan_for(_settings_with(holdout_end=_HOLDOUT_END), day).reason
 
 
-@pytest.mark.parametrize("day", [dt.date(2026, 3, 2), dt.date(2026, 11, 4)])
+@pytest.mark.parametrize("day", [dt.date(2026, 3, 2), dt.date(2026, 11, 4)], ids=str)
 def test_both_refusals_exit_one_and_write_nothing_through_the_verb(
     day: dt.date, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

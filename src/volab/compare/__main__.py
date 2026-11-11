@@ -44,6 +44,7 @@ from volab.compare.cohorts import (
 from volab.compare.series import loss_series
 from volab.compare.sink import Comparison, JsonlSink, Sink
 from volab.config import Settings, load_settings
+from volab.counts import agent_ledgers_line, count_all
 from volab.errors import DatasetNotFound
 from volab.features.targets import HORIZONS
 from volab.models.base import Cohort
@@ -53,7 +54,6 @@ from volab.store import load_panel
 from volab.walkforward import (
     LOSSES,
     Evaluation,
-    count_trials,
     git_state,
     load_for,
     run_configuration,
@@ -206,7 +206,7 @@ def _run(settings: Settings, arguments: argparse.Namespace, sink: Sink) -> int:
                 comparisons, at=started_at, sha=sha, dirty=dirty
             )
             # The ledger's count, cumulative and not this cohort's, printed beside the ranking.
-            ledger = count_trials(sink.root) if isinstance(sink, JsonlSink) else None
+            ledger = count_all(sink.root).trials if isinstance(sink, JsonlSink) else None
             for comparison in comparisons:
                 dm_tests += comparison.dm_tests
                 for line in describe(comparison, trials=ledger):
@@ -217,7 +217,9 @@ def _run(settings: Settings, arguments: argparse.Namespace, sink: Sink) -> int:
         f"{dm_tests} pairwise DM test(s) run"
     )
     if isinstance(sink, JsonlSink):
-        print(f"ledger now {count_trials(sink.root)} trial line(s)")
+        counted = count_all(sink.root)
+        print(f"ledger now {counted.trials} trial line(s)")
+        print(agent_ledgers_line(counted))
     print(f"ran in {time.perf_counter() - started:.1f}s")
     return 1 if failures else 0
 
