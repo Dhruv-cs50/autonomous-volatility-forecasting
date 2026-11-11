@@ -201,13 +201,32 @@ def test_an_approval_built_without_the_duplicate_is_refused(tmp_path: Path) -> N
     assert _run(tmp_path, "p1") == 1
 
 
-def test_lines_past_dev_end_and_of_other_cohorts_are_not_in_the_evidence(tmp_path: Path) -> None:
+def test_lines_of_other_cohorts_are_not_in_the_evidence(tmp_path: Path) -> None:
     kept = _trial("agent-x", 1)
-    ledger = [kept, _trial("agent-y", 2), _trial("agent-x", 3, origin=_PAST)]
+    ledger = [kept, _trial("agent-y", 2)]
     _write_ledger(tmp_path, ledger)
     _awaiting(tmp_path, ledger=[kept])
 
     assert _run(tmp_path, "p1") == 0
+
+
+@pytest.mark.parametrize("cohort", ["agent-x", "agent-y"])
+def test_a_line_past_dev_end_is_an_integrity_anomaly_and_nothing_is_written(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], cohort: str
+) -> None:
+    """R208: ``research`` fails a sprint on such a line; silently dropping it here would let a
+    ledger with an impossible line be approved, whichever cohort the line belongs to."""
+    kept = _trial("agent-x", 1)
+    _write_ledger(tmp_path, [kept, _trial(cohort, 3, origin=_PAST)])
+    _awaiting(tmp_path, ledger=[kept])
+    before = _files(tmp_path)
+
+    assert _run(tmp_path, "p1") == 1
+
+    err = capsys.readouterr().err
+    assert "integrity" in err and "dev_end" in err
+    assert _files(tmp_path) == before, "a refused promotion wrote something"
+    assert "promoted" not in [e["kind"] for e in _log_lines(tmp_path)]
 
 
 def test_the_fingerprint_is_recomputed_by_the_sprints_own_functions() -> None:

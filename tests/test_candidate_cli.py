@@ -189,7 +189,14 @@ def test_the_childs_command_line_has_no_date_typed_option() -> None:
     parser = cli.build_parser()
     assert _date_typed(parser) == []
     options = sorted(opt for action in parser._actions for opt in action.option_strings)
-    assert options == ["--help", "--proposal", "--result", "-h"]
+    assert options == [
+        "--git-dirty",
+        "--git-sha",
+        "--help",
+        "--proposal",
+        "--result",
+        "-h",
+    ]
 
 
 def test_the_date_witness_bites_on_a_parser_that_takes_a_date() -> None:
@@ -513,8 +520,10 @@ def test_exit_codes_are_distinct_and_leave_one_and_two_alone() -> None:
         cli.EXIT_COVERAGE_REFUSED,
         cli.EXIT_PROPOSAL_REFUSED,
         cli.EXIT_AUDIT_REFUSED,
+        cli.EXIT_CONFIG_REFUSED,
     }
-    assert len(codes) == 6
+    assert len(codes) == 7
+    assert cli.EXIT_CONFIG_REFUSED == 6
     assert (cli.EXIT_OK, cli.EXIT_FAILED, cli.EXIT_USAGE) == (0, 1, 2)
 
 
@@ -567,6 +576,11 @@ def _tampered_payloads() -> dict[str, object]:
         "unknown key (a stride)": {**good, "every": 1},
         "no proposal id": {k: v for k, v in good.items() if k != "proposal_id"},
         "id that is not a sprint and an index": {**good, "proposal_id": "no-index-here"},
+        # Passes a naive split, then ``cohort_name_for`` raises: the sprint has no leading date.
+        "id whose sprint does not begin with a date": {**good, "proposal_id": "foo-00"},
+        # ``"\u00b2".isdigit()`` is true and ``int("\u00b2")`` raises.
+        "id whose index is a superscript digit": {**good, "proposal_id": f"{SPRINT}-\u00b2"},
+        "id whose index is a non-ASCII digit": {**good, "proposal_id": f"{SPRINT}-\u0661\u0662"},
         "not a mapping": ["har_levels"],
     }
 
@@ -686,3 +700,138 @@ def test_a_storage_root_outside_the_repository_is_refused_intelligibly_and_write
     assert code == cli.EXIT_CONFIG_REFUSED
     assert "must be inside the repository" in capsys.readouterr().out
     assert not result.exists(), "no result file may be written when no evaluation began"
+
+
+# ---------------------------------------------------------------------------
+# R70: the stamps are the caller's, captured once. Each child used to capture its own.
+# ---------------------------------------------------------------------------
+
+STAMP_SHA = "f" * 40
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+
+@pytest.fixture
+def tracked_ledger_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wired:
+    """A real git repository whose ``data/agent_trials.jsonl`` is tracked, as in the project.
+
+    The project's ``.gitignore`` ignores ``data/*`` and then negates the agent ledger, so a
+    ledger line appended after the commit is a change ``git status`` reports. ``cli._REPO_ROOT``
+    is aimed at it, so the child's own capture sees exactly what it would see in production.
+    The proposal and result files live outside the repository, so they cannot make it dirty.
+    """
+    repo = tmp_path / "repo"
+    (repo / "data").mkdir(parents=True)
+    (repo / ".gitignore").write_text("data/*\n!data/agent_trials.jsonl\n", encoding="utf-8")
+    (repo / "data" / "agent_trials.jsonl").write_text("", encoding="utf-8")
+    _git(repo, "init", "-q")
+    _git(repo, "add", ".gitignore", "data/agent_trials.jsonl")
+    _git(repo, "commit", "-q", "-m", "init")
+    (tmp_path / "io").mkdir()
+    monkeypatch.setattr(cli, "_REPO_ROOT", repo)
+    return Wired(repo, monkeypatch)
+
+
+def _evaluate(
+    wired: Wired, index: int, *stamps: str, capsys: pytest.CaptureFixture[str]
+) -> dict[str, object]:
+    io = wired.root.parent / "io"
+    proposal_file = _file_for(io / f"proposal-{index}.json", _proposal(index=index))
+    result_file = io / f"result-{index}.json"
+    code = cli.main(["--proposal", str(proposal_file), "--result", str(result_file), *stamps])
+    capsys.readouterr()
+    assert code == cli.EXIT_OK
+    result: dict[str, object] = json.loads(result_file.read_text(encoding="utf-8"))
+    return result
+
+
+def _cohort_lines(wired: Wired, index: int) -> list[dict[str, object]]:
+    cohort = agent_cohort_name(SPRINT, index)
+    return [x for x in _lines(wired.ledger("agent_trials.jsonl")) if x["cohort"] == cohort]
+
+
+def test_a_childs_own_capture_is_polluted_by_the_previous_childs_append(
+    tracked_ledger_repo: Wired, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Non-vacuity: with no stamps passed, the second child reads the first one's append as dirty.
+
+    This is the mechanism the next test defends against, shown to be real in this fixture.
+    """
+    wired = tracked_ledger_repo
+    _evaluate(wired, 1, capsys=capsys)
+    _evaluate(wired, 2, capsys=capsys)
+    assert {x["git_dirty"] for x in _cohort_lines(wired, 1)} == {False}
+    assert {x["git_dirty"] for x in _cohort_lines(wired, 2)} == {True}
+
+
+def test_a_second_child_carries_the_sprints_stamps_not_the_first_childs_append(
+    tracked_ledger_repo: Wired, capsys: pytest.CaptureFixture[str]
+) -> None:
+    wired = tracked_ledger_repo
+    stamps = ("--git-sha", STAMP_SHA, "--git-dirty", "false")
+    first = _evaluate(wired, 1, *stamps, capsys=capsys)
+    second = _evaluate(wired, 2, *stamps, capsys=capsys)
+
+    for index, result in ((1, first), (2, second)):
+        lines = _cohort_lines(wired, index)
+        assert lines
+        assert {x["git_dirty"] for x in lines} == {False}
+        assert {x["git_sha"] for x in lines} == {STAMP_SHA}
+        assert result["git_dirty"] is False and result["git_sha"] == STAMP_SHA
+
+
+@pytest.mark.parametrize(
+    ("flag", "expected"), [("true", True), ("false", False), ("unknown", None)]
+)
+def test_the_dirty_flag_maps_to_a_bool_or_to_none_and_none_is_never_clean(
+    tracked_ledger_repo: Wired,
+    capsys: pytest.CaptureFixture[str],
+    flag: str,
+    expected: bool | None,
+) -> None:
+    result = _evaluate(
+        tracked_ledger_repo, 1, "--git-sha", STAMP_SHA, "--git-dirty", flag, capsys=capsys
+    )
+    lines = _cohort_lines(tracked_ledger_repo, 1)
+    assert {x["git_dirty"] for x in lines} == {expected}
+    assert result["git_dirty"] is expected
+    if flag == "unknown":
+        assert all(x["git_dirty"] is not False for x in lines)
+
+
+@pytest.mark.parametrize(
+    "stamps",
+    [
+        ["--git-sha", STAMP_SHA],
+        ["--git-dirty", "false"],
+        ["--git-dirty", "maybe", "--git-sha", "a"],
+    ],
+    ids=["sha-only", "dirty-only", "bad-value"],
+)
+def test_the_stamps_come_as_a_pair_and_the_dirty_value_is_one_of_three(
+    wired: Wired, stamps: list[str]
+) -> None:
+    proposal_file = _file_for(wired.root / "proposal.json", _proposal())
+    with pytest.raises(SystemExit) as exit_:
+        cli.main(
+            ["--proposal", str(proposal_file), "--result", str(wired.root / "r.json"), *stamps]
+        )
+    assert exit_.value.code == cli.EXIT_USAGE
+    assert not wired.ledger("agent_trials.jsonl").exists()
+
+
+def test_the_proposal_file_cannot_carry_the_stamps(wired: Wired) -> None:
+    """R184: ``validate`` refuses unknown keys, and a stamp in the file would be one."""
+    payload = {**asdict(_proposal()), "git_sha": STAMP_SHA, "git_dirty": False}
+    result_file = wired.root / "result.json"
+    code = cli.main(
+        ["--proposal", str(_write(wired.root / "p.json", payload)), "--result", str(result_file)]
+    )
+    assert code == cli.EXIT_PROPOSAL_REFUSED

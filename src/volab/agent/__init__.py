@@ -330,6 +330,25 @@ class _Sprint:
                 break
         return remembered
 
+    def _record_integrity(self, view: TrialView) -> None:
+        """Report to the operator that the ledger holds lines past ``dev_end`` (R208).
+
+        An integrity anomaly: the child evaluates only up to dev_end, so this ledger should never
+        hold a line past it. Operator-only: the count goes to the sprint log, and to no state field
+        and no prompt, because a count over data past dev_end is itself a quantity computed beyond
+        the seal. Shared by ``research`` and ``finish``, since a line can appear between the two.
+        """
+        record_event(
+            self.log_path,
+            sprint_id=self.sprint_id,
+            kind="report",
+            role="integrity",
+            excluded=view.excluded,
+            source=view.source.as_posix(),
+            reason="the agent ledger holds lines past dev_end, which no evaluation writes",
+            at=self.at,
+        )
+
     # -- the steps -----------------------------------------------------------------------------
 
     def supervise(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -338,20 +357,7 @@ class _Sprint:
     def research(self, state: dict[str, Any]) -> dict[str, Any]:
         view = self._ledger()
         if view.excluded:
-            # An integrity anomaly: the child evaluates only up to dev_end, so this ledger should
-            # never hold a line past it. Operator-only: the count goes to the sprint log, and to
-            # no state field and no prompt, because a count over data past dev_end is itself a
-            # quantity computed beyond the seal. No model is asked once it is found.
-            record_event(
-                self.log_path,
-                sprint_id=self.sprint_id,
-                kind="report",
-                role="integrity",
-                excluded=view.excluded,
-                source=view.source.as_posix(),
-                reason="the agent ledger holds lines past dev_end, which no evaluation writes",
-                at=self.at,
-            )
+            self._record_integrity(view)
             # A bare marker, not the reason: the checkpointed state is what a later sprint's
             # memory reads, and a later prompt must carry no trace of why this one failed. The
             # memory feed omits a sprint with no hypothesis, which this one never reaches.
@@ -555,6 +561,16 @@ class _Sprint:
             return result("no_candidate", f"the supervisor stopped: {state['supervisor']['note']}")
 
         view = self._ledger()
+        if view.excluded:
+            # The same integrity failure ``research`` reports (R208), for a line that appeared
+            # after research read the ledger -- a child wrote it, or someone edited the file. The
+            # fingerprint below would silently drop it, so no approval may be built on this view.
+            # Operator-only; nothing derived from the count is returned or reaches a prompt.
+            self._record_integrity(view)
+            return result(
+                "failed",
+                "the agent ledger holds lines past dev_end; see the integrity report on the log",
+            )
         candidates: list[PendingApproval] = []
         not_promotable: list[str] = []
         failures: list[str] = []

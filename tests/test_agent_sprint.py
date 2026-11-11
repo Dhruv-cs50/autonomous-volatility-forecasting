@@ -920,6 +920,40 @@ def test_a_ledger_line_past_dev_end_fails_the_sprint_and_reaches_no_prompt(
     assert not re.search(r"(?<![\w.])7(?![\w.])", seen)
 
 
+class _PlantingSubmit(StubSubmit):
+    """A child that, once it has run, leaves a line past ``dev_end`` on the ledger.
+
+    That is the case ``research`` cannot see: the line appears *after* research read the ledger.
+    """
+
+    def __call__(self, proposal: Proposal) -> ChildRun:
+        run = super().__call__(proposal)
+        _plant_lines_past_dev_end(self.root, 7)
+        return run
+
+
+def test_a_line_past_dev_end_that_appears_after_research_fails_the_sprint_at_finish(
+    tmp_path: Path, settings: Settings
+) -> None:
+    completer = FakeCompleter(script())
+    result = sprint(tmp_path, settings, completer=completer, submit=_PlantingSubmit(tmp_path))
+
+    assert result.outcome == "failed"
+    assert result.pending is None
+    assert "past dev_end" in result.reason
+    assert not log_of(tmp_path, "awaiting_approval")
+    anomalies = [e for e in log_of(tmp_path, "report") if e.get("role") == "integrity"]
+    assert len(anomalies) == 1
+    # Seven lines per child, three children; the operator is told, a prompt is not.
+    assert anomalies[0]["excluded"] == 7 * 3
+    assert log_of(tmp_path)[-1]["kind"] == "complete"
+
+    seen = "\n".join(f"{p.system}\n{p.user}" for p in completer.prompts)
+    for trace in ("planted", "qzx", "zzq", "2026-03-02", "excluded", "dropped", "integrity"):
+        assert trace not in seen
+    assert not re.search(r"(?<![\w.])(7|21)(?![\w.])", seen)
+
+
 def test_a_clean_ledger_gives_the_models_the_kept_count_and_no_mention_of_exclusion(
     tmp_path: Path, settings: Settings
 ) -> None:

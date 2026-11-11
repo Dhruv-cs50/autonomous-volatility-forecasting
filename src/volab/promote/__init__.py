@@ -34,8 +34,11 @@ approval would then be refused for a reason nobody can see. The contract is the 
 filtered to the approval's cohort, **duplicates included** (R210: a crash-window resubmission
 doubles a cohort's lines, and the sprint fingerprinted all of them).
 
-**Refusals** (each exits 1, writes nothing, and says why): no ``awaiting_approval`` event for the
-id; a ``promoted`` event for the id already exists, since promotion happens once; the recomputed
+**Refusals** (each exits 1, writes nothing, and says why): an integrity anomaly -- the agent
+ledger holds a line past ``dev_end`` (R208), the same condition that fails a sprint, which
+``read_agent_trials`` would otherwise drop from the fingerprint without a word; no
+``awaiting_approval`` event for the id; a ``promoted`` event for the id already exists, since
+promotion happens once; the recomputed
 fingerprint differs from the stored one, in which case both are printed; and, because
 ``pending_approvals`` leaves it to this process to refuse rather than guess, more than one
 ``awaiting_approval`` event for the same id. An unreadable agent ledger is also reported and
@@ -75,6 +78,13 @@ class _Refused(Exception):
 def _recompute(approval: PendingApproval, root: Path, dev_end: dt.date) -> str:
     """The fingerprint the sprint would compute now, by the sprint's own functions (see above)."""
     view = read_agent_trials(root, dev_end=dev_end)
+    if view.excluded:
+        # R208: a line past dev_end is an integrity anomaly, which ``research`` fails a sprint on.
+        # Dropping it here would approve a candidate against a ledger no evaluation could write.
+        raise _Refused(
+            f"integrity anomaly: the agent ledger holds {view.excluded} line(s) past dev_end "
+            f"({dev_end.isoformat()}), which no evaluation writes; nothing was promoted"
+        )
     evidence = [evidence_hash(line) for line in view.lines if line.get("cohort") == approval.cohort]
     return fingerprint_of(approval.proposal, evidence)
 

@@ -203,7 +203,8 @@ def _sprint(
     settings = dataclasses.replace(load_settings(), storage_root=storage_root)
 
     def evaluate(proposal: Proposal) -> ChildRun:
-        return submit_fn(proposal, root=storage_root)
+        # The sprint's own stamps (R70), so no child reads a tree an earlier child appended to.
+        return submit_fn(proposal, root=storage_root, git_sha=sha, git_dirty=dirty)
 
     try:
         result: SprintResult = run_sprint(

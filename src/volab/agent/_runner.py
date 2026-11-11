@@ -25,7 +25,9 @@ object. ``pid`` comes from the same file, so it is ``None`` exactly when ``resul
 0 evaluated; 1 evaluated but the built rows disagree with the persisted table *or* an uncaught
 exception (told apart only by whether a result file exists); 2 argparse usage error, a bug in the
 runner; 3 refused for coverage, no trial line, a legitimate outcome; 4 the proposal file refused
-at the boundary; 5 refused by the audit. Any other code, including a negative one from a signal, is
+at the boundary; 5 refused by the audit; 6 the child's configuration was refused, so no
+evaluation began and no result file exists. Any other code, including a negative one from a signal,
+is
 ``"unrecognised"``. The constants below are copies of the child's, tied to it by a test and not
 imported, because importing ``volab.candidate`` is forbidden here.
 
@@ -78,6 +80,7 @@ EXIT_USAGE = 2
 EXIT_COVERAGE_REFUSED = 3
 EXIT_PROPOSAL_REFUSED = 4
 EXIT_AUDIT_REFUSED = 5
+EXIT_CONFIG_REFUSED = 6
 
 _CHILD_MODULE = "volab.candidate"
 
@@ -86,6 +89,7 @@ _REFUSALS = {
     EXIT_COVERAGE_REFUSED: "coverage_refused",
     EXIT_PROPOSAL_REFUSED: "proposal_refused",
     EXIT_AUDIT_REFUSED: "audit_refused",
+    EXIT_CONFIG_REFUSED: "config_refused",
 }
 
 
@@ -107,8 +111,8 @@ class ChildRun:
         """The exit code's meaning (R203) as a name; the raw code stays on ``exit_code``.
 
         One of ``evaluated``, ``disagrees``, ``crashed``, ``usage_error``, ``coverage_refused``,
-        ``proposal_refused``, ``audit_refused`` or ``unrecognised``. Exit 1 is ``disagrees`` when a
-        result file was read and ``crashed`` when none was.
+        ``proposal_refused``, ``audit_refused``, ``config_refused`` or ``unrecognised``. Exit 1 is
+        ``disagrees`` when a result file was read and ``crashed`` when none was.
         """
         if self.exit_code == EXIT_OK:
             return "evaluated"
@@ -157,8 +161,22 @@ def _run_one(command: list[str], env: dict[str, str]) -> tuple[int, str]:
     return exit_code, text
 
 
-def submit(proposal: Proposal, *, root: Path, python: str = sys.executable) -> ChildRun:
+def submit(
+    proposal: Proposal,
+    *,
+    root: Path,
+    python: str = sys.executable,
+    git_sha: str | None = None,
+    git_dirty: bool | None = None,
+) -> ChildRun:
     """Evaluate ``proposal`` in a fresh interpreter against the storage root ``root``.
+
+    ``git_sha`` and ``git_dirty`` are the **sprint's** stamps, captured once at its start (R70) and
+    handed to the child as ``--git-sha`` / ``--git-dirty`` so that it does not read the tree after
+    an earlier child has appended to a tracked ledger. They go together: with ``git_sha=None``
+    neither is passed and the child captures its own. ``git_dirty=None`` with a sha is "could not
+    be read" and is passed as ``unknown``, which the child records as null and never as clean.
+    They are not part of the proposal file, whose keys ``validate`` fixes (R184).
 
     ``python`` is the interpreter and is only ever followed by ``-m volab.candidate``; it is a
     parameter so a test can substitute a stub. Never raises for what the child did: every outcome,
@@ -178,6 +196,9 @@ def submit(proposal: Proposal, *, root: Path, python: str = sys.executable) -> C
             "--result",
             str(result_path),
         ]
+        if git_sha is not None:
+            dirty_flag = "unknown" if git_dirty is None else str(git_dirty).lower()
+            command += ["--git-sha", git_sha, "--git-dirty", dirty_flag]
         exit_code, output = _run_one(command, env)
         result = _read_result(result_path)
     pid = result.get("pid") if result is not None else None

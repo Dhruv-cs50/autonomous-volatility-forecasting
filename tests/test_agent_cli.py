@@ -72,9 +72,18 @@ class RecordingSubmit:
     def __init__(self, stub: StubSubmit) -> None:
         self.stub = stub
         self.roots: list[Path] = []
+        self.stamps: list[tuple[str | None, bool | None]] = []
 
-    def __call__(self, proposal: Proposal, *, root: Path) -> ChildRun:
+    def __call__(
+        self,
+        proposal: Proposal,
+        *,
+        root: Path,
+        git_sha: str | None = None,
+        git_dirty: bool | None = None,
+    ) -> ChildRun:
         self.roots.append(root)
+        self.stamps.append((git_sha, git_dirty))
         return self.stub(proposal)
 
 
@@ -196,6 +205,25 @@ def test_a_full_sprint_through_main_submits_aimed_at_the_storage_root_and_checkp
     assert set(submit.roots) == {tmp_path / "data"}
     assert list((tmp_path / "data" / "agent_checkpoints").glob("*.jsonl"))
     assert events(tmp_path / "data" / "agent_sprints.jsonl", SPRINT_ID)[-1]["kind"] == "complete"
+
+
+def test_every_child_is_handed_the_sprints_own_stamps_captured_once_at_its_start(
+    tmp_path: Path,
+) -> None:
+    """R70: the children must not capture their own, or the first one's ledger append (the file
+    is tracked) makes every later child in the sprint read as dirty."""
+    submit = RecordingSubmit(StubSubmit(tmp_path))
+    run_cli(
+        "--root",
+        str(tmp_path),
+        "sprint",
+        "--sprint-id",
+        SPRINT_ID,
+        completer_factory=lambda: FakeCompleter(script()),
+        submit_fn=submit,
+    )
+    assert submit.stamps
+    assert set(submit.stamps) == {(SHA, False)}
 
 
 def test_the_default_root_is_the_parent_of_the_storage_root_not_the_storage_root(

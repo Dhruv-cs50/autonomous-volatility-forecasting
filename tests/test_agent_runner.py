@@ -130,6 +130,31 @@ def test_the_proposal_travels_as_a_file_of_the_five_fields_plus_its_id(tmp_path:
     }
 
 
+@pytest.mark.parametrize(("dirty", "flag"), [(False, "false"), (True, "true"), (None, "unknown")])
+def test_the_sprints_stamps_are_passed_to_the_child_and_unknown_is_not_clean(
+    tmp_path: Path, dirty: bool | None, flag: str
+) -> None:
+    sha = "a" * 40
+    run = submit(
+        _proposal(),
+        root=tmp_path / "data",
+        python=_wrapper(tmp_path, "stub_ok"),
+        git_sha=sha,
+        git_dirty=dirty,
+    )
+    assert run.result is not None
+    argv = run.result["argv"]
+    assert argv[4:] == ["--git-sha", sha, "--git-dirty", flag]
+    # Still no proposal field on the command line, and the stamps are not in the proposal file.
+    assert "git_sha" not in run.result["proposal"] and "git_dirty" not in run.result["proposal"]
+
+
+def test_without_stamps_the_child_is_left_to_capture_its_own(tmp_path: Path) -> None:
+    run = _go(tmp_path, "stub_ok")
+    assert run.result is not None
+    assert len(run.result["argv"]) == 4
+
+
 def test_the_childs_argv_is_the_two_paths_and_no_proposal_fields(tmp_path: Path) -> None:
     run = _go(tmp_path, "stub_ok")
 
@@ -201,6 +226,7 @@ def test_the_proposal_id_is_carried_on_the_run(tmp_path: Path) -> None:
         (3, True, "coverage_refused"),
         (4, True, "proposal_refused"),
         (5, True, "audit_refused"),
+        (6, False, "config_refused"),
         (9, False, "unrecognised"),
     ],
 )
@@ -227,6 +253,7 @@ def test_the_exit_constants_equal_the_childs_own() -> None:
         _runner.EXIT_COVERAGE_REFUSED,
         _runner.EXIT_PROPOSAL_REFUSED,
         _runner.EXIT_AUDIT_REFUSED,
+        _runner.EXIT_CONFIG_REFUSED,
     ) == (
         child.EXIT_OK,
         child.EXIT_FAILED,
@@ -234,6 +261,7 @@ def test_the_exit_constants_equal_the_childs_own() -> None:
         child.EXIT_COVERAGE_REFUSED,
         child.EXIT_PROPOSAL_REFUSED,
         child.EXIT_AUDIT_REFUSED,
+        child.EXIT_CONFIG_REFUSED,
     )
 
 
