@@ -22,6 +22,7 @@ the source and a derived truth in the test, so neither can be edited alone.
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import re
 from typing import Any
 
@@ -45,10 +46,12 @@ from volab.agent.vocabulary import (
     validate,
 )
 from volab.compare.cohorts import COHORTS, SHOOTOUT
-from volab.errors import ConfigError, ProposalRefused, SchemaError, VolabError
+from volab.errors import ModelSkip, ProposalRefused, SchemaError, VolabError
 from volab.features.build import FEATURE_COLUMNS, HAR_COLUMNS
 from volab.features.targets import HORIZONS as REAL_HORIZONS
 from volab.features.targets import target_column
+from volab.models.base import TrainingView
+from volab.models.harx import harx
 from volab.paths import Tier, validate_segment
 from volab.store import load_panel
 from volab.walkforward import BASELINE_COHORT, fit_ols
@@ -96,9 +99,10 @@ def test_the_reference_contestants_are_real_and_har_levels_leads_them() -> None:
     assert REFERENCE_CONTESTANTS[0] == "har_levels" == SHOOTOUT.contestants[0]
 
 
-def test_the_vocabulary_is_the_feature_columns_minus_the_exact_har_transforms_in_order() -> None:
-    assert tuple(c for c in FEATURE_COLUMNS if c not in _EXACT_HAR_TRANSFORMS) == VOCABULARY
-    assert set(FEATURE_COLUMNS) >= _EXACT_HAR_TRANSFORMS, "an excluded name that is not a feature"
+def test_the_vocabulary_is_the_feature_columns_minus_the_har_base_and_its_transforms() -> None:
+    excluded = {*_EXACT_HAR_TRANSFORMS, *HAR_COLUMNS}
+    assert tuple(c for c in FEATURE_COLUMNS if c not in excluded) == VOCABULARY
+    assert set(FEATURE_COLUMNS) >= excluded, "an excluded name that is not a feature"
     assert len(VOCABULARY) == len(set(VOCABULARY))
 
 
@@ -129,29 +133,14 @@ def _synthetic_frame(rows: int = 120) -> pd.DataFrame:
     return frame
 
 
-def _beside_the_base() -> tuple[str, ...]:
-    """The vocabulary columns that are not themselves a member of the HAR base. See
-    ``test_no_vocabulary_column_is_already_a_member_of_the_har_base`` for why this filter exists."""
-    return tuple(c for c in VOCABULARY if c not in HAR_COLUMNS)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="CONCERN for the architect: VOCABULARY = FEATURE_COLUMNS minus the three rv_proxy_* "
-    "names still contains har_d/w/m_proxy, which ARE the base: naming one repeats a base column "
-    "(a duplicate design column). The fix is one line, adding HAR_COLUMNS to the exclusion; "
-    "strict so that fixing it forces this marker's removal.",
-)
-def test_no_vocabulary_column_is_already_a_member_of_the_har_base() -> None:
-    assert not set(VOCABULARY) & set(HAR_COLUMNS)
-
-
 def _assert_fittable_exactly_when_allowed(
     frame: pd.DataFrame, response: str, constant: frozenset[str] = frozenset()
 ) -> None:
-    """``constant`` names columns known to be constant in ``frame``; they are asserted to be
-    refused instead (a constant is collinear with the intercept)."""
-    for column in _beside_the_base():
+    """Every vocabulary column fits beside the HAR base, with no exemption except ``constant``:
+    columns derived from the data as constant in ``frame``, which are collinear with the intercept
+    and asserted to be refused instead (see the module docstring of ``vocabulary``). Each name in
+    ``_EXACT_HAR_TRANSFORMS`` must be refused."""
+    for column in VOCABULARY:
         if column in constant:
             with pytest.raises(SchemaError):
                 fit_ols(frame, [*HAR_COLUMNS, column], response)
@@ -160,6 +149,10 @@ def _assert_fittable_exactly_when_allowed(
     for column in sorted(_EXACT_HAR_TRANSFORMS):
         with pytest.raises(SchemaError):
             fit_ols(frame, [*HAR_COLUMNS, column], response)
+
+
+def test_no_vocabulary_column_is_a_member_of_the_har_base() -> None:
+    assert not set(VOCABULARY) & set(HAR_COLUMNS)
 
 
 def test_every_vocabulary_column_is_fittable_beside_the_har_base_on_a_synthetic_frame() -> None:
@@ -187,19 +180,39 @@ def test_every_vocabulary_column_is_fittable_beside_the_har_base_on_the_real_pan
     _assert_fittable_exactly_when_allowed(frame, "y", constant)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="CONCERN for the architect, MEASURED on the real SPY table: has_distribution is a "
-    "vocabulary column that is constant (one distinct value over 2312 rows), so it is collinear "
-    "with the intercept and every proposal naming it is refused by fit_ols as singular. The "
-    "witness in the test above derives such columns from the data rather than listing them.",
-)
-def test_no_vocabulary_column_is_constant_on_the_real_panel() -> None:
+def _real_frame() -> pd.DataFrame:
     config = real_panel.settings()
     frame = load_panel(
         "har_daily", end=config.splits.dev_end, symbols=["SPY"], tier=Tier.FEATURES, settings=config
+    ).reset_index(drop=True)
+    frame["y"] = frame["rv_proxy_d1"].shift(-1)
+    return frame
+
+
+def test_a_column_constant_in_the_window_is_refused_as_a_model_skip_naming_it() -> None:
+    """A constant column is not excluded from the vocabulary (constancy belongs to a window), so
+    what is guaranteed is how it is refused: ``HarX.fit`` raises ``ModelSkip`` naming the column,
+    not the ``SchemaError`` that would delete the origin for every contestant, and not a crash.
+    The constant columns are derived from the real SPY table, not named; ``has_distribution`` is
+    the live instance. Fails, rather than passing vacuously, if none is constant any more."""
+    frame = _real_frame()
+    constant = [c for c in VOCABULARY if frame[c].nunique() <= 1]
+    assert constant, "no vocabulary column is constant in this window; this witness is vacuous"
+    training, row = frame.iloc[:-1], frame.iloc[-1].drop("y")
+    view = TrainingView(
+        symbol="SPY",
+        origin=dt.date(2025, 12, 31),
+        horizon=1,
+        response="y",
+        training=training,
+        row=row,
+        returns=pd.Series(dtype="float64"),
+        minimum_training=250,
+        stride=1,
     )
-    assert [c for c in VOCABULARY if frame[c].nunique() <= 1] == []
+    for column in constant:
+        with pytest.raises(ModelSkip, match=column):
+            harx((column,)).fit(view)
 
 
 # -- validate: the accepted shape, then one test per RefusalCode -------------------------------
@@ -323,13 +336,13 @@ def test_a_reference_that_does_not_begin_with_har_levels_is_refused_as_misordere
     assert refused.code is RefusalCode.REFERENCE_ORDER and "har_levels" in str(refused)
 
 
-def test_an_empty_reference_is_refused_as_misordered() -> None:
-    assert refusal_of(good(reference=[])).code is RefusalCode.REFERENCE_ORDER
+def test_an_empty_reference_is_refused_as_having_nothing_to_order() -> None:
+    assert refusal_of(good(reference=[])).code is RefusalCode.NO_REFERENCE
 
 
-def test_a_repeated_reference_is_refused_as_misordered() -> None:
+def test_a_repeated_reference_is_refused_and_named() -> None:
     refused = refusal_of(good(reference=["har_levels", "har_levels"]))
-    assert refused.code is RefusalCode.REFERENCE_ORDER
+    assert refused.code is RefusalCode.DUPLICATE_REFERENCE and "har_levels" in str(refused)
 
 
 def test_every_refusal_code_has_a_test_that_raises_it() -> None:
@@ -348,6 +361,8 @@ def test_every_refusal_code_has_a_test_that_raises_it() -> None:
         RefusalCode.UNKNOWN_FAMILY,
         RefusalCode.UNKNOWN_REFERENCE,
         RefusalCode.REFERENCE_ORDER,
+        RefusalCode.NO_REFERENCE,
+        RefusalCode.DUPLICATE_REFERENCE,
     }
     assert exercised == set(RefusalCode)
 
@@ -463,7 +478,7 @@ def test_an_agent_cohort_name_is_deterministic_and_varies_with_sprint_and_index(
 
 
 def test_a_sprint_id_with_no_leading_date_has_no_cohort_name() -> None:
-    with pytest.raises(ConfigError):
+    with pytest.raises(ValueError):
         agent_cohort_name("sprint-one", 0)
 
 

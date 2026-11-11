@@ -19,12 +19,21 @@ lists. That the allowlist itself admits no target column is witnessed by a deriv
 (``test_the_vocabulary_names_no_target_column``), not asserted here. The agent names no response
 either: there is no field for it.
 
-**Three columns are excluded, by measurement.** ``rv_proxy_d1``, ``rv_proxy_d5`` and
-``rv_proxy_d22`` are exact linear transforms of the HAR base the proposal always carries
-(``har_d_proxy`` *is* ``rv_proxy_d1``; ``har_w_proxy * 5`` and ``har_m_proxy * 22`` equal the other
-two to within float epsilon, which ``features/har.py`` makes true by construction), so naming one
-gives an exactly singular design. The exclusion is witnessed by running ``fit_ols`` rather than by
-trusting that sentence.
+**Two sets of columns are excluded, for different reasons, and both are witnessed by running
+``fit_ols`` rather than by trusting these sentences.** ``HAR_COLUMNS`` (``har_d_proxy``,
+``har_w_proxy``, ``har_m_proxy``) are excluded because they *are* the base every proposal already
+carries: naming one repeats a design column. ``rv_proxy_d1``, ``rv_proxy_d5`` and ``rv_proxy_d22``
+(:data:`_EXACT_HAR_TRANSFORMS`) are excluded because they are exact linear transforms of that base
+(``har_d_proxy`` *is* ``rv_proxy_d1``, measured to 0.0; ``har_w_proxy * 5`` and ``har_m_proxy * 22``
+equal the other two to within float epsilon, which ``features/har.py`` makes true by
+construction), so naming one gives an exactly singular design.
+
+**What is deliberately *not* excluded: a column that is constant in some window.** Constancy is a
+property of a window, not of a column, so a static list would be wrong the day the window moves.
+``has_distribution`` is the live instance today (measured on the real SPY table up to ``dev_end``,
+2026-11-10: one distinct value over 2,312 rows, hence collinear with the intercept). A proposal
+naming it is refused at fit time by ``HarX.fit`` as a ``ModelSkip`` naming the column, which skips
+one model at one origin and leaves the origin standing for everyone else.
 
 **This module imports nothing that reaches ``volab.store``** (R192). ``volab.features.build`` is
 store-free; ``volab.features.targets`` and ``volab.compare.cohorts`` are not, so :data:`HORIZONS`
@@ -45,15 +54,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from volab.errors import ConfigError, ProposalRefused
-from volab.features.build import FEATURE_COLUMNS
+from volab.errors import ProposalRefused
+from volab.features.build import FEATURE_COLUMNS, HAR_COLUMNS
 
 # Exact linear transforms of the HAR base, so a proposal naming one is ALWAYS singular.
 # MEASURED: har_d_proxy IS rv_proxy_d1 (max abs diff 0.0); har_w_proxy*5 == rv_proxy_d5 (3.5e-18);
 # har_m_proxy*22 == rv_proxy_d22 (6.9e-18). features/har.py makes this true by construction.
 _EXACT_HAR_TRANSFORMS: frozenset[str] = frozenset({"rv_proxy_d1", "rv_proxy_d5", "rv_proxy_d22"})
 
-VOCABULARY: tuple[str, ...] = tuple(c for c in FEATURE_COLUMNS if c not in _EXACT_HAR_TRANSFORMS)
+VOCABULARY: tuple[str, ...] = tuple(
+    c for c in FEATURE_COLUMNS if c not in _EXACT_HAR_TRANSFORMS and c not in HAR_COLUMNS
+)
 
 # A literal, because ``volab.features.targets`` reaches ``volab.store``. Pinned by
 # ``test_the_horizons_literal_equals_the_real_horizons``.
@@ -93,6 +104,8 @@ class RefusalCode(enum.Enum):
     UNKNOWN_FAMILY = "unknown_family"
     UNKNOWN_REFERENCE = "unknown_reference"
     REFERENCE_ORDER = "reference_order"
+    NO_REFERENCE = "no_reference"
+    DUPLICATE_REFERENCE = "duplicate_reference"
 
 
 @dataclass(frozen=True)
@@ -199,15 +212,17 @@ def validate(raw: object, *, sprint_id: str, index: int, universe: tuple[str, ..
             RefusalCode.UNKNOWN_REFERENCE,
             f"{unknown_reference!r} not among {REFERENCE_CONTESTANTS!r}",
         )
-    if not reference or reference[0] != REFERENCE_CONTESTANTS[0]:
+    if not reference:
+        raise _refuse(RefusalCode.NO_REFERENCE, "reference is empty; har_levels is required")
+    if len(set(reference)) != len(reference):
+        raise _refuse(
+            RefusalCode.DUPLICATE_REFERENCE, f"reference repeats a contestant: {list(reference)!r}"
+        )
+    if reference[0] != REFERENCE_CONTESTANTS[0]:
         raise _refuse(
             RefusalCode.REFERENCE_ORDER,
             f"reference must begin with {REFERENCE_CONTESTANTS[0]!r} (R87), "
             f"got {list(reference)!r}",
-        )
-    if len(set(reference)) != len(reference):
-        raise _refuse(
-            RefusalCode.REFERENCE_ORDER, f"reference repeats a contestant: {list(reference)!r}"
         )
 
     return Proposal(
@@ -244,12 +259,13 @@ def agent_cohort_name(sprint_id: str, index: int) -> str:
     ``isodate`` is the date ``sprint_id`` begins with (``YYYY-MM-DD``) and ``8hex`` is the first
     eight hex digits of the sha256 of the whole ``sprint_id``, so the name is deterministic. No
     path separator and no glob metacharacter, so ``validate_segment`` accepts it (R196). A
-    ``sprint_id`` that does not begin with a real date has no cohort name: ``ConfigError``.
+    ``sprint_id`` that does not begin with a real date has no cohort name: ``ValueError``, the
+    caller's own mistake.
     """
     try:
         day = dt.date.fromisoformat(sprint_id[:10])
     except ValueError as bad:
-        raise ConfigError(f"sprint id {sprint_id!r} must begin with an ISO date") from bad
+        raise ValueError(f"sprint id {sprint_id!r} must begin with an ISO date") from bad
     digest = hashlib.sha256(sprint_id.encode("utf-8")).hexdigest()[:8]
     return f"agent-{day.isoformat()}-{digest}-{index:02d}"
 
