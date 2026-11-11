@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import math
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -405,6 +406,47 @@ def test_a_decision_line_states_whether_its_ex_date_count_could_be_known(
     assert line["distribution_flags_known"] is known
     assert line["distribution_holdings_affected"] == 4
     assert line["distribution_window"] == 10
+
+
+def _stated_count(line: str) -> int:
+    """The ex-date count the console line states, in whichever shape the line takes.
+
+    The two branches word it differently -- "ex-dates: 3 session(s) of 10" against "a count of
+    0 (10 session(s) looked at)" -- so the number is read from either, and a line stating no
+    number at all fails here rather than being skipped.
+    """
+    match = re.search(r"ex-dates: (\d+) session\(s\)|a count of (\d+)", line)
+    assert match, f"the ex-dates line states no count: {line!r}"
+    return int(match.group(1) or match.group(2))
+
+
+@pytest.mark.parametrize("known", [True, False])
+@pytest.mark.parametrize("flagged", [0, 3])
+def test_the_console_ex_date_count_is_the_count_the_ledger_records(
+    tmp_path: Path, known: bool, flagged: int
+) -> None:
+    """The console and ``decisions.jsonl`` cannot disagree about the same run's ex-date count.
+
+    Both halves of the grid matter, and the second was the defect. ``distribution_flags_known``
+    is derived from the *raw* dividend tier while ``distribution_sessions`` is summed from the
+    *curated* flags, so the two can disagree: a stale curation flags sessions the raw tier has no
+    row for. In that state the NOT KNOWN branch used to print the literal "a count of 0" while
+    the sink wrote the real, nonzero figure, so one run reported two different counts.
+
+    Asserted against the written line rather than against the number this test passed in, so it
+    is the ledger's own figure the console is held to.
+    """
+    (decision, *_) = _decisions(
+        distributions=(True,) * flagged + (False,) * (10 - flagged),
+        affected=min(flagged, 2),
+        known=known,
+    )
+    recorded = _written(tmp_path, decision)["vol_target"]["tight"]["distribution_sessions"]
+    assert recorded == flagged, "the sink must record the curated count whatever the raw tier says"
+    (ex_dates,) = [line for line in cli._describe(decision) if "ex-dates:" in line]
+    assert _stated_count(ex_dates) == recorded, ex_dates
+    # The honesty of the unknown state is not traded away for the count.
+    assert ("NOT KNOWN" in ex_dates) is not known
 
 
 def test_the_sink_appends_and_never_rewrites(tmp_path: Path) -> None:
