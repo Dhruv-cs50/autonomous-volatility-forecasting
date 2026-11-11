@@ -33,7 +33,7 @@ demand.
 | 2 — Walk-forward | Truncation equivalence, process isolation, the walk-forward, the baseline shootout and the trial ledger | merged |
 | 3 — Implied vol and evaluators | A horizon-matched IV contestant, and evaluators that score decisions | merged |
 | 4 — Scheduler | Unattended daily runs, the run log and lock, and the guards that keep a live stage off the reported ledgers | merged (#17, #18) |
-| 5 — Agent layer | An LLM research agent that cannot express a peek: a closed vocabulary with no date in any tool, a transitive import fence, its own counted ledger, and a human gate in a separate process | built on `phase-5-agent-layer` (PR #20), held until the phase is merged whole |
+| 5 — Agent layer | An LLM research agent that cannot express a peek: a closed vocabulary with no date in any tool, a transitive import fence, its own counted ledger, and a human gate in a separate process | merged (#20) |
 | 6 — Write-up and reveal | The one-time sealed holdout read and the write-up | not started |
 
 ## What the harness contains
