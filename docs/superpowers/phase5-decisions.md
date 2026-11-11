@@ -582,3 +582,53 @@ happened, is a sprint that leaves agent ledger lines in the tree.
 
 **So the agent ledgers are empty at merge.** The PR must say that, and must not present an empty
 ledger as a sprint that found nothing.
+
+---
+
+## R206 — the child cannot be launched against a store outside the repository, so the rehearsal passes a hand-built `Settings`
+
+Found while building the subprocess runner, and it invalidates a line in this phase's own design.
+The design said the exit-criterion rehearsal (P5-E3) would build a **synthetic store under
+`tmp_path`** and launch the real child against it. **It cannot.** `_validate_storage_root` in
+`src/volab/config.py` resolves the root against the repository and refuses anything that is not
+strictly inside it — and `volab.candidate.__main__` calls `load_settings` **before** it reads the
+proposal file, so a `tmp_path` root makes the child exit on a traceback before it has looked at its
+input. Measured: the runner's first real-child attempt did exactly that.
+
+**Ruling: the rehearsal does not go through `__main__`.** `tests/isolated_candidate.py` imports
+`volab.candidate` and calls `evaluate_proposal` with a **hand-built `Settings`** carrying a
+`tmp_path` storage root. That is legitimate rather than a loophole: `load_panel` accepts a
+`Settings` that is **more conservative** than the repository's and refuses only one that moves
+`dev_end` *later*, which a storage-root change does not. The seal is untouched.
+
+Rejected: putting the rehearsal's store inside the repository (it would write under `data/`, which
+is where the tracked ledgers live, and a test that writes there is one mistake away from moving a
+reported number); and relaxing `_validate_storage_root` (it is a guard, and R191's anti-goal is a
+guard relaxed for a test's convenience).
+
+*Cost if wrong:* the rehearsal exercises `evaluate_proposal` rather than the child's `__main__`, so
+the argument parsing and the exit-code mapping of the real entry point are **not** covered by the
+end-to-end witness. They are covered separately by `tests/test_candidate_cli.py` and
+`tests/test_agent_runner.py`, and the PR must not claim the rehearsal covers them.
+
+---
+
+## R207 — the holdout-marker scan matches the bare literal `"holdout"`, and over-matching is the right direction
+
+P5-C3 used `"holdout"` as a **model name** in a test constant and the marker scan failed the file:
+it looks for the marker name in any test module importing a Phase 5 package, and a string constant
+spelling it is indistinguishable from the marker to that scan. The story renamed its constant to
+`"late"`.
+
+**Ruling: leave the scan as it is.** The over-match costs a renamed test constant; the alternative —
+narrowing it to decorator and `pytestmark` positions only — would miss a marker applied through
+`request.applymarker` or assembled at runtime, and the scan already states that runtime
+construction is beyond it. A guard that occasionally refuses something harmless is the right
+failure direction for a guard over a sealed window.
+
+Recorded because it will happen again: **a test module importing `volab.agent`, `volab.candidate`
+or `volab.promote` must not use the bare literal `"holdout"` for anything.** It has cost one story
+a rename already.
+
+*Cost if wrong:* a future legitimate use of that word as data in such a test has to spell it
+differently, and this record is where they will find out why.
