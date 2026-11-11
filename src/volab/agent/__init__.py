@@ -297,7 +297,15 @@ class _Sprint:
     # -- reads ---------------------------------------------------------------------------------
 
     def _ledger(self) -> TrialView:
-        return read_agent_trials(self.settings.storage_root, dev_end=self.settings.splits.dev_end)
+        # ``storage_root.parent``, not ``storage_root``: ``storage.root`` is the ``data`` directory
+        # and ``AGENT_TRIAL_LEDGER`` is already ``data/agent_trials.jsonl``, so the ledger lives at
+        # the root's parent -- where ``volab.candidate`` writes it and ``volab.promote`` reads it.
+        # Reading from ``storage_root`` named ``data/data/agent_trials.jsonl``, an empty file on the
+        # real configuration, so the sprint saw no trials and its integrity check (R208) checked
+        # nothing. Witness: ``test_the_sprint_reads_the_ledger_the_evaluation_child_writes``.
+        return read_agent_trials(
+            self.settings.storage_root.parent, dev_end=self.settings.splits.dev_end
+        )
 
     def _memory(self) -> list[dict[str, Any]]:
         """Earlier sprints' hypotheses and what the gate said of them (``read_memory``)."""

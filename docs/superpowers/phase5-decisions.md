@@ -816,3 +816,46 @@ rehearsal does not prove.
 *Cost if wrong:* a proposal hit by the crash window carries doubled trial lines and looks as though
 it was evaluated more often than it was intended to be. That is true of what happened, so it is not
 an overclaim. The reader has to know the window exists, and this record is where they learn it.
+
+---
+
+## R211 — the sprint read its ledger from the wrong root, and its tests could not see it
+
+**The defect.** `volab.agent._Sprint._ledger` called `read_agent_trials(settings.storage_root, …)`.
+`storage.root` is the `data` directory, and `AGENT_TRIAL_LEDGER` is already `data/agent_trials.jsonl`,
+so on the real configuration the sprint opened **`data/data/agent_trials.jsonl`** — an empty file.
+`volab.candidate` writes to `settings.storage_root.parent / AGENT_TRIAL_LEDGER`, and `volab.promote`
+and `volab.leaderboard` read from the same parent. So in production the sprint would have seen no
+trials, raised no candidate, and run R208's integrity check against nothing. The leak fix that check
+enforces would have been **inert on the only configuration that matters**.
+
+**Why no test saw it, which is the part worth keeping.** The sprint's fixture set
+`storage_root=tmp_path`. Under that layout a read from `storage_root` and a write from `storage_root`
+land on the same file, so the tests planted lines exactly where the buggy read looked and agreed with
+themselves completely. **They were consistent with one another and inconsistent with the
+repository.** It took a different story, the human gate, built against the real convention, to
+notice the two roots disagree.
+
+**Found by** P5-E1's implementer, reported as a concern rather than fixed, because the file was not
+in its set. That is the right behaviour, and it is how the defect reached anyone.
+
+**Fixed test-first, and the red was large.** The fixture now uses the repository's real shape,
+`storage_root = <root>/data`, with a comment saying why. Against the **unfixed** read, that one
+change turned **14** tests red, among them `test_a_ledger_line_past_dev_end_fails_the_sprint_and_
+reaches_no_prompt` — direct evidence that the integrity check had been checking an empty file. A new
+witness, `test_the_sprint_reads_the_ledger_the_evaluation_child_writes`, writes one line where the
+child writes it and asserts the sprint reads that exact line back. It checks the line's **content**
+and not `TrialView.source`, because `source` holds the *relative* ledger path and cannot tell two
+roots apart — an assertion on it was my own first mistake here and failed for that reason alone.
+After the fix: 54 of 54 sprint tests pass.
+
+**My own miss, recorded as such.** When I merged `main` (PR #18) I ran a hand-picked set of "seam"
+tests and reported 454 passing. That set omitted `tests/test_agent_sprint.py`, which #18 broke in a
+second way — `Splits` gained a required `holdout_end`, and the fixture built `Splits` by hand. The
+figure I reported was true of the set I ran and silent about the file I did not. **A hand-picked
+subset reports on what it picked.** The single full-suite run before the PR is what closes that; it
+is not optional.
+
+*Cost if wrong:* none in the direction taken — the fix aligns the sprint with three modules that
+already agreed. The cost of the defect, had it shipped, was an agent layer that could never promote
+anything, with a leak guard that guarded an empty file, and a test suite reporting all of it green.

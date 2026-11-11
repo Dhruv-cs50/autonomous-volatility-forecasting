@@ -77,8 +77,18 @@ def settings(tmp_path: Path) -> Settings:
         universe=("SPY",),
         exogenous=(),
         calendar="XNYS",
-        splits=Splits(dev_end=dt.date(2025, 12, 31), holdout_start=dt.date(2026, 1, 2)),
-        storage_root=tmp_path,
+        splits=Splits(
+            dev_end=dt.date(2025, 12, 31),
+            holdout_start=dt.date(2026, 1, 2),
+            holdout_end=dt.date(2026, 10, 30),
+        ),
+        # The repository's real shape: ``storage.root`` is the ``data`` directory itself, and every
+        # ledger path (``data/agent_trials.jsonl``) is joined to its *parent*. An earlier fixture
+        # set ``storage_root=tmp_path``, which made a read from the wrong root land on the same
+        # file as a write from the right one -- so the sprint read ``data/data/agent_trials.jsonl``
+        # on the real configuration and no test could see it. See
+        # ``test_the_sprint_reads_the_ledger_the_evaluation_child_writes``.
+        storage_root=tmp_path / "data",
     )
 
 
@@ -194,7 +204,7 @@ def sprint(
 ) -> SprintResult:
     return run_sprint(
         sprint_id=sprint_id,
-        settings=dataclasses.replace(settings, storage_root=tmp_path),
+        settings=dataclasses.replace(settings, storage_root=tmp_path / "data"),
         completer=completer,
         checkpointer=checkpointer or FileCheckpointer(tmp_path / "memory"),
         log_path=tmp_path / "data" / "agent_sprints.jsonl",
@@ -315,7 +325,7 @@ def test_exactly_one_canary_event_per_sprint_for_every_slot_the_hash_can_choose(
             exogenous=(),
             calendar="XNYS",
             splits=settings.splits,
-            storage_root=root,
+            storage_root=root / "data",
         )
         result = run_sprint(
             sprint_id=sprint_id,
@@ -951,3 +961,48 @@ def test_the_anomaly_leaves_no_trace_in_a_later_sprints_prompts(
         assert trace not in seen
     assert not re.search(r"(?<![\w.])7(?![\w.])", seen)
     assert "anomaly" not in json.dumps(memory.get("2026-11-17-weekly"))
+
+
+def test_the_sprint_reads_the_ledger_the_evaluation_child_writes(settings: Settings) -> None:
+    """The sprint's ledger read and the child's ledger write name the same file.
+
+    ``volab.candidate.evaluate_proposal`` writes to ``settings.storage_root.parent /
+    AGENT_TRIAL_LEDGER``, because ``storage.root`` is the ``data`` directory and the ledger path is
+    already prefixed with ``data/``; ``volab.promote`` and ``volab.leaderboard`` join the same
+    parent. The sprint once read from ``settings.storage_root`` instead, i.e.
+    ``data/data/agent_trials.jsonl`` on the real configuration -- an empty file -- so it would have
+    seen no trials, raised no candidate, and run its integrity check against nothing. Found by the
+    human-gate story, not by this module's own tests, because the old fixture set
+    ``storage_root=tmp_path`` and the two roots then coincided.
+
+    This writes one line where the child writes it and asserts the sprint sees it. It reaches the
+    sprint's read through ``_Sprint._ledger`` rather than a full ``run_sprint``, so a failure names
+    the path and not a downstream symptom.
+    """
+    from volab.agent import _Sprint
+    from volab.candidate import AGENT_TRIAL_LEDGER as CHILD_LEDGER
+
+    written = settings.storage_root.parent / CHILD_LEDGER
+    written.parent.mkdir(parents=True, exist_ok=True)
+    written.write_text(
+        json.dumps({"cohort": "agent-2025-12-01-0123abcd-00", "last_origin": "2025-06-30"}) + "\n",
+        encoding="utf-8",
+    )
+    sprint = _Sprint(
+        sprint_id=SPRINT,
+        settings=settings,
+        completer=FakeCompleter([]),
+        checkpointer=FileCheckpointer(settings.storage_root.parent / "ckpt"),
+        log_path=settings.storage_root / "agent_sprints.jsonl",
+        submit=lambda proposal: (_ for _ in ()).throw(AssertionError("no run expected")),
+        at=AT,
+        sha=SHA,
+        dirty=False,
+    )
+
+    view = sprint._ledger()
+
+    # The line the child wrote is the line the sprint read. ``TrialView.source`` holds the
+    # *relative* ledger path, so it cannot tell two roots apart; the content can. Against the old
+    # read from ``storage_root`` this saw zero lines: it opened ``data/data/agent_trials.jsonl``.
+    assert view.lines == ({"cohort": "agent-2025-12-01-0123abcd-00", "last_origin": "2025-06-30"},)
