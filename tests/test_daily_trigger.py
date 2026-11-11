@@ -27,6 +27,7 @@ import re
 from pathlib import Path
 
 import pytest
+from test_daily import _docstring_ids, _folded
 
 import volab.daily.__main__ as daily_cli
 
@@ -52,40 +53,15 @@ _FLOORS = {"src": 20, "tools": 5}
 # --- the scan ---------------------------------------------------------------------------------
 
 
-def _docstring_ids(tree: ast.AST) -> frozenset[int]:
-    """``id`` of every string node that is the docstring of a module, class or function."""
-    found: set[int] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
-            body = node.body
-            if (
-                body
-                and isinstance(body[0], ast.Expr)
-                and isinstance(body[0].value, ast.Constant)
-                and isinstance(body[0].value.value, str)
-            ):
-                found.add(id(body[0].value))
-    return frozenset(found)
-
-
-def _folded(node: ast.expr) -> str | None:
-    """The string a ``"a" + "b"`` expression evaluates to, or ``None`` if it is anything else."""
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
-        left, right = _folded(node.left), _folded(node.right)
-        if left is not None and right is not None:
-            return left + right
-    return None
-
-
 def _installer_tokens_in(source: str) -> tuple[str, ...]:
     """Every installer token that the **code** of ``source`` uses, sorted.
 
     "Code" means: identifiers (names, attributes, parameters, keyword arguments, import aliases,
     imported module names, and the names of functions and classes it defines) and string literals
-    that are not docstrings, with a ``"Launch" + "Agents"`` concatenation of literals folded into
-    the string it makes. Two things are excluded and each is pinned by its own test below:
+    that are not docstrings, with a ``"Launch" + "Agents"`` concatenation, a ``"".join(("launch",
+    "ctl"))`` of literals and an f-string of literals folded into the string they make (the folding
+    is ``tests/test_daily.py::_folded``, shared with the holdout scan, whose reach it states). Two
+    things are excluded and each is pinned by its own test below:
     **docstrings** (a module that explains it never writes a plist must be allowed to say so) and
     **comments**, which an AST never contains.
 
@@ -94,10 +70,11 @@ def _installer_tokens_in(source: str) -> tuple[str, ...]:
     this scan cannot tell a message from a path handed to ``open``, and the cost of rewording one
     message is smaller than the cost of a guard that reads intent.
 
-    **Stated limits.** It reads one file at a time and only the syntax: a path assembled at runtime
-    (``"".join(parts)``, ``str.format`` with a variable, a value read from a file or the
-    environment) is invisible, and so is a write performed by a program the code only names
-    indirectly. ``tests/`` is not scanned, and neither are ``config/`` or ``.github/``. It is a
+    **Stated limits.** It reads one file at a time and only the syntax: a path assembled from
+    something other than literals (``"".join(parts)`` over a variable, ``str.format``, ``%``, a
+    value read from a file or the environment) is invisible, and so is a write performed by
+    a program the code only names indirectly. ``tests/`` is not scanned, and neither are
+    ``config/`` or ``.github/``. It is a
     floor on carelessness, not a proof that nothing can install a trigger.
     """
     tree = ast.parse(source)
@@ -121,7 +98,7 @@ def _installer_tokens_in(source: str) -> tuple[str, ...]:
         elif isinstance(node, ast.Constant) and isinstance(node.value, str):
             if id(node) not in docstrings:
                 texts.add(node.value)
-        elif isinstance(node, ast.BinOp):
+        elif isinstance(node, ast.BinOp | ast.Call | ast.JoinedStr):
             folded = _folded(node)
             if folded is not None:
                 texts.add(folded)
@@ -267,6 +244,21 @@ def test_a_concatenation_of_literals_is_folded_before_it_is_judged() -> None:
     assert _installer_tokens_in(planted) == ("LaunchAgents",)
 
 
+@pytest.mark.parametrize(
+    "planted",
+    [
+        'tool = "".join(("launch", "ctl"))\n',
+        'tool = "".join(["cron", "tab"])\n',
+        'tool = "/".join(("~", "Library", "LaunchAgents"))\n',
+        'tool = "launch" "ctl"\n',
+        "tool = f\"{'launch'}ctl\"\n",
+    ],
+)
+def test_a_join_or_an_fstring_of_literals_is_folded_before_it_is_judged(planted: str) -> None:
+    """The eleventh guard hole: ``+`` was folded and ``str.join`` was not (found by the probe)."""
+    assert _installer_tokens_in(planted) != (), planted
+
+
 def test_a_function_or_class_named_for_installing_a_trigger_fires() -> None:
     assert _installer_tokens_in("def install_crontab():\n    return 1\n") == ("crontab",)
     assert _installer_tokens_in("class LaunchctlRunner:\n    pass\n") == ("launchctl",)
@@ -305,10 +297,25 @@ def test_a_class_docstring_naming_an_installer_does_not_fire() -> None:
     assert _installer_tokens_in(planted) == ()
 
 
-def test_a_comment_naming_an_installer_does_not_fire() -> None:
-    planted = "# ~/Library/LaunchAgents, crontab, launchctl, a .plist, plistlib\nx = 1\n"
+def test_a_comment_never_reaches_the_ast_so_the_scan_cannot_see_it() -> None:
+    """Pins that the scan is AST-based, which is the only reason a comment is excluded.
 
-    assert _installer_tokens_in(planted) == ()
+    It cannot fail on the *scan's* exclusion logic, because there is none: a comment is not a node.
+    What can fail is the premise, and that is what is asserted -- the tree of the commented source
+    is the tree of the same source without it, so no scan built on ``ast`` can fire on the comment.
+    The paired test below is the half that can go red: the same text in a string does fire.
+    """
+    comment = "# ~/Library/LaunchAgents, crontab, launchctl, a .plist, plistlib\nx = 1\n"
+
+    assert ast.dump(ast.parse(comment)) == ast.dump(ast.parse("x = 1\n"))
+    assert _installer_tokens_in(comment) == ()
+
+
+def test_the_same_text_in_a_string_statement_that_is_not_a_docstring_does_fire() -> None:
+    """Proves the scan does not strip ``#...`` textually: it is the AST that excludes comments."""
+    planted = 'x = 1\n"# launchctl"\n'
+
+    assert _installer_tokens_in(planted) == ("launchctl",)
 
 
 def test_a_non_python_file_is_not_scanned_though_the_same_text_in_python_is(
