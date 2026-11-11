@@ -85,6 +85,24 @@ was missed but some were noticed more widely than the list named against them. T
 counted and printed separately, because a hole in the guards and a stale witness list are
 different findings.
 
+**Code 1 is shared, and the sentence above is not a complete account of it.** Every refusal in
+this file is ``raise SystemExit("<text>")``, which prints the text and exits 1; there are fourteen
+such sites, among them a missing plant anchor, a ledger that moved, a suite already red, a file
+that did not collect, a witness naming an id that does not exist, and every restore failure. So a
+1 means *either* some mutant was noticed by nothing *or* the run stopped before it reached a
+verdict, and the code cannot tell a reader which. **Read the verdict off the "noticed by nothing"
+block at the end of the run, never off ``$?``** -- a halt prints no such block, and a run that
+reached the end prints one. Giving the halts a code of their own would be the better fix and is
+not done here: ``SystemExit`` carrying a string is what prints it, and an integer code would have
+to be printed by hand at fourteen sites, five of which are the move-aside and restore paths this
+script's safety rests on. A docstring is the cheap half, and this is it.
+
+**A 1 on a tree carrying a plant that has gone inert is not news either.** ``_exit_code`` returns
+1 whenever anything is uncaught, unconditionally, so such a tree exits 1 however many mutants were
+exact. What warrants stopping is a *second* uncaught mutant. Both of these were found by review
+seats reading this file rather than by its author, who predicted a 2 for the run of 2026-11-10 and
+had forgotten that the uncaught branch takes precedence.
+
 Two mutants (the verb not passing its timeout, the kill not reaching a grandchild) make a probe
 stage sleep out its sixty seconds before the test can fail, and every mutant runs the whole of
 several test files, so a full run takes the better part of half an hour.
@@ -371,12 +389,22 @@ MUTANTS: tuple[Mutant, ...] = (
         after="run_stages(stages)",
         witnesses=("test_a_stage_that_hangs_is_recorded_as_timed_out_and_failed_through_the_verb",),
     ),
+    # **The one list this script's own history proves can go stale under a passing suite.** This
+    # plant named ``test_a_timeout_kills_the_stages_own_children_too``, and from ``28d81b3`` it
+    # stopped reaching it: ``_sweep_the_group`` SIGKILLs the stage's group from ``_run_one``'s
+    # outermost ``finally``, so the grandchild dies whether the deadline's ``killpg`` ran or not and
+    # that test passes under the plant. The probe called the result ``SURVIVES`` -- the word for a
+    # hole in the guards -- said of a plant that had gone inert. ``89e0c88`` closed it by adding the
+    # test named below, which monkeypatches the sweep out so only the deadline's kill can reach the
+    # grandchild. **Measured, not reasoned:** planted into a ``git archive`` copy of ``59a3590``
+    # with ``PYTHONPATH`` pointed at that copy, the six files above give ``1 failed, 491 passed``
+    # and the one failure is this test alone.
     Mutant(
         label="the timeout kills the stage but not the stage's children",
         relative_path="src/volab/daily/runner.py",
         before="                os.killpg(process.pid, signal.SIGKILL)",
         after="                process.kill()",
-        witnesses=("test_a_timeout_kills_the_stages_own_children_too",),
+        witnesses=("test_the_timeout_itself_kills_the_group_not_only_the_sweep_after_the_reap",),
     ),
     Mutant(
         label="the stage output is dropped from the completion line",
@@ -652,6 +680,11 @@ def _verdict(failed: frozenset[str], errored: frozenset[str], witnesses: tuple[s
 
 def _exit_code(uncaught: int, wide: int) -> int:
     """0 if every mutant was exact, 1 if any was noticed by nothing, 2 if some only bit wide.
+
+    The 1 is not this function's alone: every halt in this file raises ``SystemExit`` with a string
+    and so exits 1 too, which the module docstring states and no code here distinguishes. The
+    uncaught branch also takes unconditional precedence, so a run with one uncaught mutant and
+    twenty-seven wide ones exits 1 and the wide count is invisible in ``$?``.
 
     Three codes and not two. One code made the two findings indistinguishable, and they are not
     the same thing: a mutant nothing noticed is a hole in the guards, which is what this script
