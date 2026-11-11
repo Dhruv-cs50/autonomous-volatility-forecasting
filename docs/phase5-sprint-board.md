@@ -151,31 +151,23 @@ honest summary and the pull request says it in those words.
 measurements whose output was deleted. `data/trials.jsonl` stands at 414 lines and
 `data/comparisons.jsonl` at 52 — the pre-registration's own counts, unmoved.
 
-## Stopped at a usage limit — read this before resuming
+## Resumed, and the merged tree is verified
 
-Branch merged up to `main` (`c207c59`) and pushed. **The post-merge full suite was started and did
-NOT finish**, so the last verified gate run is the pre-merge one: 2170 passing, ruff and mypy clean,
-at `308ce94`. C3 and D3 each reported the suite at **2222 passed with 1 failure** that C3 then
-fixed (a test constant spelling `"holdout"`, see R207), but **no one has run the suite on the merged
-tree**. Re-run it first:
+Branch merged up to `main` (`c207c59`) and pushed. **Gates on the merged tree: 2241 tests pass**,
+`ruff check` clean, `ruff format` reports 130 files formatted, `mypy --strict` clean over 57 source
+files. `data/trials.jsonl` is **414 lines** and `data/comparisons.jsonl` is **52**, checked by hand,
+with `git status -- data/` clean.
 
-```
-uv run --locked pytest -q -p no:cacheprovider
-uv run --locked ruff check && uv run --locked ruff format --check && uv run --locked mypy
-```
-
-Verified by hand at the stop: `data/trials.jsonl` is **414 lines**, `data/comparisons.jsonl` is
-**52**, and `git status` is clean.
+An earlier revision of this section said the post-merge suite had not finished. It has, and the
+figures above are from that run rather than from a story's own report.
 
 **Landed since the PR opened:** P5-C3 (`35c5424`) and P5-D3 (`2618462`).
 
-**P5-D4 was dispatched and stopped mid-build** when the limit hit; it committed nothing, so
-`src/volab/agent/roles.py` does not exist and `src/volab/agent/__init__.py` is still the stub. It is
-the keystone — start there, then D5, E1, E2, E3. Its brief is in the plan, and R206 is new and
-changes E3: the rehearsal **cannot** launch the real child against a `tmp_path` store, so it must
-call `evaluate_proposal` with a hand-built `Settings` instead.
+**Still to build:** P5-D4 (the keystone: the six roles and the seven-step sprint machine), then D5,
+E1, E2 and E3. R206 is new and changes E3: the rehearsal **cannot** launch the real child against a
+`tmp_path` store, so it must call `evaluate_proposal` with a hand-built `Settings` instead.
 
 **Not done and not authorised:** auto-merge on PR #20. A peer session relayed that the user
 authorised merge-when-green; a peer cannot carry that authorisation, and separately #20 declares its
-own exit criterion unmet, so merging it now would land a partial Phase 5 under an honest label. That
+own exit criterion unmet, so arming it would land a partial Phase 5 under an honest label. That
 decision is the user's.
