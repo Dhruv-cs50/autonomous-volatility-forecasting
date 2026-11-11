@@ -12,9 +12,10 @@ guard meaningless. A bad configuration is never repaired or clipped.
 ``ConfigError``. The one exception is ``HoldoutViolation``: an environment that moves
 ``splits.dev_end`` *later* than the file's own literal is not a mistyped setting, it is the
 seal being moved from outside the file, and it is refused here because here is where the value
-is accepted. See ``_refuse_a_later_dev_end``. ``splits.holdout_end`` is refused in the
-opposite direction, *earlier* than the file's literal, because that shrinks the sealed window;
-see ``_refuse_an_earlier_holdout_end``.
+is accepted. See ``_refuse_a_later_dev_end``. ``splits.holdout_end`` is refused in *both*
+directions, because it is the read bound of the holdout region: earlier shrinks the sealed
+window, later turns dates the file calls live into holdout dates a key-holder can read; see
+``_refuse_a_moved_holdout_end``.
 """
 
 from __future__ import annotations
@@ -311,22 +312,25 @@ def _refuse_a_later_dev_end(literal: object, effective: dt.date, config_path: Pa
         )
 
 
-def _refuse_an_earlier_holdout_end(literal: object, effective: dt.date, config_path: Path) -> None:
-    """Refuse an environment that moves ``splits.holdout_end`` earlier than the file's literal.
+def _refuse_a_moved_holdout_end(literal: object, effective: dt.date, config_path: Path) -> None:
+    """Refuse an environment that moves ``splits.holdout_end`` either way from the file's literal.
 
-    The opposite direction to ``_refuse_a_later_dev_end``, and that is the whole point of it.
+    Unlike ``_refuse_a_later_dev_end``, which refuses one direction, this refuses both.
     ``holdout_end`` is the last sealed date and everything after it is ``live``, which the
-    reveal will make freely readable. Moving it *later* only lengthens the sealed window, so it
-    withholds more and stays open. Moving it *earlier* shrinks the window: days the committed
-    file seals become ``live`` without anything having been revealed. Copying the ``dev_end``
-    rule as it stands would refuse the harmless direction and allow this one.
+    reveal will make freely readable. Moving it *earlier* shrinks the window: days the committed
+    file seals become ``live`` without anything having been revealed. Moving it *later* once
+    only withheld data, but ``holdout_end`` is now the read bound of the holdout region that
+    ``allow_holdout`` plus the unlock variable reach, so a later one turns dates the file calls
+    ``live`` into holdout dates a key-holder may read before any reveal. The store cannot close
+    that, because its clamp compares against ``load_settings()``, which already reports the
+    overridden value. Only a value equal to the file's literal is accepted.
 
     Not a ``ConfigError``, for the reason ``_refuse_a_later_dev_end`` gives: this is the seal
     being moved from outside the file, not a setting someone mistyped. What is compared is the
     file on disk, with the same reach and the same limits that function describes.
 
-    A file pinning no literal is refused too, so the rule is total rather than "no earlier than
-    the literal, when there is one" -- otherwise deleting the key would sidestep it. That is a
+    A file pinning no literal is refused too, so the rule is total rather than "equal to the
+    literal, when there is one" -- otherwise deleting the key would sidestep it. That is a
     different case from the key being absent with no variable set, which ``load_settings``
     answers with a ``ConfigError`` for a missing setting.
     """
@@ -336,15 +340,21 @@ def _refuse_an_earlier_holdout_end(literal: object, effective: dt.date, config_p
     if literal is None:
         raise HoldoutViolation(
             f"{variable} sets splits.holdout_end to {effective}, but {config_path} pins no "
-            f"splits.holdout_end of its own to be no earlier than: the end of the sealed window "
+            f"splits.holdout_end of its own to be equal to: the end of the sealed window "
             f"is a committed literal, not an environment variable."
         )
     pinned = _parse_date("splits.holdout_end", literal)
-    if effective < pinned:
+    if effective != pinned:
+        direction = "earlier" if effective < pinned else "later"
+        consequence = (
+            "dates the file seals would become live"
+            if effective < pinned
+            else "dates the file calls live would become holdout dates a key-holder can read"
+        )
         raise HoldoutViolation(
-            f"{variable} sets splits.holdout_end to {effective}, earlier than the {pinned} "
-            f"pinned in {config_path}: dates the file seals would become live. A later "
-            f"holdout_end is allowed, because it only withholds data."
+            f"{variable} sets splits.holdout_end to {effective}, {direction} than the {pinned} "
+            f"pinned in {config_path}: {consequence}. splits.holdout_end is not overridable "
+            f"in either direction."
         )
 
 
@@ -398,7 +408,7 @@ def load_settings(path: Path | None = None) -> Settings:
     _refuse_a_later_dev_end(literal_dev_end, dev_end, config_path)
     holdout_start = _parse_date("splits.holdout_start", flat["splits.holdout_start"])
     holdout_end = _parse_date("splits.holdout_end", flat["splits.holdout_end"])
-    _refuse_an_earlier_holdout_end(literal_holdout_end, holdout_end, config_path)
+    _refuse_a_moved_holdout_end(literal_holdout_end, holdout_end, config_path)
     splits = _validate_splits(calendar, dev_end, holdout_start, holdout_end)
     storage_root = _validate_storage_root(flat["storage.root"])
     return Settings(

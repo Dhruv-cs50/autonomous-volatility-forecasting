@@ -301,13 +301,15 @@ def test_env_overrides_apply_to_every_field(
     monkeypatch.setenv("VOLAB_UNIVERSE", "SPY, DIA")
     monkeypatch.setenv("VOLAB_SPLITS_DEV_END", "2023-12-29")
     monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_START", "2024-01-02")
-    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_END", "2025-06-30")
+    # ``holdout_end``'s only accepted override is one equal to the file's literal (HR-1b), so
+    # that is what "every field is reachable from the environment" means for this one field.
+    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_END", "2024-12-31")
     monkeypatch.setenv("VOLAB_STORAGE_ROOT", "scratch")
     settings = load_settings(_write(tmp_path, VALID))
     assert settings.universe == ("SPY", "DIA")
     assert settings.splits.dev_end == dt.date(2023, 12, 29)
     assert settings.splits.holdout_start == dt.date(2024, 1, 2)
-    assert settings.splits.holdout_end == dt.date(2025, 6, 30)
+    assert settings.splits.holdout_end == dt.date(2024, 12, 31)
     assert settings.storage_root == _repo_root() / "scratch"
 
 
@@ -472,10 +474,9 @@ def test_the_env_cannot_move_the_boundary_to_read_a_sealed_row(
 # --- The seal's far end moves the other way ------------------------------------------------
 #
 # ``holdout_end`` is the last sealed date; everything after it is ``live``. Moving it *earlier*
-# turns days that were sealed into days that are ``live``, which the reveal will hand out freely,
-# so earlier is the refused direction -- the reverse of ``dev_end``, where later is. A rule copied
-# from ``dev_end`` without turning the comparison round would refuse the harmless override and
-# wave the dangerous one through, which is why every case below states the direction it covers.
+# turns sealed days into ``live`` ones, which the reveal will hand out freely; moving it *later*
+# turns ``live`` days into holdout ones a key-holder can read before any reveal. Both are refused
+# (HR-1b), unlike ``dev_end``, where only later is. Every case below states the direction it covers.
 #
 # The refusal cases leave ``VOLAB_SPLITS_HOLDOUT_START`` alone: moving ``holdout_end`` earlier
 # than the file's does not need a second variable to be consistent, and the only thing under test
@@ -511,21 +512,31 @@ def test_an_env_holdout_end_earlier_than_the_repository_literal_is_refused(
         load_settings()
 
 
-def test_an_env_holdout_end_later_than_the_file_literal_is_accepted(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("later", ["2025-01-01", "2025-06-30", "2099-12-31"])
+def test_an_env_holdout_end_later_than_the_file_literal_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, later: str
 ) -> None:
-    """A longer sealed window only withholds more, so this direction stays open."""
-    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_END", "2025-06-30")
+    """Direction deliberately reversed (HR-1b): this case used to assert acceptance.
 
-    assert load_settings(_write(tmp_path, VALID)).splits.holdout_end == dt.date(2025, 6, 30)
+    A later ``holdout_end`` was once thought to only withhold data. Under the seal-lifecycle
+    design ``holdout_end`` is the read bound of the holdout region, which a key-holder can
+    reach, so a later one turns dates the file calls ``live`` into holdout dates the environment
+    would let them read before any reveal. Refused, like the earlier direction.
+    """
+    monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_END", later)
+
+    with pytest.raises(HoldoutViolation, match="later than the 2024-12-31 pinned in"):
+        load_settings(_write(tmp_path, VALID))
 
 
-def test_an_env_holdout_end_later_than_the_repository_literal_is_accepted(
+def test_an_env_holdout_end_later_than_the_repository_literal_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Direction deliberately reversed (HR-1b); see the file-literal case above."""
     monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_END", "2026-12-31")
 
-    assert load_settings().splits.holdout_end == dt.date(2026, 12, 31)
+    with pytest.raises(HoldoutViolation, match="later than the 2026-10-30 pinned in"):
+        load_settings()
 
 
 def test_an_env_holdout_end_equal_to_the_file_literal_is_accepted(
@@ -536,14 +547,14 @@ def test_an_env_holdout_end_equal_to_the_file_literal_is_accepted(
     assert load_settings(_write(tmp_path, VALID)).splits.holdout_end == dt.date(2024, 12, 31)
 
 
-def test_the_two_override_directions_are_opposite(
+def test_the_two_override_directions_differ_only_for_dev_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The one test that fails if either rule is copied from the other, whichever way round.
 
     Each variable is moved earlier and later in turn against the same file. ``dev_end`` is
-    refused later and ``holdout_end`` earlier: the two moves that carry a boundary into the
-    committed sealed window, one from each side.
+    refused later only; ``holdout_end`` is refused in both directions, because it is the read
+    bound of the holdout region and any move changes what a key-holder can reach.
     """
     config = _write(tmp_path, VALID)
     outcomes: dict[tuple[str, str], bool] = {}
@@ -575,7 +586,7 @@ def test_the_two_override_directions_are_opposite(
         ("VOLAB_SPLITS_DEV_END", "earlier"): False,
         ("VOLAB_SPLITS_DEV_END", "later"): True,
         ("VOLAB_SPLITS_HOLDOUT_END", "earlier"): True,
-        ("VOLAB_SPLITS_HOLDOUT_END", "later"): False,
+        ("VOLAB_SPLITS_HOLDOUT_END", "later"): True,
     }
 
 
@@ -586,7 +597,7 @@ def test_an_env_holdout_end_is_refused_when_the_file_pins_none(
     """A file with no literal has no end to be later than, whatever date the variable carries.
 
     Without this the refusal would be sidestepped by deleting the key. The later and equal
-    values are the ones that would pass if the rule were "no earlier than the literal, when
+    values are the ones that would pass if the rule were only "differs from the literal, when
     there is one".
     """
     monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_END", value)
