@@ -24,7 +24,7 @@ import volab.reveal.__main__ as cli
 from volab import store
 from volab.compare.cohorts import SHOOTOUT
 from volab.leaderboard import read_comparisons, read_trials
-from volab.walkforward import LOSSES, count_trials
+from volab.walkforward import LOSSES, ConfigurationOutcome, count_trials
 
 
 def run(world: World, *argv: str, today: dt.date = TODAY) -> int:
@@ -264,6 +264,24 @@ def _truncation_disagrees(world: World, mp: pytest.MonkeyPatch) -> None:
     mp.setattr(cli, "score", disagreeing)
 
 
+def _second_configuration_refuses(world: World, mp: pytest.MonkeyPatch) -> None:
+    """The first configuration runs for real and appends its trials; the second is refused."""
+    real = reveal.run_configuration
+    calls: list[tuple[str, int, str]] = []
+    world.refusals = calls  # type: ignore[attr-defined]
+
+    def refusing(settings: Any, symbol: str, horizon: int, *args: Any, **kwargs: Any) -> Any:
+        if calls:
+            calls.append((symbol, horizon, kwargs["cohort"].name))
+            return ConfigurationOutcome(
+                evaluation=None, trials=(), written=0, refused=True, disagrees=False
+            )
+        calls.append((symbol, horizon, kwargs["cohort"].name))
+        return real(settings, symbol, horizon, *args, **kwargs)
+
+    mp.setattr(reveal, "run_configuration", refusing)
+
+
 def _printing_fails(world: World, mp: pytest.MonkeyPatch) -> None:
     def broken(*args: Any, **kwargs: Any) -> Any:
         raise RuntimeError("the printer fell over")
@@ -295,9 +313,19 @@ _EXITS: list[tuple[str, bool, Setup | None, str, dt.date, int, reveal.SealState,
     ("1 crash in scoring", True, _scoring_crashes, "take", TODAY, 1, COUNTED, "scoring fell over"),
     ("13 ambiguous", True, _ambiguous, "take", TODAY, 13, READ, "names nobody"),
     ("14 truncation", True, _truncation_disagrees, "take", TODAY, 14, READ, "leakage guard"),
+    (
+        "15 configuration refused",
+        True,
+        _second_configuration_refuses,
+        "take",
+        TODAY,
+        15,
+        COUNTED,
+        "the driver refused",
+    ),
     ("1 crash in printing", True, _printing_fails, "take", TODAY, 1, READ, "printer fell over"),
     ("0 take", True, None, "take", TODAY, 0, READ, "champion: none"),
-    ("0 check", True, None, "check", TODAY, 0, UNTOUCHED, "every pre-read gate passes"),
+    ("0 check", True, None, "check", TODAY, 0, UNTOUCHED, "the gates that need no key"),
     ("3 check", True, _dirty, "check", TODAY, 3, UNTOUCHED, "the tree is dirty"),
 ]
 
@@ -476,3 +504,69 @@ def test_the_registered_runs_are_the_ones_a_real_take_would_make() -> None:
     constants, and ``main`` takes only a verb."""
     assert reveal.RUNS[0][0] is SHOOTOUT
     assert reveal.MINIMUM_TRAINING == 250 and reveal.STRIDE == 1
+
+
+# ---- check does not imply a readiness it cannot verify ----------------------------------------
+
+_READ_GATES = ("keys_not_held", "window_not_ingested", "canary_disagrees")
+
+
+def test_a_green_check_names_the_three_gates_only_a_read_can_find_and_never_says_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = build_world(tmp_path, monkeypatch)
+
+    code = run(world, "check")
+    out = capsys.readouterr().out
+
+    assert code == 0
+    for name in _READ_GATES:
+        assert name in out, f"the green path must say {name} was not checked"
+    assert "not checked" in out and "counted attempt" in out
+    assert "ready" not in out.lower()
+    # Raw reaches holdout_end in this world, so it does not forecast the gate firing.
+    assert "not expected to fire" in out
+
+
+def test_a_green_check_forecasts_window_not_ingested_from_the_bars_the_gate_would_see(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = build_world(tmp_path, monkeypatch)
+    _short_window(world, monkeypatch)
+    later = dt.date(2024, 4, 22)
+    holdout_end = world.settings.splits.holdout_end
+
+    code = run(world, "check", today=later)
+    out = capsys.readouterr().out
+
+    assert code == 0, "the forecast is not a gate: check still exits 0"
+    assert "window_not_ingested is expected to fire" in out
+    assert "latest raw bars session is 2024-04-12" in out
+    assert f"holdout_end {holdout_end}" in out
+    assert "may therefore cost a counted attempt" in out
+    assert "ready" not in out.lower()
+    assert not world.audit().exists()
+
+
+def test_a_refused_configuration_exits_15_and_keeps_the_trials_already_appended(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An expected outcome of a legitimate run is not exit 1. The message names the configuration
+    that refused and says the ledger keeps what was appended; the seal line is still the record's
+    and is not special-cased."""
+    world = build_world(tmp_path, monkeypatch)
+    _second_configuration_refuses(world, monkeypatch)
+    root = world.root
+    before = count_trials(root)
+
+    code = run(world, "take")
+    captured = capsys.readouterr()
+
+    symbol, horizon, cohort = world.refusals[1]  # type: ignore[attr-defined]
+    assert code == 15
+    assert "Traceback" not in captured.err
+    assert f"{cohort} {symbol} h{horizon}" in captured.out
+    assert "stay on the ledger" in captured.out
+    kept = count_trials(root) - before
+    assert kept > 0, "the first configuration's trials were appended and are not withdrawn"
+    assert last_line(captured.out) == expected_sentence(world)

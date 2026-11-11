@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime as dt
+import glob
 import hashlib
 import subprocess
 from collections.abc import Callable, Sequence
@@ -66,7 +67,7 @@ from volab.panel import (
     load_bars,
     load_exogenous,
 )
-from volab.paths import Tier
+from volab.paths import Tier, dataset_glob
 from volab.sessions import get_calendar, nth_session_after, sessions_between
 from volab.store import AuditTally, load_panel
 from volab.walkforward import (
@@ -114,7 +115,7 @@ USAGE = 2  # argparse's own; nothing in this package may use it
 
 @dataclass(frozen=True)
 class Gate:
-    code: int  # the process exit code, 3..14; never 0, 1 or 2
+    code: int  # the process exit code, 3..15; never 0, 1 or 2
     name: str  # a stable identifier, e.g. "dirty_tree"
     message: str  # the whole sentence the operator reads; no further formatting
 
@@ -259,6 +260,18 @@ def truncation_disagreed(configurations: Sequence[str]) -> Gate:
         "the truncation-equivalence check disagreed with the persisted features on "
         f"{', '.join(configurations)}: a leakage guard failed, which section 3 counts as a "
         "failed run.",
+    )
+
+
+def configuration_refused(configurations: Sequence[str], kept: int) -> Gate:
+    return Gate(
+        15,
+        "configuration_refused",
+        f"the driver refused {', '.join(configurations)}: either the cohort's declared columns "
+        "do not cover the window or a call read past its cutoff; the refusal line printed "
+        "under that configuration's heading above says which. The reveal completed its reads. "
+        f"The {kept} trial(s) already appended to the ledger stay on the ledger: they are real "
+        "trials and every configuration appends as it finishes (R74). Nothing was withdrawn.",
     )
 
 
@@ -665,6 +678,28 @@ def short_window(settings: Settings, bars: dict[str, pd.DataFrame]) -> Gate | No
     expected = expected_last_session(settings)
     short = {s: day for s, day in last_sessions(bars).items() if day < expected}
     return window_not_ingested(short, expected) if short else None
+
+
+# The raw dataset stage A curates the bars from; ``curate_bars`` reads it by this literal name.
+_RAW_BARS_DATASET = "nasdaq_bars"
+
+
+def raw_bars_frames(settings: Settings) -> dict[str, pd.DataFrame]:
+    """Each symbol's raw bars as a frame of nothing but ``as_of``, from partition names alone.
+
+    ``check`` has to forecast ``window_not_ingested`` and may not read: any raw read past
+    ``dev_end`` is a counted look. The partition is named for its session, so the extent is
+    knowable without opening a file. The frames are shaped to go through ``short_window`` itself,
+    so the forecast is the gate's own comparison and not a second one. A symbol with no
+    partitions is absent from the result.
+    """
+    frames: dict[str, pd.DataFrame] = {}
+    for symbol in settings.universe:
+        (pattern,) = dataset_glob(settings.storage_root, Tier.RAW, _RAW_BARS_DATASET, [symbol])
+        days = {Path(path).parent.name.removeprefix("date=") for path in glob.glob(pattern)}
+        if days:
+            frames[symbol] = pd.DataFrame({"as_of": sorted(days)})
+    return frames
 
 
 @dataclass(frozen=True)

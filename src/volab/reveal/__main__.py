@@ -22,7 +22,8 @@ was seen, and let a later run present itself as the clean first read. Lifting is
 
 Exit codes: 0 done; 1 unexpected error; 2 usage (argparse's); 3..9 the pre-read gates, which write
 nothing; 10..12 refusals that cost a counted attempt and lift nothing; 13 and 14 completed with
-something the reader must be told. The mapping lives in ``volab.reveal``, by gate name.
+something the reader must be told; 15 the reads completed and a configuration was refused.
+The mapping lives in ``volab.reveal``, by gate name.
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ from volab.reveal import (
     champion_from,
     committed_blob,
     compare_snapshots,
+    configuration_refused,
     content_sha256,
     derive_and_read,
     derive_curated,
@@ -64,6 +66,8 @@ from volab.reveal import (
     fingerprint,
     gates,
     keys_not_held,
+    last_sessions,
+    raw_bars_frames,
     read_bars,
     score,
     seal_state,
@@ -111,13 +115,46 @@ def _refusals(settings: Settings, repo_root: Path, today: dt.date) -> tuple[Gate
     return gates(settings, today=today, repo_root=repo_root, **facts)  # type: ignore[arg-type]
 
 
+def _unchecked(settings: Settings) -> list[str]:
+    """What a green ``check`` does not know, in the order the gates would fire in a ``take``."""
+    frames = raw_bars_frames(settings)
+    end = settings.splits.holdout_end
+    lines = [
+        "not checked: keys_not_held (10), window_not_ingested (11) and canary_disagrees (12).",
+        "  Each is discoverable only by a read, and every read past dev_end is a counted look:",
+        "  a reveal_open line plus up to 16 looks, which is a counted attempt. check writes",
+        "  nothing, so it cannot ask, and a take that finds one of the three spends that attempt.",
+    ]
+    gate = short_window(settings, frames) if frames else None
+    missing = sorted(set(settings.universe) - set(frames))
+    if gate is None and not missing:
+        latest = max(last_sessions(frames).values())
+        lines.append(
+            f"  window_not_ingested is not expected to fire: the latest raw bars session is "
+            f"{latest}, holdout_end {end}."
+        )
+        lines.append("  keys_not_held and canary_disagrees are not forecast either way.")
+        return lines
+    seen = max(last_sessions(frames).values()) if frames else None
+    lines.append(
+        f"  window_not_ingested is expected to fire: the latest raw bars session is "
+        f"{seen if seen else 'absent'}, holdout_end {end}"
+        + (f"; no raw bars at all for {', '.join(missing)}" if missing else "")
+        + "."
+    )
+    lines.append("  The first take may therefore cost a counted attempt; ingest the window first.")
+    return lines
+
+
 def _check(settings: Settings, repo_root: Path, today: dt.date) -> int:
     found = _refusals(settings, repo_root, today)
     for gate in found:
         print(gate.message)
     if found:
         return found[0].code
-    print("every pre-read gate passes")
+    print("the gates that need no key and no read pass (3..9)")
+    for line in _unchecked(settings):
+        print(line)
     print(f"this attempt plans {expected_looks(settings)} sealed looks")
     for horizon in sorted(REGISTERED_ORIGINS):
         print(
@@ -178,7 +215,9 @@ def _take(settings: Settings, repo_root: Path, today: dt.date, argv: Sequence[st
         settings, inputs, sink=sink, at=at, sha=sha, dirty=False, calendar=calendar, report=print
     )
     if scored.refused:
-        raise RuntimeError(f"configurations refused by the driver: {', '.join(scored.refused)}")
+        gate = configuration_refused(scored.refused, count_trials(root) - fp.trials_at_read)
+        print(gate.message)
+        return gate.code
     cohort = reveal.RUNS[0][0]
     primary = next(
         c

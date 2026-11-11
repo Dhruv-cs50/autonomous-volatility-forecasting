@@ -465,7 +465,7 @@ def test_the_open_line_survives_a_sigkill_inside_the_read(tmp_path: Path) -> Non
             storage_root=root,
         )
         # No conftest here, so both halves of the suite's policing are stubbed by hand.
-        store._unlock_granted = lambda _: True
+        store._unlock_granted = lambda allow_holdout: allow_holdout
         store._reveal_committed = lambda splits: False
         store._scan = lambda patterns: os.kill(os.getpid(), signal.SIGKILL)
         store.load_panel("bars_daily", end=day, allow_holdout=True, settings=settings)
