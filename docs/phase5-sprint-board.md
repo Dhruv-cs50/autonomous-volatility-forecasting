@@ -1,0 +1,103 @@
+# Phase 5 — the agent layer — sprint board
+
+Branch `phase-5-agent-layer`, cut from `main` at `ee16c3d`. Design
+`docs/superpowers/specs/2026-11-10-phase5-agent-layer-design.md`, plan
+`docs/superpowers/plans/2026-11-10-phase5-agent-layer.md`, decisions
+`docs/superpowers/phase5-decisions.md` (R181 onward — **not** R163, see R181).
+
+**Baseline at `ee16c3d`, measured in this worktree:** 1856 tests pass, `ruff check` clean,
+`ruff format` reports 107 files formatted, `mypy --strict` clean over 45 source files. A board row
+states the sha it was verified at, and a line number is treated as perishable (R155).
+
+## Status
+
+| Sprint | Goal | State |
+|---|---|---|
+| 0 | scaffold: ignores, boards, package stubs | done (`ee16c3d` + scaffold commit) |
+| A | the fences, before any code of the phase | not started |
+| B | the vocabulary and the `HarX` contestant | not started |
+| C | the child, the sprint log, the counts | not started |
+| D | the ports and the roles | not started |
+| E | the human gate, the CLI, the exit criterion | not started |
+| F | close out: audit, README, PR | not started |
+
+## Stories
+
+| ID | Story | Owner | Est. | Depends on | State |
+|---|---|---|---|---|---|
+| P5-A1 | The derived holdout-key scan as a reusable helper | implementer | 45m | — | todo |
+| P5-A2 | The three new packages reach no read path and name no unlock key | implementer | 1h | A1 | todo |
+| P5-B1 | `HarX`: HAR plus a declared subset of the vocabulary | implementer | 1h | — | todo |
+| P5-B2 | The closed vocabulary, `Proposal`, `validate`, `gate`, canary payloads | implementer | 1h | — | todo |
+| P5-C1 | The evaluation child and the two agent ledgers | implementer | 1h | B1, B2 | todo |
+| P5-C2 | The sprint event log and the pending approval | implementer | 45m | B2 | todo |
+| P5-C3 | `LedgerCounts`, the ledger reader, the leaderboard's added line | implementer | 1h | A2, C1 | todo |
+| P5-D1 | The `Completer` port, the urllib edge client, the fake | implementer | 45m | — | todo |
+| P5-D2 | The `Checkpointer` port and two credential-free implementations | implementer | 1h | — | todo |
+| P5-D3 | Subprocess-per-evaluation | implementer | 45m | C1 | todo |
+| P5-D4 | The six roles, the seven-step machine, the sprint | implementer | 1h | C2, D1, D2, D3 | todo |
+| P5-D5 | The canary bites, and an accepted canary voids the sprint | implementer | 45m | D4 | todo |
+| P5-E1 | `python -m volab.promote` and its three refusals | implementer | 1h | C2, D4 | todo |
+| P5-E2 | `python -m volab.agent`: `sprint` and `show` | implementer | 45m | D4 | todo |
+| P5-E3 | The exit criterion: a full sprint end to end, witnessed | implementer | 1h | E1, E2 | todo |
+| P5-F1 | Delivery audit: the board against git | delivery-auditor | 30m | E3 | todo |
+| P5-F2 | README status, the board's close, the PR | orchestrator | 30m | F1 | todo |
+
+Waves, each wave's stories touching disjoint files: **A1** → **A2** → **B1 ∥ B2** →
+**C1 ∥ C2** → **C3** → **D1 ∥ D2 ∥ D3** → **D4** → **D5** → **E1 ∥ E2** → **E3** → **F1** → **F2**.
+
+## Two open PRs overlap this phase's files, and every story routes around them
+
+Measured with `git diff --stat ee16c3d...<branch>` on fetched refs:
+
+| PR | branch | files this phase cares about |
+|---|---|---|
+| #18 | `phase-4-scheduler` | `tests/test_daily.py` (+542), `src/volab/leaderboard/__init__.py` (+20), `tests/test_leaderboard.py` (+38), `src/volab/daily/runner.py` (+282), `runlog.py` (+71) |
+| #19 | `fix/before-the-reveal-rows` | `src/volab/evaluators/__main__.py` (+14), `tests/test_preregistration_fence.py` (+431) |
+
+Consequences, each a recorded decision rather than an accident: `tests/holdout_scan.py` is written
+fresh instead of extracted out of `tests/test_daily.py` (R187); the leaderboard change is additive
+and leaves the headline's wording alone (R186); the three writer CLIs are **not** migrated onto a
+combined counter (R186); `agent/_runner.py` duplicates the daily runner's bounded tail rather than
+extracting it (R195).
+
+## Held, not forgotten
+
+| item | why it is held | releases on |
+|---|---|---|
+| A sprint against the **real** storage root | it would move newly reported ledgers before the reveal — R139's question one subsystem over (R194). **Needs no key.** | a user decision |
+| A live-LLM sprint | needs an API key only the user can provision | the key |
+| A Postgres-backed `Checkpointer` | needs a DSN; not written, and not described as written (R190) | the DSN |
+| The reveal's second count including both agent ledgers | the reveal is unbuilt, so there is nothing to assert against | Phase 6 |
+| A `last_origin` on holdout comparison records | same | Phase 6, **before** any agent reads that file |
+
+## Not this phase's, and why
+
+- **Taking the reveal.** Phase 6's, and the user's trigger. Nothing here names `allow_holdout` or
+  `VOLAB_HOLDOUT_UNLOCK`, and a scan now forbids the three new packages from doing so.
+- **Moving a champion on promotion** (R188). The framework's own ordering puts the logged holdout
+  check before promotion, and that check is Phase 6's.
+- **Extracting the subprocess tail and the holdout scan** into shared helpers (R187, R195) — both
+  blocked on PR #18 landing, both recorded as follow-ups rather than dropped.
+- **Migrating the three writer CLIs onto `LedgerCounts`** (R186), blocked on PR #18 and PR #19.
+- **A bandit supervisor, reflection memory, token tracing.** The framework puts those in Phase 6.
+- **A dashboard or any UI.** Asked and declined in Phase 4; unchanged.
+
+## Checklist
+
+- [x] Design written and reviewed
+- [x] Plan written
+- [x] Decisions log opened at R181, with the collision that forced it recorded
+- [ ] Every story meets its acceptance criteria
+- [ ] Full suite passing, ruff and mypy clean
+- [ ] Delivery audit run, board corrected where it and git disagree
+- [ ] PR open, with the three remainder categories kept separate
+
+## Risks
+
+- **The agent ledgers are empty at merge**, because R194 holds the only run that would fill them.
+  That is intended, and the PR must not present an empty ledger as a run that found nothing.
+- **Textual conflict with PR #18** in `leaderboard/__init__.py` and `tests/test_leaderboard.py`.
+  Both sides are additive, so the resolution should be mechanical; it is still a conflict.
+- **A sibling session allocating R181+.** Claimed in the shared notes folder; PR #19's session was
+  running when the claim was written.

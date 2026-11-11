@@ -1,0 +1,399 @@
+# Phase 5 decisions — the agent layer
+
+Numbered continuously with every prior phase. Each record states what it costs if the decision is
+wrong, because an unpriced structural decision is how an invariant gets traded away for nothing.
+
+Design: `docs/superpowers/specs/2026-11-10-phase5-agent-layer-design.md`. Plan:
+`docs/superpowers/plans/2026-11-10-phase5-agent-layer.md`.
+
+---
+
+## R181 — Phase 5 numbers from R181, not R163, because R161-R180 are taken on open branches
+
+My brief said the numbering ran to R162 and to start at R163. **Measured on 2026-11-10 against
+fetched refs, that was already false:**
+
+| ref | highest `R1xx` in `docs/` |
+|---|---|
+| `origin/main` (ee16c3d) | R160 |
+| `origin/phase-4-scheduler` (PR #18, open) | **R164** — defines R161-R164 |
+| `origin/fix/before-the-reveal-rows` (PR #19, open, running) | **R180** — defines R180, cites R164, R165, R179 |
+
+Starting at R163 would have collided with PR #18's own R163 and R164. R141 records exactly this
+collision happening once before, and the consequence was renumbering six rulings — with a board row
+that "says R134-R139 and cannot be corrected". So Phase 5 starts above everything observed, and
+claims **R181-R209** in the shared notes folder the sibling sessions read, because PR #19's session
+was still running when this was written and may yet allocate more.
+
+*Cost if wrong:* a gap in the numbering between R160 and R181 if PR #18 and PR #19 are abandoned.
+A gap is cosmetic; a collision forces a renumbering that invalidates citations in already-merged
+documents.
+
+---
+
+## R182 — no new dependency, and R84 is explicitly **not** the reason
+
+**Ruling: no LangGraph, no `psycopg`, nothing new in `uv.lock`.** The framework's Phase 5 row names
+"LangGraph roles, typed tools, Postgres checkpointer"; the roles and the typed tools are built, the
+two named technologies are not.
+
+**R84 cannot be cited here.** MLflow was refused because it *would not resolve* —
+`mlflow>=3` needs `pyarrow<26` against this project's `pyarrow>=26`. **Measured: LangGraph resolves
+against this lock and imports clean under `-W error`**, adding 39 packages (39 → 78). Borrowing
+R84's authority for a dependency that does resolve would be the overclaim this repository treats as
+its one unforgivable defect. Three grounds that do hold:
+
+1. `interrupt` is a mechanism where R188 needs a prohibition — we would adopt 39 packages for the
+   human-gate feature and then decline to use it. **Honest caveat:** R188's process separation could
+   be built on top of LangGraph. The ground is the unused feature, not impossibility.
+2. 39 → 78 packages for a seven-step linear machine with one branch and one pause. This project
+   already kept `volab.leaderboard` off `volab.compare` because `arch` costs three seconds.
+3. `filterwarnings = ["error"]` makes 39 transitively-moving packages an **ongoing** liability: any
+   future `uv lock` can introduce a call-time `DeprecationWarning` that fails the whole suite.
+   **Stated as a liability, not a measured failure — it does not bite today.**
+
+`psycopg` stays out of the lock entirely: an optional extra **does** enter `uv.lock` and is **not**
+installed by `uv sync --locked` (measured), so it would change the lock and get zero mypy or test
+coverage.
+
+*Cost if wrong:* roughly 200 hand-rolled lines we own. Worth revisiting the day cycles,
+retry-with-backoff or parallel branches enter scope; none is in Phase 5.
+
+---
+
+## R183 — agent evaluations go to a separate tracked ledger, because R139 is a *user* decision
+
+The opposite reading had real support: the pre-registration §4 says the reveal *"takes a second
+count and records both plus the delta … since further work may legitimately add trials"*, and the
+reveal design insists the protection's purpose is that the number is **known and reported, not
+frozen**. The leaderboard already partitions by cohort.
+
+**What overrides it:** R139 is recorded as a **user decision** — *"no Phase 3 walk-forward writes a
+ledger line until the user has triggered the holdout reveal"* — and Phase 4 inherited it unchanged.
+Routing agent trials into `data/trials.jsonl` would overturn a user decision, which is not a
+builder's to take. A separate ledger is the only option needing no new decision from the user.
+
+So: **`data/agent_trials.jsonl` and `data/agent_comparisons.jsonl`, both tracked** (hence two
+`!data/…` negations, since `data/**` is ignored with an allowlist), schemas byte-identical to
+`Trial.record()` plus `append_trials`' prefix — so that if the user later rules the ledgers should
+be one, the migration is `cat`. `data/agent_sprints.jsonl` is the event log and is **gitignored**,
+as `data/daily_runs.jsonl` is by R158 Q3; no count from it is reported, and its events carry the
+`(cohort, at, git_sha)` key by which trial lines are found, so the two join rather than the agent
+keeping a shadow count.
+
+**The agent's runs cannot reach the real ledger**, and that is structural rather than a rule: the
+child is handed `run_configuration`'s existing `append` callable (R97), and it is a different one.
+
+*Cost if wrong:* more than one number where the argument wants one, and nothing stops a reader
+quoting only the first. See R186 for how far the enforcement actually goes.
+
+---
+
+## R184 — no date-typed field in any tool schema, and no stride either
+
+A peek is made **unrepresentable** rather than forbidden. Sharpened past the brief's "no `end`":
+there is no date-typed field at all, and no `every`, because choosing the window or the stride *is*
+selection. The harness fixes `first = 2021-01-04`, `last = settings.splits.dev_end`, `every = 5`
+(R94's stride) and `minimum_training = 250`, mirroring the existing CLI defaults.
+
+The witness is derived: a test walks the child CLI's `parser._actions` asserting no action's `type`
+is `dt.date.fromisoformat`, rather than asserting against a list of option names.
+
+*Cost if wrong:* a legitimate experiment over a different window needs a code change rather than a
+flag. That is the intended direction: a window the agent can choose is a window it can choose
+badly, and nothing downstream could tell the difference between curiosity and search.
+
+---
+
+## R185 — a positive allowlist, not a subtraction of target columns; and three columns excluded by measurement
+
+The brief asked that every target column be explicitly subtracted from the vocabulary. **Not done,
+and the replacement is stronger.** `FEATURE_COLUMNS` contains no target column already (measured:
+the intersection with `{target_column(h) for h in HORIZONS}` is empty, 33 columns), and a *positive
+allowlist* rejects `target_rv_proxy_h5` **and every name nobody thought of**, where a denylist
+rejects only what is on it. What makes the exclusion known rather than assumed is a derived
+disjointness test against the target set computed from `volab.features.targets` — so if
+`FEATURE_COLUMNS` ever admitted a forward quantity, it fails.
+
+**Three columns *are* subtracted, and that one was not asked for.** Measured on the real feature
+table, SPY, 2,312 rows: `har_d_proxy` **is** `rv_proxy_d1` (max abs difference **0.0**),
+`har_w_proxy*5` vs `rv_proxy_d5` is 3.5e-18, `har_m_proxy*22` vs `rv_proxy_d22` is 6.9e-18 — and
+`src/volab/features/har.py` makes this true by construction, not by coincidence. Since the HAR-X
+base always carries the three `har_*_proxy` regressors, a proposal naming any of the three is an
+**exactly singular** design. The witness is derived: `fit_ols` over `[*HAR_COLUMNS, column]` must
+refuse each excluded name and accept every admitted one.
+
+`MAX_EXTRA_REGRESSORS = 5` is **priced, not chosen**: 9 parameters is 16-20 ms per fit (measured
+`fit_ols` at 2,000 rows: k=8 → 16.2 ms, k=16 → 41.3 ms), about 4-5 s per `(symbol, horizon)` over
+251 origins. The cap exists because the sealed path may not import numpy (R82), so `fit_ols` is
+pure-Python normal equations.
+
+*Cost if wrong:* a genuinely useful sixth regressor, or one of the three excluded columns in a
+specification without the HAR base, needs a code change. Both are cheap; a singular fit at run time
+inside an unattended sprint is not.
+
+---
+
+## R186 — the dual-count *enforcement* is deferred, and the claim narrows to the leaderboard headline
+
+The intended enforcement was an import ban leaving `count_trials` reachable only from its own
+definition and a new `src/volab/counts.py`, so that no surface could print one count without
+holding the other. **It fails on day one:** four modules already call `count_trials`
+(`walkforward/__main__.py`, `leaderboard/__init__.py`, `compare/__main__.py`,
+`evaluators/__main__.py`), so the ban requires migrating three writer CLIs — and one of them,
+`src/volab/evaluators/__main__.py`, is being edited **right now** on PR #19, which is the deferred
+row about `_describe` printing a trial count.
+
+**Ruling: `src/volab/counts.py` is written and the leaderboard prints both counts as an added line;
+the three writer CLIs are not migrated and the import ban is not asserted.** The honest claim
+narrows to *the leaderboard headline prints both counts*. The design says so in those words and the
+PR must not say more.
+
+Equally deliberate: the leaderboard change is **additive** — a new line beneath the existing
+headline, no edit to the headline's own text — because PR #18 adds 20 lines to that module and 38 to
+its test, and pinned assertions and quoted documentation both survive an addition where they would
+not survive a rewording.
+
+*Cost if wrong:* a reader can quote `trials.jsonl`'s count alone from one of the three unmigrated
+CLIs, each of which prints its own ledger's before-and-after delta. The migration is mechanical once
+PR #18 and PR #19 land.
+
+---
+
+## R187 — `tests/holdout_scan.py` is written fresh, not extracted from `tests/test_daily.py`
+
+Two derivations of the unlock-key scan exist. `test_import_discipline.py`'s `_unlocks` runs over
+`tools/` only and **hardcodes** both key names; `test_daily.py`'s derives them — the environment
+variable from `volab.config.HOLDOUT_UNLOCK_ENV`, the parameter name from `store.py`'s
+`def load_panel` by AST (not `inspect.signature`, because conftest's police replace the object for
+the whole session, R153). **R151 decides which to use: the derived one.**
+
+The better engineering is to extract it to a shared helper with two callers. **Deliberately not
+done:** PR #18 is adding 542 lines to `tests/test_daily.py`, and refactoring a file another story is
+editing is how a diff gets lost. For the same reason the `_LEDGER_FILENAMES` completeness check is
+replaced by a guard asserted in the new file — that no `LIVE_STAGES` entry runs any of the three new
+packages — which imports `LIVE_STAGES` read-only and edits nothing.
+
+*Cost if wrong:* two copies of one derivation, which can drift. Extraction is recorded as a
+follow-up for when `daily/` is quiet.
+
+---
+
+## R188 — promotion is a separate package that writes an event and moves no champion
+
+The framework's human gate is `interrupt()`. Here a sprint that reaches a promotable candidate
+**persists a pending approval and exits**, and promotion requires
+`python -m volab.promote --proposal-id …` in its own process. A **separate package** rather than a
+second verb, because a verb in the same module means the sprint *could* promote in-process and only
+a convention would stop it; separate packages make it an import-graph fact, asserted both ways.
+
+**Promotion writes a `promoted` event and nothing else** — no champion pointer moves, and nothing a
+daily stage consumes is written. The framework's own ordering is why: *"Promotion requires
+dev-window MCS membership, a passing guardrail gate, human approval **and then a single logged
+holdout check**"*. The holdout check comes first and is Phase 6's. Three refusals, each its own
+test: no `awaiting_approval` event for that id; a recomputed fingerprint differing from the stored
+one, naming both, because the ledger moved under the approval; a `promoted` event already present.
+No `--latest` and no `--all`, because a flag that selects the candidate is the operator no longer
+choosing it.
+
+So the exit criterion "`interrupt` before promotion" is met by **pause-and-persist, approval in a
+separate process, and a recorded decision** — not by a champion changing hands. The PR says that in
+those words.
+
+*Cost if wrong:* a promotion that has no effect beyond the record, so an operator expecting the
+daily forecast to change is disappointed. That is the correct disappointment: changing it before the
+holdout check would invert the framework's own ordering.
+
+---
+
+## R189 — the canary is injected at the parse boundary, one per sprint, across six distinct refusal codes
+
+A canary is a deliberately illegal proposal **the harness substitutes for the Configurator's raw
+payload before the gate sees it**, so the gate cannot distinguish it from a real emission. It tests
+the validator on live traffic, not the model.
+
+**Exactly one per sprint at a position derived from a sha256 of the sprint id** — not a probability,
+because a probabilistic rate means some sprint has zero canaries and the gate went untested on that
+sprint's traffic. Deterministic given the sprint id, so a sprint replays exactly.
+
+**Six payloads across six distinct `RefusalCode`s, and the reason is a correction.** With a positive
+allowlist (R185), a target column, an out-of-vocabulary name and `rv_proxy_d1` all land in one code,
+and an `end` key and a `cohort` key land in another. A floor asserting six distinct refusal
+*strings* would have passed anyway, because the echoed names differ — **a floor that looks like
+evidence and is not**. Hence `RefusalCode`, and a floor on distinct codes.
+
+**If a canary is ever accepted the sprint aborts there**, writes `canary_accepted`, exits non-zero,
+and nothing from it may be promoted. **Proposals already evaluated keep their ledger lines.** The
+ledger is append-only and a trial that ran is a trial; the event says the sprint was *voided*, not
+that those trials did not happen. Pretending otherwise would be the rewrite-a-ledger move this
+project refuses everywhere else.
+
+*Cost if wrong:* one proposal slot per sprint. The real risk is a canary refused by *shape* before
+reaching the interesting branch, which is what the distinct-code floor catches.
+
+---
+
+## R190 — no Postgres implementation is written, and it is not dressed up as written-but-blocked
+
+The `Checkpointer` port is **domain-level** — `put` / `get` / `history` / `sprints` — and
+deliberately not a DB-API connection: a port shaped as "execute this SQL" makes every implementation
+a dialect, and a `sqlite3` test would then be evidence about sqlite3 and nothing else. **Two
+implementations ship working and tested with no credential**: `FileCheckpointer` and
+`SqliteCheckpointer` over an injected `sqlite3.Connection`, exercised by one conformance test
+parametrised over both. Two independent implementations from day one are what make it a port rather
+than one class with an interface drawn round it.
+
+**A Postgres-backed implementation is not written.** sqlite3 uses qmark parameters, psycopg uses
+`%s`, and the DDL differs. Shipping psycopg code that has never met a server and calling it
+"working, blocked on a key" would be an R32 overclaim — so the blocked line says instead: *a
+Postgres-backed `Checkpointer` is not written; a DSN would let it be written and run, and what that
+would prove is that the SQL dialect and DDL are right, which the sqlite3 implementation does not
+establish.*
+
+*Cost if wrong:* if a DSN appears tomorrow someone writes a third implementation, roughly 60 lines,
+against a port that two independent implementations already constrain. That is the cheap direction;
+a port shaped by one storage engine is the expensive one.
+
+---
+
+## R191 — the exit-criterion rehearsal runs on a synthetic store, and the obvious witness is refused
+
+The framework's criterion is *"one full weekly sprint runs end to end without touching the
+holdout"*, and it is met with no credential by a scripted `FakeCompleter`.
+
+**"No new line in `data/holdout_access.jsonl`" is refused as evidence, for two reasons.** conftest's
+police do not exist inside subprocesses; and the boundary check precedes the `try:` that opens the
+audit scope, so a **refused** read writes no line at all — making an absent line consistent with
+both "no attempt" and "a refused attempt". An absent line is not a witness.
+
+What is: the sprint never calls `load_panel` at all (R192's fence), so every read is in the
+`volab.candidate` grandchild, and since `submit` is injected the rehearsal passes one that launches
+a shim which logs every observed `(end, allow_holdout)` pair. The assertion is positive — **every
+call carried `end == dev_end` and `allow_holdout is False`**.
+
+The rehearsal builds a **synthetic** store, and shrinks the origin window **inside the shim**, never
+with a production knob. *What it buys:* the machinery runs end to end, hermetically, in CI, with no
+key. *What it does not buy, stated because it would otherwise be assumed:* it does not show that
+real dev data yields a sensible candidate. That run is held under R194.
+
+*Cost if wrong:* the rehearsal could pass over a synthetic panel whose shape differs from the real
+one in some way that matters. Mitigated by P5-B2's real-panel witness and P5-C1's measured child
+run, both on real data.
+
+---
+
+## R192 — the agent package reaches no read path, transitively, and the fence is derived
+
+The stronger of the two options: `src/volab/agent/` imports **nothing that reaches `volab.store`**,
+so "the agent cannot peek" is an import-graph fact rather than a convention. It is nearly free,
+which is why it is taken — every tool in the framework's role table reads a ledger or submits a run,
+and **none needs a panel figure**.
+
+**The trap, measured:** `volab.features.targets` reaches `volab.store` two hops deep
+(`from volab.store import write_features`), so `from volab.features.targets import HORIZONS` in an
+agent module would pull the store, duckdb and pyarrow into the agent process — **and a per-file scan
+passes it.** That is R129's hole in the numeric scan, one subsystem over. Hence the fence is
+transitive, built on `test_import_discipline.py`'s existing graph walk, and its red witness is a
+plant of exactly that import rather than a synthetic one. `HORIZONS` is therefore a literal in the
+agent's vocabulary with a two-sided test, while `FEATURE_COLUMNS` is imported directly because
+`volab.features.build` is store-free (measured).
+
+**The fence is on the import graph and never on `sys.modules`:** pandas 3.0 imports pyarrow
+unconditionally, so pyarrow's presence there is not evidence of a store reach.
+
+**`ALLOWED` in `test_import_discipline.py` is not extended** — nothing in the new packages reads
+Parquet directly, and an existing test asserts `sorted(ALLOWED) == ["store.py"]`. Worth recording
+that `test_scan_recurses_and_exempts_only_the_top_level_store` already names `agent/store.py` and
+`agent/tools.py` in its fixture: R35 widened that scan to `rglob` in Phase 0 *specifically* so this
+phase's package would be covered the day it was written, and it is.
+
+*Cost if wrong:* a later tool needing a panel figure must become a subprocess stage, paying one
+interpreter start. Cheap, and the fence is what buys the import-level fact.
+
+---
+
+## R193 — the child inherits its environment unchanged; no unlock scrub
+
+An implementer will want to scrub the unlock variable out of the child's environment. **Ruled out
+in advance:** `{k: v for k, v in os.environ.items() if k != "VOLAB_HOLDOUT_UNLOCK"}` names the
+variable in a string literal and **trips the very ban R187's scan installs**.
+
+The child inherits the environment unchanged. The seal is that no code path passes
+`allow_holdout=True`, and `_unlock_granted` requires **both** keys. A scrub is a second mechanism
+that looks like a defence, weakens nothing, and breaks a ratchet.
+
+*Cost if wrong:* if an operator exports `VOLAB_HOLDOUT_UNLOCK=1` in their shell, the child inherits
+it — and still cannot read the holdout, because nothing passes the argument. The scrub would protect
+against a second, non-existent bug while disabling a real guard.
+
+---
+
+## R194 — a sprint against the real storage root is **held on a user decision**, not blocked on a key
+
+Stated as its own category because folding it into the credential-blocked list is the easy
+overclaim, and it would be false: a sprint against the real panel needs **no credential at all** —
+a scripted `FakeCompleter` plus the real store would produce real trial lines today.
+
+It is held because it would **move newly reported ledgers before the reveal**, which is R139's
+question one subsystem over and therefore the user's call. Not run. The PR reports it as *held on a
+user decision, analogous to R139 — not blocked on a key*.
+
+*Cost if wrong:* the phase ships without a real-data sprint on the record, so the agent ledgers are
+empty at merge. That is the correct state: a ledger with lines nobody authorised is worse than an
+empty one.
+
+---
+
+## R195 — `_runner.py` duplicates the daily runner's bounded tail rather than extracting it
+
+`daily/runner.py:73-104`'s bounded chunked-tail loop is real engineering that should exist once, and
+the right answer is extraction to `src/volab/_subprocess.py` with two callers. **Deliberately not
+done:** PR #18 adds 282 lines to that file. The two `OUTPUT_BOUND_BYTES` constants are coupled by a
+test asserting equality, and each file names the other in a comment.
+
+*Cost if wrong, stated plainly:* two copies of a 25-line loop. Only the bound is test-coupled, not
+the logic, so a bug fixed in one must be fixed in the other by hand. Extraction is a follow-up.
+
+---
+
+## R196 — `harx+iv_h5+vvix`, not `harx[iv_h5+vvix]`
+
+`validate_segment` rejects glob metacharacters, and `[` and `]` are among them, so a contestant
+named `harx[…]` would be unusable the moment a model name became a path segment. Model names reach
+no path today — they are a JSON field in the ledger and a cohort join key — so this is prevention
+rather than a fix. It costs nothing, and the reserved cohort namespace was already made glob-safe
+for the same reason.
+
+*Cost if wrong:* a reader expecting bracket notation does not find it.
+
+---
+
+## R197 — the brainstorming skill's human gate is served by review seats, and the baseline is 1856 tests
+
+Two process records, both so that a later reader is not misled.
+
+**The human gate.** `superpowers:brainstorming` requires the human partner to approve the design
+before implementation. The user is not in this session — the task arrived from another session and
+directs design → plan → build → PR in one pass, and explicitly says not to ask for credentials in
+the opening turns. So the skill's open questions were resolved as the numbered decisions above, and
+its approval gate was served by an independent architect seat and a review seat on every story. This
+is a **substitution, not a satisfaction** of that gate: nobody but the user can approve on the
+user's behalf, and anything here that should have been their call is flagged as held (R194) rather
+than decided.
+
+**The baseline.** The brief said the suite was "~2150 tests". Measured on `ee16c3d` in this worktree
+with the store populated: **1856 pass**, ruff clean, 107 files formatted, mypy clean over 45 source
+files. The larger figure is the tree including PR #18's roughly 300 unmerged Phase 4 tests. Nothing
+in this phase's documents quotes 2,150.
+
+A third, smaller record belongs here because it will bite the next person to cut a worktree: `data/**`
+is gitignored but for an allowlist, so **a fresh worktree fails the suite** —
+`tests/test_coverage_real.py` catches `DatasetNotFound` and calls `pytest.fail` with a rebuild
+instruction rather than skipping. The cure is to rebuild, or to copy `curated/`, `features/` and
+`raw/` from a populated clone; copying `trials.jsonl` or `comparisons.jsonl` would import another
+branch's ledger state, because those two are tracked.
+
+*Cost if wrong:* if the architect and review seats missed something the user would have caught, the
+phase merged a design they did not choose. Mitigated by keeping the credential boundary and the
+ledger question (R183, R194) as the user's, and by stating this substitution rather than letting a
+reader assume the gate was met.

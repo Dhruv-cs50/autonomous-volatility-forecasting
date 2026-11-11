@@ -23,6 +23,20 @@ __pycache__/
 # evaluated configuration, keyed by the git sha of the tree that produced it.
 !data/trials.jsonl
 
+# The agent's own trial ledger (R183). Agent evaluations ARE trials, and a side ledger nobody
+# counts is the overclaim this project exists to refuse -- so it is tracked, and the leaderboard
+# prints its count beside the headline. It is a SEPARATE file because R139 is a user decision:
+# nothing appends to data/trials.jsonl before the user has triggered the holdout reveal. The
+# schema is byte-identical to trials.jsonl's, so if the user later rules the two should be one
+# file, the migration is `cat`.
+!data/agent_trials.jsonl
+
+# The agent's comparison ledger, tracked for the reason comparisons.jsonl is: the MCS membership a
+# promotion rests on cannot be recomputed from trial lines, which hold aggregates. Its records add
+# `first_origin` and `last_origin`, which comparisons.jsonl's lack -- the gap that forces the agent
+# to read no comparison file but its own (design, "the channel M7 closes").
+!data/agent_comparisons.jsonl
+
 # The vendor payload archive is committed deliberately, so the repository can rebuild its own
 # dataset from a clean checkout: Nasdaq serves only a trailing 10-year window, and anything that
 # falls off it cannot be refetched. Narrow on purpose -- the curated, features and targets tiers
