@@ -831,12 +831,27 @@ Four orderings in there are decisions:
 
 - **The fingerprint is built at step 4, before step 5**, so every number in it predates the first
   sealed read. A fingerprint taken after the reads would be a description of the result.
-- **Scoring (step 11) does no reads.** The parent design's call 2 — *"everything fallible happens
+- **Scoring (step 12) does no reads.** The parent design's call 2 — *"everything fallible happens
   outside the logged read, so that k is almost always 1"* — is implementable only if the inputs are
   all in hand first, which is why stages B, C and D finish before `score` starts.
-- **`record_reveal_completed` is step 14, after the write-up's figures are computed and before they
+- **`record_reveal_completed` is step 16, after the write-up's figures are computed and before they
   are printed.** If printing fails, the record is already complete and the figures are in
   `details`; if `details` could not be built, nothing claims the reveal completed.
+- **Writing it before exits 13 and 14 is the honest state, not an oversight.** By step 16 the
+  holdout *has been read*: the sealed looks are logged and the figures are in hand. The seal's
+  claim is that nobody has seen the data, and that claim is false once the reads happened,
+  whatever is written afterwards. Leaving `reveal_open` unpaired would keep the machinery sealed
+  while the data was seen, and let a later run present itself as the clean first read. So the
+  pair is written, and the burden moves to telling the operator exactly what state they are in.
+- **Every exit prints what the record says about the seal, derived from the record and from
+  nothing else.** The last line of output is `SEAL_SENTENCES[seal_state(audit_tally, committed)]`
+  -- never a function of the exit code, because exit 1 is any unexpected exception and can mean
+  "nothing happened" or "the holdout was read and only the printing failed". There are four
+  states: *untouched* (neither line exists), *counted* (a `reveal_open` without its completion;
+  seal intact), *read, uncommitted* (both lines on disk: the holdout has been read, this run was
+  the reveal, and the seal lifts when `data/holdout_access.jsonl` is committed -- the state every
+  successful `take` ends in) and *lifted* (both lines committed at HEAD). No gate's own message
+  speaks about the seal (witness: `test_the_gate_codes_are_distinct_and_never_reserved`).
 - **Exit 0 means completed and determined.** 13 and 14 both mean "completed, with something the
   reader must be told"; 13 wins if both apply, because an undetermined champion is the larger fact.
 
@@ -1231,6 +1246,13 @@ might do, and several of them are things an earlier draft of this design did.
     stride 1 and a change means a new registration.
 
 ---
+
+> **Status after the rulings (2026-11-11).** OQ1 was settled by the user as R216 and OQ2 as R217
+> (`docs/superpowers/holdout-reveal-decisions.md`): a contestant whose significance R115 withholds
+> *is* eligible to be champion (`champion_from` returns `NAMED` with the withholding stated in the
+> same breath; `AMBIGUOUS` and exit 13 remain for an exact QLIKE tie), and the window closing is
+> enough to take the reveal (gate `window_open`). The entries below are kept as written; OQ3-OQ6
+> remain open.
 
 ## 12. Open questions, left unresolved on purpose
 
