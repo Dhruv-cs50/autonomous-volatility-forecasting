@@ -141,6 +141,11 @@ def test_it_skips_when_too_few_training_rows_carry_every_extra() -> None:
     with pytest.raises(ModelSkip, match="'x'") as raised:
         harx(("x", "z")).fit(thin)
     assert not isinstance(raised.value, SchemaError)
+    # The reason names the thin column and not the dense one. The model's own name lists every
+    # extra, so the check is on what follows it.
+    reason = str(raised.value).split(": ", 1)[1]
+    assert "'x' is thin on its own" in reason
+    assert "'z'" not in reason
     # One more carrying row and it fits: the boundary is the view's own minimum.
     training["x"] = view.training["x"].where(view.training.index >= len(training) - 20)
     assert harx(("x", "z")).fit(dataclasses.replace(view, training=training)).observations == 20

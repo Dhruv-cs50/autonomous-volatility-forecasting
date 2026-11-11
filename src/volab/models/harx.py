@@ -16,10 +16,14 @@ data problem. ``ModelSkip`` is one contestant's own refusal: the harness records
 ``(origin, model, reason)``, writes a NaN for it and leaves the origin in place for everyone else
 (R87). The three refusals, each naming the offending column(s):
 
-* an extra is null at the origin;
+* an extra is null at the origin. Only the extras are checked there: a null HAR column at the
+  origin is not tested by this module and is handled downstream, by the training-row count or by
+  ``fit_ols``, as in ``volab.models.iv``;
 * too few training rows carry every extra together with the HAR regressors and the response, fewer
-  than ``view.minimum_training``. A sparse extra is normal rather than exceptional (``iv_h1`` is
-  non-null on 912 of 2,312 development rows), so this is expected to fire;
+  than ``view.minimum_training``. The reason names the extras that are individually thin (each
+  counted beside the HAR regressors and the response); when none is thin alone and only their
+  overlap is, it names all of them and says so. A sparse extra is normal rather than exceptional
+  (``iv_h1`` is non-null on 912 of 2,312 development rows), so this is expected to fire;
 * the regression is singular and the HAR regressors alone would have fitted the same window. A
   singularity is then a property of the proposal and not of the window. ``fit_ols`` raises
   ``SchemaError`` for it; that is caught here and re-raised as ``ModelSkip`` with the original as
@@ -40,9 +44,10 @@ view without a declared extra is a wiring error here and raises ``ValueError``, 
 (see ``Forecaster``).
 
 The regression is ``volab.walkforward.fit_ols``, reached through the module attribute for the
-reason ``volab.models.recalibrated`` gives, and no numpy, scipy or arch is imported (R82): the
-normal equations are pure Python, measured at about 16 ms per fit at 2,000 rows with eight
-regressors and 41 ms with sixteen.
+reason ``volab.models.recalibrated`` gives, and no numpy, scipy or arch is imported (R82). It is
+pure-Python normal equations because the sealed path may not import numpy, so the cost of a fit
+grows steeply with the parameter count, and a development window of a couple of thousand rows
+cannot support many regressors anyway. No timing is quoted here.
 """
 
 from __future__ import annotations
@@ -115,10 +120,20 @@ class HarX:
         # The rows ``fit_ols`` will actually use, by the harness's own definition of enough rows.
         carried = wf.training_rows(view.training, view.response, self.extra)
         if carried < view.minimum_training:
+            thin = [
+                column
+                for column in self.extra
+                if wf.training_rows(view.training, view.response, (column,)) < view.minimum_training
+            ]
+            which = (
+                ", ".join(repr(column) for column in thin) + " is thin on its own"
+                if thin
+                else f"{named} are not jointly carried; none is thin on its own"
+            )
             raise ModelSkip(
-                f"{self.name}: {carried} training row(s) at {view.origin} carry {named} together "
-                f"with the HAR regressors and the response, fewer than the "
-                f"{view.minimum_training} required"
+                f"{self.name}: {carried} training row(s) at {view.origin} carry every extra "
+                f"together with the HAR regressors and the response, fewer than the "
+                f"{view.minimum_training} required; {which}"
             )
         try:
             fit = wf.fit_ols(view.training, (*wf.HAR_REGRESSORS, *self.extra), view.response)
