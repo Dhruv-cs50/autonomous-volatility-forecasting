@@ -10,7 +10,7 @@ import ast
 from pathlib import Path
 
 import pytest
-from holdout_scan import holdout_key_names, holdout_keys_in
+from holdout_scan import holdout_constant_names, holdout_key_names, holdout_keys_in
 
 import volab
 from volab.config import HOLDOUT_UNLOCK_ENV
@@ -62,6 +62,13 @@ def test_the_parameter_key_is_the_one_store_py_declares() -> None:
             "import os\nos.environ.get('VOLAB_HOLDOUT_UNLOCK')\n",
             "names VOLAB_HOLDOUT_UNLOCK outside a docstring",
         ),
+        (
+            "import os\nos.environ.get(HOLDOUT_UNLOCK_ENV)\n",
+            "names HOLDOUT_UNLOCK_ENV",
+        ),
+        ("import os\nos.environ[HOLDOUT_UNLOCK_ENV]\n", "names HOLDOUT_UNLOCK_ENV"),
+        ("from volab.config import HOLDOUT_UNLOCK_ENV\n", "imports HOLDOUT_UNLOCK_ENV"),
+        ("import volab.config as c\nc.HOLDOUT_UNLOCK_ENV\n", "reads .HOLDOUT_UNLOCK_ENV"),
         # R193: the child inherits its environment unchanged. This "scrub" is the exact thing that
         # ruling forbids, and it is the case that must stay red.
         (
@@ -76,6 +83,10 @@ def test_the_parameter_key_is_the_one_store_py_declares() -> None:
         "environ subscript",
         "environ get",
         "environment scrub (R193)",
+        "constant in environ.get",
+        "constant in environ subscript",
+        "import of the constant",
+        "constant as attribute",
     ),
 )
 def test_the_scan_detects_each_spelling(source: str, expected: str) -> None:
@@ -90,6 +101,10 @@ def test_the_scan_detects_each_spelling(source: str, expected: str) -> None:
         'def f() -> None:\n    """Never passes allow_holdout or reads VOLAB_HOLDOUT_UNLOCK."""\n',
         "# a comment naming VOLAB_HOLDOUT_UNLOCK and allow_holdout\nx = 1\n",
         "from volab.store import load_panel\nload_panel(ds, end=d)\n",
+        (
+            "from volab.errors import HoldoutViolation\n"
+            "try:\n    pass\nexcept HoldoutViolation:\n    pass\n"
+        ),
         "NAME = 'XVOLAB_HOLDOUT_UNLOCK_NOT'\nOTHER = 'the VOLAB_HOLDOUT_UNLOCK key is sealed'\n",
     ],
     ids=(
@@ -97,6 +112,7 @@ def test_the_scan_detects_each_spelling(source: str, expected: str) -> None:
         "function docstring",
         "comment",
         "ordinary read",
+        "catching HoldoutViolation",
         "string merely containing the name",
     ),
 )
@@ -109,15 +125,28 @@ def test_the_scan_ignores_prose_and_longer_strings(source: str) -> None:
     assert holdout_keys_in(source) == []
 
 
-def test_the_scan_is_not_vacuous_against_the_real_store() -> None:
-    """``store.py`` is the one module that legitimately names the parameter; the scan must see it.
+def test_the_constant_name_is_discovered_from_config_not_typed() -> None:
+    """The identifier that carries the variable is found by value in ``volab.config``'s namespace.
 
-    It finds the parameter in code (``def load_panel`` declares it and the body reads it). It finds
-    no environment-variable string there, because ``store.py`` reaches the variable through the
-    imported constant ``HOLDOUT_UNLOCK_ENV`` and names the spelling only in a docstring; that
-    absence is asserted too, so this test also records what the strict string rule does not see.
+    The scan matches that identifier loosely, so a module that imports and uses the constant is
+    caught as surely as one that spells the string. Asserting against ``HOLDOUT_UNLOCK_ENV`` here
+    is a witness of the discovery, not its source.
+    """
+    assert holdout_constant_names() == ("HOLDOUT_UNLOCK_ENV",)
+    assert getattr(volab.config, holdout_constant_names()[0]) == HOLDOUT_UNLOCK_ENV
+
+
+def test_the_scan_is_not_vacuous_against_the_real_store() -> None:
+    """``store.py`` is the one module that legitimately names the keys; the scan must see them.
+
+    It finds the parameter in code, and finds the environment variable through the imported
+    constant (the import and the ``_UNLOCK_ENV = HOLDOUT_UNLOCK_ENV`` alias). It finds no
+    environment-variable *string*, because ``store.py`` names the spelling only in a docstring;
+    that absence is asserted too, so this test also records what the strict string rule skips.
     """
     findings = holdout_keys_in(_STORE.read_text(encoding="utf-8"))
     parameter, variable = holdout_key_names()
     assert f"names {parameter}" in findings
+    assert "imports HOLDOUT_UNLOCK_ENV" in findings
+    assert "names HOLDOUT_UNLOCK_ENV" in findings
     assert not any(variable in finding for finding in findings)

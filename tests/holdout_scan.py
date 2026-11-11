@@ -20,6 +20,14 @@ unrelated prose that merely contains it is not an offence. **Docstrings are exem
 modules say in prose that they never unlock the holdout and a text search would trip over the
 sentence that promises it. Comments are not in the AST at all and so need no exemption.
 
+**The constant that carries the variable is matched too.** ``from volab.config import
+HOLDOUT_UNLOCK_ENV`` followed by ``os.environ.get(HOLDOUT_UNLOCK_ENV)`` reaches the key without a
+string literal, and looks tidier than one, so the strict string rule alone would let it through.
+The identifier is discovered by searching ``volab.config``'s attributes for the value, then matched
+loosely as a ``Name``, an ``Attribute`` and an import ``alias``. It is **not** widened to a
+"holdout"/"unlock" substring over every identifier: ``volab.errors.HoldoutViolation`` contains
+"holdout", and a module that legitimately catches it must not trip the ban.
+
 What this does not cover: a key assembled at runtime (``"VOLAB_" + "HOLDOUT_UNLOCK"``) or reached
 through ``getattr``. It reads syntax, not behaviour.
 """
@@ -56,6 +64,22 @@ def holdout_key_names() -> tuple[str, str]:
     return parameters[0], environment
 
 
+def holdout_constant_names() -> tuple[str, ...]:
+    """The identifiers in ``volab.config`` whose value is the environment variable's name."""
+    environment: str = config.HOLDOUT_UNLOCK_ENV
+    names = tuple(
+        sorted(
+            name
+            for name, value in vars(config).items()
+            if type(value) is str and value == environment
+        )
+    )
+    assert names, (
+        "no attribute of volab.config carries the unlock variable; the scan needs rewriting"
+    )
+    return names
+
+
 def _docstring_constants(tree: ast.AST) -> set[ast.Constant]:
     """Every ``Constant`` that is a docstring, so prose about a ban is not read as the ban."""
     found: set[ast.Constant] = set()
@@ -72,6 +96,7 @@ def _docstring_constants(tree: ast.AST) -> set[ast.Constant]:
 def holdout_keys_in(source: str) -> list[str]:
     """Every way ``source`` names a key that opens the sealed window, prose excluded."""
     parameter, environment = holdout_key_names()
+    constants = holdout_constant_names()
     tree = ast.parse(source)
     exempt = _docstring_constants(tree)
     found: list[str] = []
@@ -82,6 +107,12 @@ def holdout_keys_in(source: str) -> list[str]:
             found.append(f"names {parameter}")
         elif isinstance(node, ast.Attribute) and node.attr == parameter:
             found.append(f"reads .{parameter}")
+        elif isinstance(node, ast.alias) and node.name in constants:
+            found.append(f"imports {node.name}")
+        elif isinstance(node, ast.Name) and node.id in constants:
+            found.append(f"names {node.id}")
+        elif isinstance(node, ast.Attribute) and node.attr in constants:
+            found.append(f"reads .{node.attr}")
         elif isinstance(node, ast.Constant) and node.value == environment and node not in exempt:
             found.append(f"names {environment} outside a docstring")
     return found
