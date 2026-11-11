@@ -19,7 +19,7 @@ states the sha it was verified at, and a line number is treated as perishable (R
 | C | the child, the sprint log, the counts | **done** — C1 `3e15fd7`, C2 `6da1eaa`, C3 `35c5424` |
 | D | the ports and the roles | **done** — D1+D2 `91de85b`, D3 `2618462`, D4 `a029ac5`, D5 closed within D4 |
 | E | the human gate, the CLI, the exit criterion | **done** — E1 `d709148`, E2 `cb9803f`, E3 `ce8ee90` |
-| F | close out: review, audit, README, PR | review and audit done; PR rewrite in progress |
+| F | close out: review, audit, README, PR | **done** — PR #20 merged into `main` as merge commit `0fd5096` |
 
 ## Stories
 
@@ -41,7 +41,7 @@ states the sha it was verified at, and a line number is treated as perishable (R
 | P5-E2 | `python -m volab.agent`: `sprint` and `show` | implementer | 45m | D4 | done (`cb9803f`, hardened `f4b01fa`) |
 | P5-E3 | The exit criterion: a full sprint end to end, witnessed | implementer | 1h | E1, E2 | done (`ce8ee90`) |
 | P5-F1 | Delivery audit: the board against git | delivery-auditor | 30m | E3 | done — found two defects, both fixed (`07107d4`) |
-| P5-F2 | README status, the board's close, the PR | orchestrator | 30m | F1 | in progress |
+| P5-F2 | README status, the board's close, the PR | orchestrator | 30m | F1 | done — PR #20 rewritten, merged as `0fd5096` |
 
 Waves ran **serially** after the 8 GB constraint arrived (one subagent at a time); before it, up to
 five ran in parallel, which is what overloaded the machine. See the memory note on serial agents.
@@ -58,10 +58,8 @@ test-first:
 | review round B | a **mechanical** prompt-inventory witness (R208 had held only by reading the code), a snapshot pin on the vocabulary so a new feature column cannot widen it silently, the rehearsal's missing check on Phase 5's own `load_panel` call, and docstrings that claimed more than their code | `4c6f9eb` |
 | delivery audit | an accepted canary exited **0** at the CLI, so the gate failing looked like success to a shell caller; and R208's narrowed claim was itself an overclaim | `07107d4` |
 
-**CI.** The last *completed* run is on `66444ae`, which includes fix round A: **2,700 passed**,
-ruff and mypy clean, on the branch merged into `main`. Runs on the later heads (`4c6f9eb` onward,
-including the current head `07107d4`) were still in progress when this was written. This board does
-**not** quote 2,700 as the head's figure, and the PR quotes only a completed run on the head.
+**CI.** Green on the merged head `84bf0c3`, both the push and the pull-request runs: **2,730
+passed**, ruff and mypy clean. GitHub merged only after both checks passed on that head.
 
 **The exit criterion, in exactly the words the delivery audit settled.** One scripted sprint, using
 a fake LLM and one fresh-interpreter evaluation over a synthetic one-symbol store, runs from start to
@@ -75,8 +73,10 @@ promotion. So the framework's criterion is met **in that rehearsal sense, and on
 **The agent ledgers are empty at merge.** `data/trials.jsonl` is 414 lines and
 `data/comparisons.jsonl` 52, the pre-registration's own counts, unmoved (R205).
 
-**PR #20 is held** until the phase is merged whole: the user's decision, relayed by two sessions and
-not acted on as an authorisation to merge.
+**PR #20 is merged** (`0fd5096`, 2026-11-11), on the user's own instruction once the phase was
+whole. Earlier relays from other sessions to merge were not acted on as authorisation. It merged as a
+merge commit, not a squash, so the branch shas this board and the decisions log cite stay reachable
+from `main`.
 
 ## Held, not forgotten
 
@@ -124,8 +124,8 @@ open deliberately, as noted in the table.
 - [x] Every story built and committed, with its acceptance criteria evidenced (delivery audit)
 - [x] Independent review run; its findings fixed (`f3e14c3`, `4c6f9eb`) or recorded (R214)
 - [x] Delivery audit run, and the board corrected where it and git disagreed — this revision
-- [ ] **CI green on the current head** — `66444ae` green at 2,700; later heads in progress
-- [ ] PR #20 rewritten to say what is now true
+- [x] CI green on the merged head — `84bf0c3`, 2,730 passed
+- [x] PR #20 rewritten to say what is now true, and merged (`0fd5096`)
 
 ## What the fences actually caught, recorded because a guard with no demonstrated bite is not evidence
 
