@@ -74,6 +74,9 @@ def _exogenous(
     collapse. This wrapper is the CLI's half: it pins the cutoff to ``dev_end``, which is the
     one thing this entry point may never be asked to move, and prints what the library reports.
     """
+    # HR-7 triage: a SEAL pin (features are derived from curated rows, and the live region's
+    # features exist only once the reveal lifts this). Not a research pin: research reads go
+    # through ``walkforward.load_for``, which stays at ``dev_end`` forever whatever is built here.
     return load_exogenous(
         settings, dataset, series, column, end=settings.splits.dev_end, report=print
     )
@@ -85,6 +88,7 @@ def _latest_observation_per_session(frame: pd.DataFrame, dataset: str) -> pd.Dat
 
 
 def _bars(settings: Settings, symbol: str) -> pd.DataFrame:
+    # HR-7 triage: a SEAL pin, for the reason given at ``_exogenous``.
     return load_bars(settings, symbol, end=settings.splits.dev_end)
 
 
@@ -123,6 +127,8 @@ def _write_features(table: pd.DataFrame, symbol: str, settings: Settings) -> int
 
 def _build(settings: Settings) -> None:
     started = time.perf_counter()
+    # HR-7 triage: a SEAL pin -- ``through`` bounds the feature rows written, so it lifts with
+    # the reveal like the reads above. The research bound lives in ``walkforward.load_for``.
     dev_end = settings.splits.dev_end
     calendar = get_calendar(settings)
 
