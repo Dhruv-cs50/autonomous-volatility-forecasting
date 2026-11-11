@@ -347,12 +347,15 @@ def test_a_bare_witness_is_satisfied_by_several_parametrisations_of_its_test(
     """The many-ids case: "at least one" must not become "exactly one".
 
     ``test_a_live_date_is_refused_as_live_and_not_as_the_holdout`` is parametrised over three
-    unnamed dates, and pytest generates ``[day0]``, ``[day1]``, ``[day2]`` -- confirmed by
-    collecting the file. All three going red is still exactly this witness, so the half of the
-    rule that refuses a red test from outside the list must not trip on ids sharing the one base.
+    live dates under ``ids=str``, so pytest generates ``[2026-11-02]``, ``[2026-11-04]`` and
+    ``[2027-01-04]`` -- confirmed by collecting that file. All three going red is still exactly
+    this witness, so the half of the rule that refuses a red test from outside the list must not
+    trip on ids sharing the one base.
     """
     probe = _probe(monkeypatch)
-    every_id = frozenset(f"{_LIVE_DATE_WITNESS}[day{case}]" for case in (0, 1, 2))
+    every_id = frozenset(
+        f"{_LIVE_DATE_WITNESS}[{day}]" for day in ("2026-11-02", "2026-11-04", "2027-01-04")
+    )
 
     verdict = probe._verdict(every_id, frozenset(), (_LIVE_DATE_WITNESS,))
 
