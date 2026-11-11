@@ -83,7 +83,11 @@ held by execution. **10 exact · 17 wide · 1 survivor.**
 `-rf` hides every ERROR, so a catch in fixture setup or teardown is invisible; `_LEDGERS` covers two
 of the four ledgers; the exit code and closing count merge blunt-but-caught with uncaught; `exact`
 compares raw pytest ids against bare `def` names; the parser truncates a parametrised id at its first
-whitespace, so a readable id prints corrupt. The sixth is the limit rather than a bug: **the probe
+whitespace, so a readable id prints as a test id that does not exist -- this run printed
+`test_a_holdout_date_is_refused_as_sealed[in`. A reporting corruption rather than a loss **in this
+run**: two ids merge only when they share their first token, which these three do not, so no
+failure went uncounted -- but the collapse is reachable, so the fix must precede any validation
+that compares a witness against the ids a test generates. The sixth is the limit rather than a bug: **the probe
 verifies a plant's text went in and never that it still removes the behaviour, so it cannot
 distinguish a holed guard from an expired plant — a survivor is a question, not a finding.**
 
