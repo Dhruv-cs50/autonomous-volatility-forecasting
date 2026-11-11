@@ -90,19 +90,20 @@ not acted on as an authorisation to merge.
 
 ## Follow-ups with no owner yet
 
-Recorded in the decisions log. **The three that PRs #18 and #19 had blocked are now done** (R215);
-the rest are owned by nobody until someone picks them up.
+Recorded in the decisions log. **All eight are resolved** (R215, R216). Two were resolved by deciding
+*not* to do what was first planned, because the plan would have weakened a guard. Two items remain
+open deliberately, as noted in the table.
 
 | follow-up | source | now |
 |---|---|---|
 | Migrate the writer CLIs onto `LedgerCounts` and assert the import ban | R186 | **done** (`d62a3c2`): four callers, one the grep had missed; ban asserted, derived |
 | Share the holdout-key derivation | R187 | **done** (`ae66985`): derivation shared, the two matchers deliberately kept apart |
 | The subprocess bounded tail | R195 | **done, not extracted** (`5d3c9df`): the loops diverged after #18 and the Phase 4 probe plants into one; coupled by behaviour instead (R215) |
-| Make `volab.counts` store-free so the CLI drops its two pinned copies | R212 | open |
-| Match Phase 4's writer guard on `(module, name)`, not bare name | R213 | Phase 4's to decide |
-| Audit the suite for `is`-based assertions over bound methods | R202 | not Phase 5's |
-| Remove the dead `completed` value from `SprintResult.outcome` | R209 | open |
-| A crash between `awaiting_approval` events and `complete` duplicates them, so `promote` refuses and the candidate is stuck | R214 | recorded |
+| Make `volab.counts` store-free | R212 | **done** (`e75f5db`): store-free; the CLI's `_count_all` copy dropped (`_git_state` must stay: it copies the store itself); R186's ban tightened to the definition alone |
+| Phase 4's writer guard and bare-name collisions | R213 | **done differently** (`485499c`): `(module, name)` would have weakened the guard, so the matcher is unchanged and each violation now names the module that caused it (R216) |
+| Audit the suite for `is`-based assertions over bound methods | R202 | **done by audit**: 40 test and 2 source candidates classified, zero hazards, no ratchet, with the reason given (R216) |
+| Remove the dead `completed` value from `SprintResult.outcome` | R209 | **done** (`d0e7d47`) |
+| A crash between `awaiting_approval` events and `complete` duplicates them, so `promote` refuses and the candidate is stuck | R214 | **done** (`a2a603b`): `finish` is now idempotent on resume |
 | `show` prints `trials + agent_trials`, which will include holdout lines once Phase 6 writes them | R214 | revisit at the reveal |
 | `agent.ledger.read_trials` is unused | R214 | remove or keep unused |
 

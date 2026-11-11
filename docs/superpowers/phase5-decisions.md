@@ -524,6 +524,8 @@ methods is **not Phase 5's** and is carried as a follow-up.
 what makes the test real. The cost of the original wording would have been a guard that always
 passed.
 
+
+**Resolved later (R216):** audited, and no identity assertion over a bound method remains in the suite or in `src/`. No ratchet was added; R216 says why.
 ---
 
 ## R203 — the child's exit codes, and one comparison record per loss
@@ -827,6 +829,8 @@ when the phase closes.
 *Cost if wrong:* a reader taking R189's original wording literally would expect a canary event on
 every sprint, including a stopped one. This record and the corrected design say otherwise.
 
+
+**Resolved later (R216):** the dead `completed` value is removed (`d0e7d47`).
 ---
 
 ## R210 — a crash between a child returning and its checkpoint resubmits the proposal, and the duplicate is counted
@@ -932,6 +936,8 @@ whichever outcome occurred. The scripted run is deterministic, so it is now pinn
 a production sprint, which is the condition under which a copy is acceptable here (the same shape as
 R195's duplicated runner loop).
 
+
+**Resolved later (R216):** `volab.counts` is now store-free and the CLI's `_count_all` copy is gone (`e75f5db`). The `_git_state` copy **remains**, because it duplicates `volab.store` itself. The board line saying "two copies" was wrong; one could go.
 ---
 
 ## R213 — every red CI run was one name collision between this phase and Phase 4's guard
@@ -990,6 +996,8 @@ guard as is: the same false positive returns whenever two non-daily and daily mo
 helper name, and it will look, as this one did, like the agent reaching the ledger.
 
 
+
+**Resolved later (R216):** the guard's matching was **not** changed, deliberately. Its failure message now names the module that made a name a writer (`485499c`). R216 says why the `(module, name)` plan would have weakened it.
 ---
 
 ## R214 — the review of the agent layer: R208's holdout half holds, and what it found
@@ -1070,6 +1078,8 @@ would have been the overclaim this project treats as its one unforgivable defect
 PR leads with.
 
 
+
+**Resolved later (R216):** the crash window after `awaiting_approval` and before `complete` is closed: `finish` is idempotent on resume (`a2a603b`). Of the other R214 items, `show`'s total and the unused `read_trials` remain as recorded.
 ---
 
 ## R215 — the three follow-ups that PRs #18 and #19 had blocked, picked up once both merged
@@ -1137,3 +1147,90 @@ keeps its own pinned copy, because the R192 fence forbids it importing `volab.co
 copies in place, coupled by behaviour rather than by sharing code. R186 adds one line of output to
 four CLIs. Each was verified with the guards that sit closest to it, including
 `tests/test_daily_rehearsal.py` (51 passed), the guard that a name collision tripped in R213.
+
+
+---
+
+## R216 — the remaining five follow-ups, two of them resolved by deciding *not* to do what was planned
+
+Picked up on the user's instruction, one agent at a time on an 8 GB machine, with each change shown
+failing before it was fixed. **Two of the five turned out to be wrong as written**, and doing them as
+planned would have made the repository worse. The plans were drafted before anyone had looked at the
+code they would change.
+
+**R209 — the dead `completed` outcome (`d0e7d47`).** Removed from `SprintResult.outcome`'s
+`Literal`. It had exactly one reference, the type definition itself. `mypy --strict` is the witness:
+if anything had returned `"completed"`, the narrowed type would reject it. It passes over 62 source
+files.
+
+**R214 — the crash window that stranded a candidate (`a2a603b`).** If a sprint died after writing its
+`awaiting_approval` events and before `complete`, resuming re-ran `finish` and wrote those events a
+second time. `promote`'s duplicate refusal then left the candidate stuck for good. The failing test
+showed the defect exactly: `assert 6 == 3`, the same three approvals written again after the resume.
+`finish` now skips any `proposal_id` that already has an `awaiting_approval` event in this sprint,
+which is the same pattern `run()` already uses to de-duplicate `proposal` events. **`promote`'s
+duplicate refusal is unchanged**: two events for one id are still a fault, and the sprint simply no
+longer creates them. The crash is simulated by making `record_completion` raise once, so no new
+seam was needed in `src/`. After the resume, `promote` succeeds.
+
+**R212 — `volab.counts` made store-free (`e75f5db`).** The failing-first run named the transitive
+reach exactly: `volab.counts -> volab.walkforward -> volab.store`. `counts.py` now counts
+`trials.jsonl` through its own `_count_lines`, which matched `count_trials` without modification
+(non-blank lines; an absent file counts as `0` and is not created). It imports only the standard
+library. Six cases pin `count_all(root).trials` to `count_trials(root)` on the same files: absent,
+empty, blank lines only, blank and whitespace lines interleaved, no trailing newline, and a single
+line. **The agent CLI's `_count_all` copy is gone.** The R192 store fence still passes over
+`agent/__main__.py` with the new import, which is the proof that `volab.counts` no longer reaches the
+store. **R186's ban tightened** from "the definition and `counts.py`" to **the definition alone**.
+Correcting the board: only one of the CLI's two copies could go. `_git_state` duplicates
+`volab.store.git_state`, the store itself, so it stays.
+
+**R202 — the identity-assertion audit: closed by audit, no ratchet.** R202 asked for an audit of the
+suite for identity assertions over bound methods or classmethods. Accessing those through an
+attribute builds a fresh object every time, so `is` is always false, and a *negated* `is` passes
+vacuously. That was R184's defect. An AST scan over `tests/` found **40** `is` / `is not` comparisons
+with an attribute on one side; the same scan over `src/` found **2**. All were classified:
+
+- 27 compare enum members (`RefusalCode.*`, `Tier.*`, `Region.*`, `inspect.Parameter.KEYWORD_ONLY`),
+  which are singletons;
+- the rest are module-level functions or constants, re-exported or bound as defaults (`evidence_hash`,
+  `cli.submit`, `TARGET_VOL`); a `type(x) is dt.date`; the deliberately identity-based holdout police
+  (PR #13); and `fit_depends_on_horizon`, which was checked and is a `@property` returning a `bool`.
+
+**Zero instances of the hazard.** The only real one, R184's, was fixed in P5-C1 and has its own test
+that proves it bites. **No ratchet was added, deliberately.** A static check cannot tell a bound method
+from a stable function without importing and resolving every attribute. With zero instances, that
+cost buys nothing, and an approximate check would produce false positives that teach people to
+ignore it. The rule for a future reviewer: `is` is sound for enum members, module-level functions,
+constants, types, `None` and the bools; it is unsound for a method or classmethod reached through an
+attribute.
+
+**R213 — the Phase 4 guard: the planned fix was rejected, and a different one was made (`485499c`).**
+The plan was to have the guard match writer functions by `(module, name)` instead of by bare name, so
+that a private helper such as `_append` could not collide again. **That would have weakened the
+guard**, and the orchestrator checked before dispatching anything:
+
+- The guard's docstring says bare-name matching is load-bearing. `JsonlSink.append_trials`
+  (`compare.sink`) appends nothing itself and delegates to `walkforward.append_trials`; it is caught
+  only because it shares that name. `(module, name)` matching would miss a daily module calling
+  `sink.append_trials(...)`.
+- The narrower alternative, exempting a daily module's references to its *own* definitions, opens a
+  different hole. A daily module could write a ledger through a locally defined function that carries
+  a writer's name, and `runlog._append` itself appends to a file, so it is exactly that shape.
+- The guard's tests are **named witnesses of Phase 4's mutation probe**
+  (`tools/mutate_daily_guards.py`). Loosening the matcher risks the probe passing plants silently.
+
+**Over-matching is the safe failure direction for a guard over the reported ledgers**, by the same
+reasoning as R207. The one real collision cost a rename and was fixed. So the matcher is unchanged,
+and what changed is the *message*. `WriterEntryPoints` now records which modules define each writer
+name, as a backward-compatible field with a default, and each violation appends its cause:
+`volab.daily.runlog:138 names _append (name) (a writer entry point because volab.agent.sprintlog
+defines it)`. The R213 diagnosis took an in-memory experiment; the next one is a glance. The existing
+`module:line names X (kind)` prefix is byte-identical, and nothing in `tools/` or the probe's tests
+parses it (checked). A new red case confirms the delegating `JsonlSink` shape is still flagged. The
+probe passes, and `test_daily_rehearsal.py` is at 53 (51 plus 2 new).
+
+*Cost if wrong:* R213 leaves the guard as conservative as it was, so the next private-helper collision
+still fails CI, but now names its cause. R202 relies on an audit, not a ratchet, so a future identity
+assertion over a bound method would be caught by review rather than by a test. The other three are
+plain fixes, each with its failing-first evidence recorded above.
