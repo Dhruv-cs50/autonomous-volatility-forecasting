@@ -343,7 +343,9 @@ def origins_in(
 # ---------------------------------------------------------------------------
 
 
-def load_targets(settings: Settings, symbol: str, horizon: int, *, end: dt.date) -> pd.DataFrame:
+def load_targets(
+    settings: Settings, symbol: str, horizon: int, *, end: dt.date, allow_holdout: bool = False
+) -> pd.DataFrame:
     """One horizon's targets for one symbol, read to ``end`` on ``as_of``.
 
     ``load_panel`` filters on ``as_of`` and never on ``ts``, which is the whole reason this
@@ -358,6 +360,7 @@ def load_targets(settings: Settings, symbol: str, horizon: int, *, end: dt.date)
         symbols=[symbol],
         columns=(*KEYS, target_column(horizon)),
         tier=Tier.FEATURES,
+        allow_holdout=allow_holdout,
         settings=settings,
     )
 

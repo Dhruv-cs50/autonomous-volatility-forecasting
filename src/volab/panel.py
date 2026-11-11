@@ -131,6 +131,7 @@ def load_exogenous(
     *,
     end: dt.date,
     report: Report = None,
+    allow_holdout: bool = False,
 ) -> pd.DataFrame | None:
     """One exogenous dataset read up to ``end``, or ``None`` if the store holds none of it.
 
@@ -148,6 +149,7 @@ def load_exogenous(
                     end=end,
                     symbols=[name],
                     columns=(*KEYS, column),
+                    allow_holdout=allow_holdout,
                     settings=settings,
                 )
             )
@@ -168,13 +170,16 @@ def load_exogenous(
     )
 
 
-def load_bars(settings: Settings, symbol: str, *, end: dt.date) -> pd.DataFrame:
+def load_bars(
+    settings: Settings, symbol: str, *, end: dt.date, allow_holdout: bool = False
+) -> pd.DataFrame:
     """One symbol's curated bars up to ``end``: the close and the distribution flag."""
     return load_panel(
         BARS_DATASET,
         end=end,
         symbols=[symbol],
         columns=(*KEYS, CLOSE_COLUMN, DISTRIBUTION_COLUMN),
+        allow_holdout=allow_holdout,
         settings=settings,
     )
 

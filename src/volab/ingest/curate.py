@@ -150,7 +150,9 @@ def _write_partitions(frame: pd.DataFrame, *, dataset: str, symbol: str, setting
     return written
 
 
-def _distribution_dates(symbol: str, *, end: dt.date, settings: Settings) -> set[dt.date]:
+def _distribution_dates(
+    symbol: str, *, end: dt.date, settings: Settings, allow_holdout: bool = False
+) -> set[dt.date]:
     """Ex-distribution sessions for ``symbol``, or an empty set when the vendor serves none.
 
     Verified 2026-10-19: Nasdaq's dividends endpoint returns rows for QQQ only; SPY and IWM come
@@ -165,6 +167,7 @@ def _distribution_dates(symbol: str, *, end: dt.date, settings: Settings) -> set
             symbols=[symbol],
             end=end,
             tier=Tier.RAW,
+            allow_holdout=allow_holdout,
             settings=settings,
         )
     except DatasetNotFound:
@@ -172,13 +175,24 @@ def _distribution_dates(symbol: str, *, end: dt.date, settings: Settings) -> set
     return {_as_date(value) for value in frame["as_of"]}
 
 
-def curate_bars(symbol: str, *, end: dt.date, settings: Settings | None = None) -> int:
+def curate_bars(
+    symbol: str, *, end: dt.date, settings: Settings | None = None, allow_holdout: bool = False
+) -> int:
     """Type one symbol's daily bars and flag its distribution dates. Returns partitions written."""
     resolved = load_settings() if settings is None else settings
-    raw = load_panel("nasdaq_bars", symbols=[symbol], end=end, tier=Tier.RAW, settings=resolved)
+    raw = load_panel(
+        "nasdaq_bars",
+        symbols=[symbol],
+        end=end,
+        tier=Tier.RAW,
+        allow_holdout=allow_holdout,
+        settings=resolved,
+    )
     _reject_non_sessions(raw, symbol=symbol, settings=resolved)
     frame = _typed(raw, BARS_COLUMNS, symbol=symbol)
-    distributions = _distribution_dates(symbol, end=end, settings=resolved)
+    distributions = _distribution_dates(
+        symbol, end=end, settings=resolved, allow_holdout=allow_holdout
+    )
     frame["has_distribution"] = [as_of in distributions for as_of in frame["as_of"]]
     return _write_partitions(frame, dataset=BARS_DATASET, symbol=symbol, settings=resolved)
 
@@ -225,14 +239,23 @@ def _pad_to_ohlc(frame: pd.DataFrame, *, series: str) -> pd.DataFrame:
     return padded[[*leading, *_VIX_PAYLOAD]]
 
 
-def curate_vix(series: str, *, end: dt.date, settings: Settings | None = None) -> int:
+def curate_vix(
+    series: str, *, end: dt.date, settings: Settings | None = None, allow_holdout: bool = False
+) -> int:
     """Type one Cboe index series into the ``vix_family`` dataset.
 
     Every partition leaves here with the same four payload columns. A close-only series (VVIX)
     gets explicit null ``open``/``high``/``low``; see ``_pad_to_ohlc`` for why.
     """
     resolved = load_settings() if settings is None else settings
-    raw = load_panel("cboe_vix", symbols=[series], end=end, tier=Tier.RAW, settings=resolved)
+    raw = load_panel(
+        "cboe_vix",
+        symbols=[series],
+        end=end,
+        tier=Tier.RAW,
+        allow_holdout=allow_holdout,
+        settings=resolved,
+    )
     raw = _drop_non_sessions(raw, symbol=series, settings=resolved)
     if raw.empty:
         raise DatasetNotFound(f"cboe_vix/{series} has no rows on an XNYS session up to {end}")
@@ -241,7 +264,9 @@ def curate_vix(series: str, *, end: dt.date, settings: Settings | None = None) -
     return _write_partitions(frame, dataset=VIX_DATASET, symbol=series, settings=resolved)
 
 
-def curate_fred(series: str, *, end: dt.date, settings: Settings | None = None) -> int:
+def curate_fred(
+    series: str, *, end: dt.date, settings: Settings | None = None, allow_holdout: bool = False
+) -> int:
     """Type one FRED series.
 
     The fetcher already lags ``as_of`` to the next session, so the filter should be a no-op
@@ -249,7 +274,14 @@ def curate_fred(series: str, *, end: dt.date, settings: Settings | None = None) 
     holiday rows disproved for Cboe.
     """
     resolved = load_settings() if settings is None else settings
-    raw = load_panel("fred", symbols=[series], end=end, tier=Tier.RAW, settings=resolved)
+    raw = load_panel(
+        "fred",
+        symbols=[series],
+        end=end,
+        tier=Tier.RAW,
+        allow_holdout=allow_holdout,
+        settings=resolved,
+    )
     raw = _drop_non_sessions(raw, symbol=series, settings=resolved)
     if raw.empty:
         raise DatasetNotFound(f"fred/{series} has no rows on an XNYS session up to {end}")

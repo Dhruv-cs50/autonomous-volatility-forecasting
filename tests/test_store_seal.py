@@ -85,7 +85,7 @@ def _synthetic(synthetic_store: Any, holdout_end: dt.date) -> Settings:
 
 
 def _grant_both_keys_without_holding_one(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(store, "_unlock_granted", lambda _: True)
+    monkeypatch.setattr(store, "_unlock_granted", lambda allow_holdout: allow_holdout)
     assert os.environ.get(UNLOCK_ENV) is None
 
 
@@ -693,7 +693,9 @@ def test_only_one_function_opens_the_audit_log() -> None:
         for node in ast.walk(_STORE_TREE)
         if isinstance(node, ast.FunctionDef) and _names(node, "AUDIT_FILENAME")
     }
-    assert owners == {"_append_audit"}
+    # ``audit_tally`` is the one read-only accessor the reveal's write-up needs (HR-4): it opens
+    # the log for reading and writes nothing, and ``volab.reveal`` may not name the log itself.
+    assert owners == {"_append_audit", "audit_tally"}
 
     for path in sorted(_SRC.rglob("*.py")):
         if path.name == "store.py" and path.parent == _SRC:
@@ -716,6 +718,8 @@ _PUBLIC = frozenset(
         "reveal_scope",
         "record_reveal_opened",
         "record_reveal_completed",
+        "audit_tally",
+        "AuditTally",
         "write_curated",
         "write_features",
         "write_raw",

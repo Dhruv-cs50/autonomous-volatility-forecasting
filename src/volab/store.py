@@ -389,9 +389,10 @@ def reveal_is_committed() -> bool:
 def _append_audit(settings: Settings, record: dict[str, Any]) -> None:
     """Append one JSON object and flush it to the kernel, then fsync.
 
-    The ONLY function in this package that names ``AUDIT_FILENAME`` or opens the log, so a second
-    writer with a different ordering cannot grow. ``flush`` buys durability across process death
-    and ``fsync`` across power loss; measured, 0.070 ms against 0.053 ms for flush alone.
+    The ONLY function in this package that appends to the log (``audit_tally`` only reads it), so
+    a second writer with a different ordering cannot grow. ``flush`` buys durability across
+    process death and ``fsync`` across power loss; measured, 0.070 ms against 0.053 ms for flush
+    alone.
     """
     path = settings.storage_root / AUDIT_FILENAME
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -399,6 +400,66 @@ def _append_audit(settings: Settings, record: dict[str, Any]) -> None:
         handle.write(json.dumps({"schema": AUDIT_SCHEMA, **record}) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+
+
+@dataclasses.dataclass(frozen=True)
+class AuditTally:
+    """What the audit log holds. Read-only; nothing here lifts anything."""
+
+    looks: int
+    looks_closed: int
+    attempts: tuple[str, ...]
+    completed: frozenset[str]
+
+
+def audit_tally(settings: Settings) -> AuditTally:
+    """Count the sealed looks and the reveal attempts in ``settings``' audit log.
+
+    Reads the log under ``storage_root``, which is where the writer appends -- not the committed
+    blob the predicate asks git about. It therefore sees the attempt in progress, whose lines are
+    not yet committed, which is the whole reason the write-up can report its own figures. Skips
+    anything it cannot parse, exactly as ``_completed_reveal_in`` does, and never raises.
+
+    Two numbers and not one: ``looks`` is the number of sealed reads, ``attempts`` the number of
+    reveals begun. With one attempt spanning many reads they differ, and only the second is the
+    "k" in "the k-th completed". Opens the log for reading, so it is the second function that
+    names ``AUDIT_FILENAME``; it writes nothing and cannot touch the record the predicate reads.
+    """
+    path = settings.storage_root / AUDIT_FILENAME
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    looks = looks_closed = 0
+    attempts: list[str] = []
+    opened: set[str] = set()
+    completed: set[str] = set()
+    for line in text.split("\n"):
+        try:
+            record = json.loads(line)
+            if not isinstance(record, dict):
+                continue
+            schema = record.get("schema")
+            if type(schema) is not int or schema not in _KNOWN_AUDIT_SCHEMAS:
+                continue
+            kind = record.get("kind")
+            if kind == "look_open":
+                looks += 1
+            elif kind == "look_close":
+                looks_closed += 1
+            elif kind in ("reveal_open", "reveal_complete"):
+                reveal_id = record.get("reveal_id")
+                if not isinstance(reveal_id, str) or _ID_PATTERN.match(reveal_id) is None:
+                    continue
+                if kind == "reveal_open":
+                    if reveal_id not in opened:
+                        attempts.append(reveal_id)
+                    opened.add(reveal_id)
+                elif reveal_id in opened:
+                    completed.add(reveal_id)
+        except Exception:  # anything: a tally of a corrupt log must not raise
+            continue
+    return AuditTally(looks, looks_closed, tuple(attempts), frozenset(completed))
 
 
 def _now() -> str:
@@ -564,10 +625,12 @@ def load_panel(
     #     one, which protects "a date the file seals must not silently become live"; this protects
     #     "the window the keys open must not extend past the sealed window". Clamped rather than
     #     refused, unlike step 0: the bound is computed in exactly one place, so the ``min`` is a
-    #     complete fix with a conservative reading, and ``Splits.holdout_end`` defaults to
-    #     ``dt.date.max`` so every hand-built Splits would otherwise be refused, dev reads
-    #     included. It clips the caller's *permission*, in the safe direction only; the request
-    #     itself is still refused loudly below. ``effective`` is used for all four things that
+    #     complete fix with a conservative reading, and a refusal would also turn away a hand-built
+    #     Splits whose ``holdout_end`` is later than the repository's even for a dev read, which
+    #     asks for no permission at all. (``Splits.holdout_end`` is a required field since
+    #     567616c; it once defaulted to ``dt.date.max``, which was the original reason.) It clips
+    #     the caller's *permission*, in the safe direction only; the request itself is still
+    #     refused loudly below. ``effective`` is used for all four things that
     #     follow -- the dev test, the predicate, the bound and the refusal's wording -- so none of
     #     them can disagree about where the regions are.
     effective = dataclasses.replace(
