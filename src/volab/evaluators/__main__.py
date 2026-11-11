@@ -378,9 +378,9 @@ def _describe(decision: Decision) -> list[str]:
             f"    ex-dates: {decision.vol_target[decision.contestants[0]].distribution_sessions} "
             f"session(s) of {decision.distribution_window}, but the source is NOT KNOWN -- the "
             "curated flags mark those sessions while the dividend source holds no row for this "
-            "symbol at or before dev_end, so the curation is stale and the count cannot be "
-            f"trusted either way; {decision.distribution_holdings_affected} of {decision.origins} "
-            "holding(s) affected (close-to-close P&L is wrong on those)"
+            "symbol at or before dev_end, which indicates a stale curation, so the count cannot "
+            f"be trusted either way; {decision.distribution_holdings_affected} of "
+            f"{decision.origins} holding(s) affected (close-to-close P&L is wrong on those)"
         )
     return lines
 

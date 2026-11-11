@@ -920,8 +920,8 @@ misstated the tree after the table was reviewed, audited and closed. All four he
 | 1 | `ab263f0` | the registered h>=2 contestant set is parsed, not inferred from the "minus" clause |
 | 2 | `16a38fd` | the prose counts and section 4's trial table are tied to the code |
 
-Collected tests **1856 -> 1873**, the deltas being +4, +5, +2 and +6, each stated in its own
-commit message (R154). The baseline is 1856 at `ee16c3d` and **not** the 1734 the brief carried,
+Collected tests **1856 -> 1874**, the deltas being +4, +5, +2 and +6 for the four rows and +1 for
+a witness the review seat asked for, each stated in its own commit message (R154). The baseline is 1856 at `ee16c3d` and **not** the 1734 the brief carried,
 which was measured at `56bf9e2` before PRs #16 and #17 merged.
 
 `docs/holdout-preregistration.md` is byte-identical to `origin/main`, md5
@@ -984,6 +984,51 @@ A third belongs to the brief rather than to this pass, and is the reason R150 ke
 place: it reported `origin/main` at `56bf9e2`, the suite at 1734 and the next ruling number as
 R156. All three were stale, and `git log -1 origin/main` plus two greps settled each before any
 work was cut.
+
+### The tolerance decision, measured rather than argued
+
+The reviewer probed the detector over the toy panel -- all 8 views, every `k` in 1..5, all four
+transforms -- counting cells that match at each tolerance:
+
+| `atol` | spurious hits |
+|---|---|
+| **1e-12** | **0** |
+| 1e-10 | 288 |
+| 1e-9 | 378 |
+| 1e-8 | 584 |
+
+So the decision above is not a preference. **Two orders of magnitude above the chosen tolerance the
+detector starts matching features that carry no leak at all**, which is precisely the "make it
+flaky" failure the row warned about, and the zero at 1e-12 holds across every view rather than
+being one seed's luck. The squared member's effective return floor is about 3.2e-5 rather than
+1e-6, because `r ** 2` must clear the 1e-9 floor; that is negligible for equity returns and is now
+stated in the code.
+
+### The review seat caught the signature defect again, in this very pass
+
+A `code-reviewer` seat was dispatched with the board's Method instruction first: read each docstring
+against what the test body executes. It found that **`test_an_edited_prose_count_is_caught` was
+vacuous.** It parsed the amended prose and then asserted `at_h1 != len(REGISTERED_H1)` -- which is
+`8 != 7`, arithmetic rather than the fence. It never called the comparison the green test makes, so
+it would have passed with that comparison deleted. Row 2's prose half rested on it.
+
+The fix is the one the table half already had: the assertions live in `_check_prose_counts`, which
+the green test and the witness both call, so deleting the green test's check now fails the witness.
+
+**This is the twelfth instance in this project of a test or docstring claiming more than its code
+performs, and the twelfth found by a reviewer rather than by its author.** It was written in the
+same pass whose brief named that defect as the thing to avoid, by an author who had read R155 and
+quoted it. The lesson is not that authors should try harder; it is that the review seat is
+load-bearing and is not optional on a one-row change. Four further findings of that seat were
+taken: the "byte-compared either side" claim covered one ledger of two and now covers both, a test
+name promised a prefix check its body does not perform, "every factor is a quantity the code holds"
+overlooked one literal, and the new console line asserted a stale curation as fact where the code
+knows only that the flag and the count disagree.
+
+It also closed a gap in row 1: both grammar witnesses used backticked names, so the unbackticked
+route ("plus har_rv_iv") had none. There are now two guards -- backticked tokens, which catch a
+name the project does not have yet, and known contestant names whatever their punctuation, with
+the vocabulary derived from the cohort registry (R151) -- and a witness for each.
 
 ### What this ruling does not claim
 

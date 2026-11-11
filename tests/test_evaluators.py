@@ -814,6 +814,9 @@ def _unknowable_forward_returns_in(
                 # session, whose return many unrelated cells sit near. 1e-9 here keeps the 1e-12
                 # match a strict one: a cell within 1e-12 of a target this size agrees to a
                 # thousandth of it, which is a value match and not a zero-against-zero artefact.
+                # One consequence, stated rather than left to be discovered: the squared member's
+                # *effective* return floor is therefore about 3.2e-5 and not 1e-6, since r ** 2
+                # must clear 1e-9. Negligible for equity returns, but it is a real narrowing.
                 # Putting the 1e-6 floor on the transformed value instead would silently disable
                 # the squared member -- ``r ** 2`` of a 3e-4 return is 9e-8 -- which is how this
                 # was first written and what the witness caught.

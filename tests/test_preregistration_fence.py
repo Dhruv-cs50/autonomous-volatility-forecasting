@@ -43,7 +43,7 @@ from pathlib import Path
 
 import pytest
 
-from volab.compare.cohorts import MULTISTEP, SHOOTOUT
+from volab.compare.cohorts import COHORTS, MULTISTEP, SHOOTOUT
 from volab.compare.sink import COMPARISON_LEDGER
 from volab.config import load_settings
 from volab.features.targets import HORIZONS
@@ -91,6 +91,12 @@ REGISTERED_H1 = (
     "har_levels_mz",
 )
 REGISTERED_ABOVE = tuple(n for n in REGISTERED_H1 if n != "egarch11_skewt")
+
+# Every contestant name the project has, derived from the registry rather than listed (R151), so a
+# contestant added to any cohort joins this vocabulary without anyone remembering to add it.
+_KNOWN_CONTESTANTS = frozenset(REGISTERED_H1) | {
+    name for cohort in COHORTS.values() for name in cohort.contestants
+}
 
 
 def test_the_shootout_is_exactly_the_preregistered_contestant_set() -> None:
@@ -156,6 +162,19 @@ def _registered_contestants(text: str) -> tuple[frozenset[str], frozenset[str]]:
         "'the same minus ...' and nothing more, so a name added to it adds a contestant to the "
         "registered read above h=1"
     )
+    # The check above reads backticked tokens, so it sees a name the project does not have yet --
+    # but not one written without backticks. This one closes that route from the other side, with
+    # the vocabulary derived from the cohort registry rather than listed (R151). Together they
+    # cover both: an unknown name in backticks, and a known name in plain prose.
+    mentioned = {
+        name
+        for name in _KNOWN_CONTESTANTS
+        if re.search(rf"(?<![\w`]){re.escape(name)}(?![\w`])", above) or f"`{name}`" in above
+    }
+    assert mentioned <= dropped, (
+        f"the h≥2 bullet mentions the contestant(s) {sorted(mentioned - dropped)} outside its "
+        "minus clause, backticks or not"
+    )
     return frozenset(h1), frozenset(h1) - dropped
 
 
@@ -188,6 +207,18 @@ def test_a_contestant_added_above_h1_only_is_caught() -> None:
         "the same **minus `egarch11_skewt`**, plus `har_rv_iv` (R114)",
     )
     with pytest.raises(AssertionError, match="outside its minus clause"):
+        _registered_contestants(amended)
+
+
+def test_a_contestant_added_above_h1_without_backticks_is_caught() -> None:
+    """The same amendment written in plain prose. The backtick check cannot see it, so the second
+    guard -- known contestant names, backticks or not -- is what catches this one, and the
+    vocabulary it uses comes from the cohort registry rather than a list."""
+    amended = _amended(
+        "the same **minus `egarch11_skewt`** (R114)",
+        "the same **minus `egarch11_skewt`**, plus har_rv_iv (R114)",
+    )
+    with pytest.raises(AssertionError, match="outside its minus clause, backticks or not"):
         _registered_contestants(amended)
 
 
@@ -264,14 +295,26 @@ def _last_row_arithmetic(text: str) -> tuple[list[int], int, list[int], int]:
     return numbers[:4], numbers[4], numbers[5:9], numbers[9]
 
 
+def _check_prose_counts(text: str) -> None:
+    """Check section 1's prose counts against the cohorts. One function, so the witness below
+    exercises these assertions rather than a copy of them that could drift."""
+    at_h1, above_h1, horizons = _prose_counts(text)
+    assert at_h1 == len(REGISTERED_H1) == len(SHOOTOUT.contestants), (
+        f"the prose says {at_h1} contestants at h=1 and the cohort has {len(REGISTERED_H1)}"
+    )
+    assert above_h1 == len(REGISTERED_ABOVE) == len(MULTISTEP.contestants), (
+        f"the prose says {above_h1} above h=1 and the cohort has {len(REGISTERED_ABOVE)}"
+    )
+    assert horizons == _horizons_above_h1(), (
+        f"the prose names horizons {horizons} above h=1 and the code has {_horizons_above_h1()}"
+    )
+
+
 def test_the_prose_counts_are_the_sizes_of_the_registered_sets() -> None:
     """ "Seven at h=1; six at h=5, 22 and 66" is a claim about the cohorts, and it is checked here
     against them rather than being prose nothing reads. The horizons come from ``HORIZONS``, so
     adding a horizon to the project makes this sentence wrong and says so."""
-    at_h1, above_h1, horizons = _prose_counts(PREREGISTRATION.read_text(encoding="utf-8"))
-    assert at_h1 == len(REGISTERED_H1) == len(SHOOTOUT.contestants)
-    assert above_h1 == len(REGISTERED_ABOVE) == len(MULTISTEP.contestants)
-    assert horizons == _horizons_above_h1()
+    _check_prose_counts(PREREGISTRATION.read_text(encoding="utf-8"))
 
 
 def _check_table_adds_up(text: str) -> int:
@@ -301,8 +344,10 @@ def test_section_4s_table_adds_up_to_the_registered_trial_count() -> None:
 
 def test_section_4s_last_row_is_the_shape_of_the_two_cohorts() -> None:
     """ "7 contestants x 3 symbols x 1 horizon x 2 losses = 42, plus 6 x 3 x 3 x 2 = 108" is the
-    registered run's own shape, so every factor is a quantity the code holds: the two cohort
-    sizes, the configured universe, the horizons above h=1 and the loss set. The two products must
+    registered run's own shape, so every factor is checked against a quantity the code holds -- the
+    two cohort sizes, the configured universe, the horizons above h=1 and the loss set -- except
+    the "1 horizon" of the first product, which is a literal here because it is the literal h=1
+    that the sentence and the cohort split both name. The two products must
     also be the last row's increment, which is what ties the arithmetic to the table above it."""
     text = PREREGISTRATION.read_text(encoding="utf-8")
     universe = len(load_settings().universe)
@@ -321,7 +366,7 @@ def test_section_4s_last_row_is_the_shape_of_the_two_cohorts() -> None:
     assert h1_product + above_product == _table_milestones(text)[-1][0]
 
 
-def test_the_registered_figures_are_a_prefix_of_the_committed_ledgers() -> None:
+def test_section_4s_figures_fit_the_committed_ledgers() -> None:
     """The tie the reveal actually measures by, and it is a **floor**, not an equality.
 
     Both ledgers are append-only and section 4 itself says the reveal "takes a second count and
@@ -338,16 +383,26 @@ def test_the_registered_figures_are_a_prefix_of_the_committed_ledgers() -> None:
     * every milestone in section 4's table falls on a run boundary of the registered prefix, so
       the table describes the runs the ledger actually holds.
 
-    Read-only: the bytes are compared either side.
+    **What this does not check is the content of either ledger.** A ledger whose first 414 lines
+    were replaced by 414 differently-valued but well-shaped lines would pass here; the registered
+    figures are line *counts*, and that is all section 4 states. R130's content hash covers the
+    document, not the ledgers.
+
+    Read-only: the bytes of both ledgers are compared either side.
     """
     text = PREREGISTRATION.read_text(encoding="utf-8")
     registered_trials, registered_comparisons = _registered_figures(text)
+    ledgers = {REPO / TRIAL_LEDGER: b"", REPO / COMPARISON_LEDGER: b""}
+    ledgers = {path: path.read_bytes() for path in ledgers}
     trials_path = REPO / TRIAL_LEDGER
-    before = trials_path.read_bytes()
-    rows = [json.loads(line) for line in before.decode("utf-8").splitlines() if line.strip()]
+    rows = [
+        json.loads(line)
+        for line in ledgers[trials_path].decode("utf-8").splitlines()
+        if line.strip()
+    ]
     comparisons = [
         line
-        for line in (REPO / COMPARISON_LEDGER).read_text(encoding="utf-8").splitlines()
+        for line in ledgers[REPO / COMPARISON_LEDGER].decode("utf-8").splitlines()
         if line.strip()
     ]
 
@@ -369,7 +424,8 @@ def test_the_registered_figures_are_a_prefix_of_the_committed_ledgers() -> None:
     for added, total in _table_milestones(text):
         assert total in boundaries, f"the row reaching {total} (+{added}) is no run boundary"
 
-    assert trials_path.read_bytes() == before, "this test must not touch the ledger"
+    for path, before in ledgers.items():
+        assert path.read_bytes() == before, f"this test must not touch {path.name}"
 
 
 def test_an_edited_trial_count_is_caught() -> None:
@@ -388,7 +444,13 @@ def test_an_edited_trial_count_is_caught() -> None:
 
 
 def test_an_edited_prose_count_is_caught() -> None:
-    """The same for section 1's prose: "Seven at h=1" was read by nothing."""
-    at_h1, _, _ = _prose_counts(_amended("Seven at h=1", "Eight at h=1"))
-    assert at_h1 == 8, "the amendment did not take, so this witnesses nothing"
-    assert at_h1 != len(REGISTERED_H1)
+    """The same for section 1's prose, which "Seven at h=1" was read by nothing before this commit.
+
+    It calls ``_check_prose_counts``, the function the green test calls, so deleting that test's
+    comparison would make this one fail too. Asserting ``8 != 7`` on the parsed figure -- which is
+    how this witness was first written -- would have witnessed arithmetic and not the fence.
+    """
+    with pytest.raises(AssertionError, match="the prose says 8 contestants at h=1"):
+        _check_prose_counts(_amended("Seven at h=1", "Eight at h=1"))
+    with pytest.raises(AssertionError, match="the prose names horizons"):
+        _check_prose_counts(_amended("six at h=5, 22 and 66", "six at h=5 and 22"))
