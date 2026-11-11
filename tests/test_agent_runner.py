@@ -348,3 +348,75 @@ def test_the_real_candidate_refuses_a_non_canonical_id_and_the_result_round_trip
     assert run.result["status"] == "refused" and run.result["refusal_kind"] == "proposal"
     assert run.pid == run.result["pid"] and run.pid != os.getpid()
     assert f"candidate pid: {run.pid}" in run.output_tail
+
+
+# --- R195: the two copies of the bounded output-tail loop keep the same tail ---------------------
+#
+# ``agent._runner._run_one`` and ``daily.runner._run_one`` each carry their own copy of the trimming
+# core (R195). They are kept apart on purpose: the daily one is what the Phase 4 mutation probe
+# plants defects into. So the cost, a fix made in one and not the other, is closed here by driving
+# both with the *same* child stream and asserting they retain the same bytes. The daily runner
+# exposes ``output`` and ``dropped_bytes``; the agent one exposes only the decoded text, in which
+# the count appears inside the leading marker line. Compared: the whole text (marker included) and
+# the dropped count from the daily record against the marker. Not compared: the agent copy's
+# ``total``, which it does not expose apart from that marker.
+
+_EMIT_STREAM = (
+    "import sys\n"
+    "data = open(sys.argv[1], 'rb').read()\n"
+    "for start in range(0, len(data), 5000):\n"
+    "    sys.stdout.buffer.write(data[start:start + 5000])\n"
+    "    sys.stdout.buffer.flush()\n"
+)
+
+
+def _numbered(size: int) -> bytes:
+    """``size`` bytes of ASCII lines that all differ, so a shifted cut point shows."""
+    lines = b"".join(b"%07d\n" % index for index in range(size // 8 + 1))
+    return lines[:size]
+
+
+_BOUND = OUTPUT_BOUND_BYTES
+_STREAMS = {
+    "empty": b"",
+    "under_the_bound": _numbered(_BOUND - 100),
+    "exactly_the_bound": _numbered(_BOUND),
+    "one_byte_over": _numbered(_BOUND + 1),
+    "several_chunks_well_over": _numbered(5 * _BOUND + 777),
+    # 50 bytes are dropped, so the tail starts at byte 50. The first "é" occupies bytes 49 and 50:
+    # the cut leaves its second byte alone, which decodes to a replacement character.
+    "cut_inside_a_two_byte_character": b"a" * 49 + "é".encode() * (_BOUND // 2) + b"z",
+    # The first emoji occupies bytes 48 to 51; the tail starts two bytes into it.
+    "cut_inside_a_four_byte_character": b"b" * 48 + "\U0001f600".encode() * (_BOUND // 4) + b"cc",
+}
+
+
+@pytest.mark.parametrize("name", sorted(_STREAMS))
+def test_both_output_tail_loops_keep_the_same_tail_of_the_same_stream(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stream = _STREAMS[name]
+    (tmp_path / "emit_stream_stub.py").write_text(_EMIT_STREAM, encoding="utf-8")
+    source = tmp_path / "stream.bin"
+    source.write_bytes(stream)
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path))
+
+    agent_code, agent_text = _runner._run_one(
+        [sys.executable, "-m", "emit_stream_stub", str(source)], {**os.environ}
+    )
+    daily = daily_runner._run_one(
+        daily_runner.Stage(name="s", module="emit_stream_stub", argv=(str(source),)), 60.0
+    )
+
+    retained = stream[-_BOUND:]
+    dropped = len(stream) - len(retained)
+    expected = retained.decode("utf-8", errors="replace")
+    if dropped:
+        expected = f"[{dropped} bytes of earlier output dropped]\n{expected}"
+    assert (agent_code, daily.exit_code) == (0, 0)
+    if name.startswith("cut_inside"):
+        assert retained[0] & 0xC0 == 0x80, "the cut is meant to fall inside a character"
+        assert "\ufffd" in expected
+    assert daily.dropped_bytes == dropped, name
+    assert daily.output == expected, name
+    assert agent_text == daily.output, name
