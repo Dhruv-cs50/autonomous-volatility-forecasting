@@ -146,22 +146,54 @@ def test_it_skips_when_too_few_training_rows_carry_every_extra() -> None:
     reason = str(raised.value).split(": ", 1)[1]
     assert "'x' is thin on its own" in reason
     assert "'z'" not in reason
-    # One more carrying row and it fits: the boundary is the view's own minimum.
-    training["x"] = view.training["x"].where(view.training.index >= len(training) - 20)
-    assert harx(("x", "z")).fit(dataclasses.replace(view, training=training)).observations == 20
 
 
-def test_an_extra_that_is_exactly_a_har_regressor_is_a_skip_not_a_schema_error() -> None:
-    """``har_d_proxy`` is ``rv_proxy_d1`` exactly, so this design is exactly singular. It is the
-    proposal's fault and not the window's: the HAR alone fits the same window."""
+def test_two_extras_thin_only_jointly_are_reported_as_such() -> None:
+    """Each extra is carried on 30 rows, enough alone, but on disjoint ones: no row carries both."""
+    view, _ = _synthetic()
+    training = view.training.copy()
+    first = training.index < 30
+    training["x"] = training["x"].where(first)
+    training["z"] = training["z"].where(~first)
+    with pytest.raises(ModelSkip) as raised:
+        harx(("x", "z")).fit(dataclasses.replace(view, training=training))
+    reason = str(raised.value).split(": ", 1)[1]
+    assert "0 training row(s)" in reason
+    assert "none is thin on its own" in reason
+    assert "thin on its own" not in reason.replace("none is thin on its own", "")
+
+
+def test_two_individually_thin_extras_are_named_in_the_plural() -> None:
+    view, _ = _synthetic()
+    training = view.training.copy()
+    keep = training.index >= len(training) - 5
+    training["x"] = training["x"].where(keep)
+    training["z"] = training["z"].where(keep)
+    with pytest.raises(ModelSkip) as raised:
+        harx(("x", "z")).fit(dataclasses.replace(view, training=training))
+    assert "'x', 'z' are each thin on their own" in str(raised.value)
+
+
+def test_the_har_base_is_the_rv_proxy_d1_column_exactly_on_the_toy() -> None:
     view = _toy_view()
     pair = view.training[["har_d_proxy", "rv_proxy_d1"]].dropna()
     assert len(pair) >= view.minimum_training
     assert (pair["har_d_proxy"] == pair["rv_proxy_d1"]).all()
+
+
+@pytest.mark.parametrize("column", ["rv_proxy_d1", "rv_proxy_d5", "rv_proxy_d22"])
+def test_an_extra_that_is_a_har_regressor_in_disguise_is_a_skip_not_a_schema_error(
+    column: str,
+) -> None:
+    """On the toy each of these is collinear with the HAR base, so the design is singular. It is
+    the proposal's fault and not the window's: the HAR alone fits the same window."""
+    view = _toy_view()
     wf.fit_ols(view.training, wf.HAR_REGRESSORS, view.response)  # the window is fittable
-    with pytest.raises(ModelSkip, match="rv_proxy_d1") as raised:
-        harx(("rv_proxy_d1",)).fit(view)
+    with pytest.raises(ModelSkip) as raised:
+        harx((column,)).fit(view)
     assert not isinstance(raised.value, SchemaError)
+    # After the name prefix: the model's own name contains the column and would match anyway.
+    assert column in str(raised.value).split(": ", 1)[1]
     assert isinstance(raised.value.__cause__, SchemaError)
 
 
@@ -184,9 +216,18 @@ def test_a_view_without_a_declared_extra_is_a_value_error_not_a_data_problem() -
         harx(("missing",)).fit(view)
 
 
-def test_an_empty_extra_is_refused_at_construction() -> None:
+def test_an_empty_extra_is_refused_at_construction_of_the_dataclass_and_the_factory() -> None:
+    with pytest.raises(ValueError, match="at least one"):
+        HarX(extra=())
     with pytest.raises(ValueError, match="at least one"):
         harx(())
+
+
+def test_a_repeated_extra_is_refused_at_construction_of_the_dataclass_and_the_factory() -> None:
+    with pytest.raises(ValueError, match=r"repeats \['x'\]"):
+        HarX(extra=("x", "z", "x"))
+    with pytest.raises(ValueError, match=r"repeats \['x'\]"):
+        harx(("x", "x"))
 
 
 def test_the_module_imports_no_numpy_scipy_or_arch() -> None:

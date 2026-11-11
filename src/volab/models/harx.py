@@ -16,24 +16,36 @@ data problem. ``ModelSkip`` is one contestant's own refusal: the harness records
 ``(origin, model, reason)``, writes a NaN for it and leaves the origin in place for everyone else
 (R87). The three refusals, each naming the offending column(s):
 
-* an extra is null at the origin. Only the extras are checked there: a null HAR column at the
-  origin is not tested by this module and is handled downstream, by the training-row count or by
-  ``fit_ols``, as in ``volab.models.iv``;
+* an extra is null at the origin;
 * too few training rows carry every extra together with the HAR regressors and the response, fewer
   than ``view.minimum_training``. The reason names the extras that are individually thin (each
   counted beside the HAR regressors and the response); when none is thin alone and only their
-  overlap is, it names all of them and says so. A sparse extra is normal rather than exceptional
-  (``iv_h1`` is non-null on 912 of 2,312 development rows), so this is expected to fire;
-* the regression is singular and the HAR regressors alone would have fitted the same window. A
-  singularity is then a property of the proposal and not of the window. ``fit_ols`` raises
+  overlap is, it names all of them and says so;
+* the regression cannot be fitted and the HAR regressors alone would have fitted the same window:
+  singular (a constant or collinear extra) or too few usable observations for the parameters.
+  That is then a property of the proposal and not of the window. ``fit_ols`` raises
   ``SchemaError`` for it; that is caught here and re-raised as ``ModelSkip`` with the original as
   ``__cause__``. If the HAR regressors alone do not fit either, the window is unfittable for
   everyone and the original ``SchemaError`` is left to say so.
 
-The singular case is real. ``har_d_proxy`` *is* ``rv_proxy_d1`` exactly, and ``har_w_proxy * 5`` and
-``har_m_proxy * 22`` equal ``rv_proxy_d5`` and ``rv_proxy_d22`` to rounding, so those three columns
-beside the HAR base are exactly singular designs. Keeping them out of the vocabulary is another
-story's job; this contestant's contract is only that being handed one is a skip.
+**Which of these can fire under ``evaluate``.** The extras are declared in ``Domain.requires``, so
+within a cohort ``evaluate`` screens the first two cases itself, cohort-wide and before any fit:
+it drops an origin where a declared column is null, and skips one where too few training rows carry
+it. The null-extra and thin-training branches here are therefore defence in depth for callers that
+are not ``evaluate`` -- the conformance suite and direct use -- and a ``ModelSkip`` from them is not
+what protects the rest of a cohort. A sparse extra is handled at the window level, by
+``coverage_refusal`` refusing a window that begins before a declared column has enough history, so
+a proposal naming one is refused up front and writes no trial. The branch that does fire under
+``evaluate`` is the third, because ``evaluate`` does not screen for collinearity; only there does
+R87's isolation apply. A null *HAR* column at the origin is not tested by this module: ``evaluate``
+pre-screens it ("null regressor(s) at the origin") and ``Fit.predict`` returns NaN for it.
+
+The singular case is real, on the synthetic toy of the conformance suite. ``har_d_proxy`` *is*
+``rv_proxy_d1`` exactly there, and ``har_w_proxy * 5`` and ``har_m_proxy * 22`` equal
+``rv_proxy_d5`` and ``rv_proxy_d22`` to rounding. ``tests/test_harx.py`` runs all three beside the
+HAR base on that toy and each is a ``ModelSkip``; the evidence is synthetic, not a real panel.
+Keeping them out of the vocabulary is another story's job; this contestant's contract is only that
+being handed one is a skip.
 
 There is no fallback to the plain HAR on a refusal: that would make the contestant become the
 baseline while still being reported under its own name.
@@ -87,6 +99,16 @@ class HarX:
 
     extra: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        # Empty would be the plain HAR under the name ``harx+``, the baseline reported as a
+        # proposal, and two specifications must not share a name. A repeated column is always
+        # singular, so it is refused here and not left to become a skip at every origin.
+        if not self.extra:
+            raise ValueError("harx needs at least one extra regressor")
+        repeated = sorted({column for column in self.extra if self.extra.count(column) > 1})
+        if repeated:
+            raise ValueError(f"harx extra repeats {repeated}: a repeated column is always singular")
+
     # Read-only properties, for the reason given on ``Forecaster.observations``.
     @property
     def name(self) -> str:
@@ -125,10 +147,13 @@ class HarX:
                 for column in self.extra
                 if wf.training_rows(view.training, view.response, (column,)) < view.minimum_training
             ]
+            names = ", ".join(repr(column) for column in thin)
             which = (
-                ", ".join(repr(column) for column in thin) + " is thin on its own"
+                f"{names} is thin on its own"
+                if len(thin) == 1
+                else f"{names} are each thin on their own"
                 if thin
-                else f"{named} are not jointly carried; none is thin on its own"
+                else "none is thin on its own, so they are not carried on the same rows"
             )
             raise ModelSkip(
                 f"{self.name}: {carried} training row(s) at {view.origin} carry every extra "
@@ -153,11 +178,6 @@ class HarX:
 
 
 def harx(extra: tuple[str, ...]) -> HarX:
-    """A contestant that fits the HAR regressors plus ``extra``; ``extra`` must not be empty.
-
-    Empty is refused because it would be the plain HAR under the name ``harx+``, the baseline
-    reported as a proposal.
-    """
-    if not extra:
-        raise ValueError("harx needs at least one extra regressor")
+    """A contestant that fits the HAR regressors plus ``extra``; ``HarX`` refuses an empty or
+    repeating ``extra`` on construction."""
     return HarX(extra=tuple(extra))
