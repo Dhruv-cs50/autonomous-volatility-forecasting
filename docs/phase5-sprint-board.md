@@ -19,7 +19,7 @@ states the sha it was verified at, and a line number is treated as perishable (R
 | C | the child, the sprint log, the counts | **done** — C1 `3e15fd7`, C2 `6da1eaa`, C3 `35c5424` |
 | D | the ports and the roles | **done** — D1+D2 `91de85b`, D3 `2618462`, D4 `a029ac5`, D5 closed within D4 |
 | E | the human gate, the CLI, the exit criterion | **done** — E1 `d709148`, E2 `cb9803f`, E3 `ce8ee90` |
-| F | close out: audit, README, PR | not started |
+| F | close out: review, audit, README, PR | review and audit done; PR rewrite in progress |
 
 ## Stories
 
@@ -36,30 +36,47 @@ states the sha it was verified at, and a line number is treated as perishable (R
 | P5-D2 | The `Checkpointer` port and two credential-free implementations | implementer | 1h | — | done (`91de85b`) |
 | P5-D3 | Subprocess-per-evaluation | implementer | 45m | C1 | done (`2618462`) |
 | P5-D4 | The six roles, the seven-step machine, the sprint | implementer | 1h | C2, D1, D2, D3 | done (`a029ac5`) |
-| P5-D5 | The canary bites, and an accepted canary voids the sprint | implementer | 45m | D4 | **closed, delivered within D4** — `tests/test_agent_sprint.py` asserts `voided_by_canary`, one `canary_accepted` event and no further gating; no separate dispatch, which saved one subagent on an 8 GB machine |
+| P5-D5 | The canary bites, and an accepted canary voids the sprint | implementer | 45m | D4 | **closed within D4**, plus `07107d4` — `tests/test_agent_sprint.py` asserts `voided_by_canary`, one `canary_accepted` event and no further gating. The planned `tests/test_agent_canary.py` was never created; the tests live in `test_agent_sprint.py`, `test_agent_vocabulary.py` and `test_agent_cli.py`. The **non-zero exit** R189 requires was silently missing from the CLI until the delivery audit found it |
 | P5-E1 | `python -m volab.promote` and its three refusals | implementer | 1h | C2, D4 | done (`d709148`) |
 | P5-E2 | `python -m volab.agent`: `sprint` and `show` | implementer | 45m | D4 | done (`cb9803f`, hardened `f4b01fa`) |
 | P5-E3 | The exit criterion: a full sprint end to end, witnessed | implementer | 1h | E1, E2 | done (`ce8ee90`) |
-| P5-F1 | Delivery audit: the board against git | delivery-auditor | 30m | E3 | todo |
-| P5-F2 | README status, the board's close, the PR | orchestrator | 30m | F1 | todo |
+| P5-F1 | Delivery audit: the board against git | delivery-auditor | 30m | E3 | done — found two defects, both fixed (`07107d4`) |
+| P5-F2 | README status, the board's close, the PR | orchestrator | 30m | F1 | in progress |
 
-Waves, each wave's stories touching disjoint files: **A1** → **A2** → **B1 ∥ B2** →
-**C1 ∥ C2** → **C3** → **D1 ∥ D2 ∥ D3** → **D4** → **D5** → **E1 ∥ E2** → **E3** → **F1** → **F2**.
+Waves ran **serially** after the 8 GB constraint arrived (one subagent at a time); before it, up to
+five ran in parallel, which is what overloaded the machine. See the memory note on serial agents.
 
-## Two open PRs overlap this phase's files, and every story routes around them
+## Where this stands, stated plainly
 
-Measured with `git diff --stat ee16c3d...<branch>` on fetched refs:
+**Every story is built, tested and committed.** Sprints A to E are done, and the phase has been
+through one independent review and one delivery audit. Each found real defects, and each was fixed
+test-first:
 
-| PR | branch | files this phase cares about |
+| fix | what it was | commit |
 |---|---|---|
-| #18 | `phase-4-scheduler` | `tests/test_daily.py` (+542), `src/volab/leaderboard/__init__.py` (+20), `tests/test_leaderboard.py` (+38), `src/volab/daily/runner.py` (+282), `runlog.py` (+71) |
-| #19 | `fix/before-the-reveal-rows` | `src/volab/evaluators/__main__.py` (+14), `tests/test_preregistration_fence.py` (+431) |
+| review round A | the git dirty flag polluted itself: every child after the first in a sprint stamped `git_dirty=true` because the first child's append to the tracked agent ledger dirtied the tree (R70); a tampered proposal file crashed the child instead of being refused; exit 6 was not wired; a line past `dev_end` was silently dropped in two places | `f3e14c3` |
+| review round B | a **mechanical** prompt-inventory witness (R208 had held only by reading the code), a snapshot pin on the vocabulary so a new feature column cannot widen it silently, the rehearsal's missing check on Phase 5's own `load_panel` call, and docstrings that claimed more than their code | `4c6f9eb` |
+| delivery audit | an accepted canary exited **0** at the CLI, so the gate failing looked like success to a shell caller; and R208's narrowed claim was itself an overclaim | `07107d4` |
 
-Consequences, each a recorded decision rather than an accident: `tests/holdout_scan.py` is written
-fresh instead of extracted out of `tests/test_daily.py` (R187); the leaderboard change is additive
-and leaves the headline's wording alone (R186); the three writer CLIs are **not** migrated onto a
-combined counter (R186); `agent/_runner.py` duplicates the daily runner's bounded tail rather than
-extracting it (R195).
+**CI.** The last *completed* run is on `66444ae`, which includes fix round A: **2,700 passed**,
+ruff and mypy clean, on the branch merged into `main`. Runs on the later heads (`4c6f9eb` onward,
+including the current head `07107d4`) were still in progress when this was written. This board does
+**not** quote 2,700 as the head's figure, and the PR quotes only a completed run on the head.
+
+**The exit criterion, in exactly the words the delivery audit settled.** One scripted sprint, using
+a fake LLM and one fresh-interpreter evaluation over a synthetic one-symbol store, runs from start to
+`awaiting_approval`, and every `load_panel` call observed in the evaluating process carried
+`end = dev_end` with the unlock flag unset (`tests/test_agent_rehearsal.py`; non-vacuity asserted, and
+a deliberately bad `end` makes it fail). That shows the machinery runs end to end without requesting
+a date past `dev_end`. It does **not** show behaviour on real data or with a live model, it does not
+exercise the real child entry point (`python -m volab.candidate`), and it does not exercise
+promotion. So the framework's criterion is met **in that rehearsal sense, and only in that sense**.
+
+**The agent ledgers are empty at merge.** `data/trials.jsonl` is 414 lines and
+`data/comparisons.jsonl` 52, the pre-registration's own counts, unmoved (R205).
+
+**PR #20 is held** until the phase is merged whole: the user's decision, relayed by two sessions and
+not acted on as an authorisation to merge.
 
 ## Held, not forgotten
 
@@ -71,15 +88,30 @@ extracting it (R195).
 | The reveal's second count including both agent ledgers | the reveal is unbuilt, so there is nothing to assert against | Phase 6 |
 | A `last_origin` on holdout comparison records | same | Phase 6, **before** any agent reads that file |
 
+## Follow-ups with no owner yet
+
+Recorded in the decisions log and owned by nobody until someone picks them up. **Three were blocked
+on PR #18 and #19, which have both merged, so they are now unblocked.**
+
+| follow-up | source | now |
+|---|---|---|
+| Migrate the three writer CLIs onto `LedgerCounts` and assert the import ban | R186 | **unblocked** (#18, #19 merged) |
+| Extract the holdout scan into one shared helper | R187 | **unblocked** |
+| Extract the subprocess bounded tail into `src/volab/_subprocess.py` | R195 | **unblocked** |
+| Make `volab.counts` store-free so the CLI drops its two pinned copies | R212 | open |
+| Match Phase 4's writer guard on `(module, name)`, not bare name | R213 | Phase 4's to decide |
+| Audit the suite for `is`-based assertions over bound methods | R202 | not Phase 5's |
+| Remove the dead `completed` value from `SprintResult.outcome` | R209 | open |
+| A crash between `awaiting_approval` events and `complete` duplicates them, so `promote` refuses and the candidate is stuck | R214 | recorded |
+| `show` prints `trials + agent_trials`, which will include holdout lines once Phase 6 writes them | R214 | revisit at the reveal |
+| `agent.ledger.read_trials` is unused | R214 | remove or keep unused |
+
 ## Not this phase's, and why
 
 - **Taking the reveal.** Phase 6's, and the user's trigger. Nothing here names `allow_holdout` or
-  `VOLAB_HOLDOUT_UNLOCK`, and a scan now forbids the three new packages from doing so.
+  `VOLAB_HOLDOUT_UNLOCK`, and a scan forbids the three new packages from doing so.
 - **Moving a champion on promotion** (R188). The framework's own ordering puts the logged holdout
   check before promotion, and that check is Phase 6's.
-- **Extracting the subprocess tail and the holdout scan** into shared helpers (R187, R195) — both
-  blocked on PR #18 landing, both recorded as follow-ups rather than dropped.
-- **Migrating the three writer CLIs onto `LedgerCounts`** (R186), blocked on PR #18 and PR #19.
 - **A bandit supervisor, reflection memory, token tracing.** The framework puts those in Phase 6.
 - **A dashboard or any UI.** Asked and declined in Phase 4; unchanged.
 
@@ -88,86 +120,30 @@ extracting it (R195).
 - [x] Design written and reviewed
 - [x] Plan written
 - [x] Decisions log opened at R181, with the collision that forced it recorded
-- [ ] Every story meets its acceptance criteria
-- [ ] Full suite passing, ruff and mypy clean
-- [ ] Delivery audit run, board corrected where it and git disagree
-- [ ] PR open, with the three remainder categories kept separate
-
-## Risks
-
-- **The agent ledgers are empty at merge**, because R194 holds the only run that would fill them.
-  That is intended, and the PR must not present an empty ledger as a run that found nothing.
-- **Textual conflict with PR #18** in `leaderboard/__init__.py` and `tests/test_leaderboard.py`.
-  Both sides are additive, so the resolution should be mechanical; it is still a conflict.
-- **A sibling session allocating R181+.** Claimed in the shared notes folder; PR #19's session was
-  running when the claim was written.
+- [x] Every story built and committed, with its acceptance criteria evidenced (delivery audit)
+- [x] Independent review run; its findings fixed (`f3e14c3`, `4c6f9eb`) or recorded (R214)
+- [x] Delivery audit run, and the board corrected where it and git disagreed — this revision
+- [ ] **CI green on the current head** — `66444ae` green at 2,700; later heads in progress
+- [ ] PR #20 rewritten to say what is now true
 
 ## What the fences actually caught, recorded because a guard with no demonstrated bite is not evidence
 
-- **P5-A2's store-reach fence caught the realistic two-hop plant.** A planted
-  `src/volab/agent/_plant.py` holding `from volab.features.targets import HORIZONS` failed with
-  `volab.agent._plant reaches the store through volab.agent._plant -> volab.features.targets ->
-  volab.store (R192)`. A per-file scan passes that import; only the transitive walk sees it. The
-  plant was deleted and never committed.
-- **P5-A1's scan missed two spellings on first delivery**, both found by review and both closed:
-  the parameter name passed as a string through `**{"allow_holdout": True}`, and a function
-  *definition* `def f(allow_holdout=False)`, which is an `ast.arg` rather than a `Name`. An
-  earlier round had already closed a third: reaching the environment variable through
-  `volab.config.HOLDOUT_UNLOCK_ENV` rather than by its literal spelling.
-- **P5-B2's fittability witness found two defects in the design it was given.** `VOCABULARY` still
-  admitted `har_d_proxy`, `har_w_proxy` and `har_m_proxy` — the HAR base itself, which my spec
-  failed to subtract because `FEATURE_COLUMNS` contains them; and `has_distribution` is constant
-  on the real SPY table (one distinct value over 2,312 rows), so every proposal naming it is
-  refused. The first was fixed; the second is kept deliberately, with a witness that the refusal
-  is a clean `ModelSkip` naming the column, because constancy is a property of the window and not
-  of the column.
-- **Review found an R32 defect in P5-B1** — a docstring quoting a per-fit timing whose author had
-  measured a different figure — and an inaccurate mechanism claim about how a null HAR column at
-  the origin is handled. Both corrected.
+- **The store-reach fence caught the realistic two-hop plant**, `from volab.features.targets import
+  HORIZONS`, which a per-file scan passes. It later caught `volab.counts` reaching the store through
+  `volab.walkforward` — a transitive reach nobody had planned for (R212).
+- **The unlock scan missed three spellings across two review rounds**, all closed: the variable via
+  the config constant, the parameter via `**{"allow_holdout": True}`, and a `def f(allow_holdout=…)`.
+- **The fittability witness found two defects in my own design** (R185's amendment, R199).
+- **The real-layout fixture turned 14 tests red** against a sprint that read its ledger from
+  `data/data/` (R211), including the leak fix's own integrity witness, which had been checking an
+  empty file.
+- **A Phase 4 guard and this phase met on `main` and failed every CI run** through a bare-name
+  collision on `_append` (R213), a false positive, proven in memory before anything changed.
 
-## Where this stands at the first pull request, stated plainly
+## Lessons the phase paid for
 
-**Built, tested and committed:** both fences (A1, A2), the closed vocabulary with its gate and canary
-payloads (B2), the `HarX` contestant (B1), the evaluation child with its two agent ledgers (C1), the
-sprint event log and pending approval (C2), and the two ports — the LLM completer and the
-checkpointer — each with a fake and neither needing a credential (D1, D2).
-
-**Not built, and therefore not claimed:**
-
-| story | what is missing |
-|---|---|
-| P5-C3 | `LedgerCounts`, the read-only ledger reader, and the leaderboard's added line. **So the leaderboard does not yet print the agent ledgers' counts**, which is the surface R183 promises. |
-| P5-D3 | the subprocess-per-evaluation runner |
-| P5-D4 | the six roles and the seven-step sprint machine |
-| P5-D5 | the canary tests. The six payloads and their distinct refusal codes exist and are tested in `tests/test_agent_vocabulary.py`; what is missing is the test that an **accepted** canary voids a sprint. |
-| P5-E1 | `python -m volab.promote` and its three refusals |
-| P5-E2 | `python -m volab.agent` |
-| P5-E3 | **the exit criterion.** No sprint runs end to end yet, so the framework's "one full weekly sprint runs end to end without touching the holdout" is **not met** by this pull request. |
-
-The components a sprint is assembled from exist and are tested; the assembly does not. That is the
-honest summary and the pull request says it in those words.
-
-**The agent ledgers are empty**, and R205 says why: the only runs against the real store were two
-measurements whose output was deleted. `data/trials.jsonl` stands at 414 lines and
-`data/comparisons.jsonl` at 52 — the pre-registration's own counts, unmoved.
-
-## Resumed, and the merged tree is verified
-
-Branch merged up to `main` (`c207c59`) and pushed. **Gates on the merged tree: 2241 tests pass**,
-`ruff check` clean, `ruff format` reports 130 files formatted, `mypy --strict` clean over 57 source
-files. `data/trials.jsonl` is **414 lines** and `data/comparisons.jsonl` is **52**, checked by hand,
-with `git status -- data/` clean.
-
-An earlier revision of this section said the post-merge suite had not finished. It has, and the
-figures above are from that run rather than from a story's own report.
-
-**Landed since the PR opened:** P5-C3 (`35c5424`) and P5-D3 (`2618462`).
-
-**Still to build:** P5-D4 (the keystone: the six roles and the seven-step sprint machine), then D5,
-E1, E2 and E3. R206 is new and changes E3: the rehearsal **cannot** launch the real child against a
-`tmp_path` store, so it must call `evaluate_proposal` with a hand-built `Settings` instead.
-
-**Not done and not authorised:** auto-merge on PR #20. A peer session relayed that the user
-authorised merge-when-green; a peer cannot carry that authorisation, and separately #20 declares its
-own exit criterion unmet, so arming it would land a partial Phase 5 under an honest label. That
-decision is the user's.
+- **A hand-picked test subset reports on what it picked** (R211, R213): twice, a merge's seam check
+  omitted the one file that broke.
+- **Narrowing a claim is itself a claim** (R208): the first narrowing repeated the error it corrected.
+- **A count is a channel** (R208): whenever a reader reports how much it filtered, check who can see it.
+- **Tests that agree with each other can disagree with the repository** (R211).
