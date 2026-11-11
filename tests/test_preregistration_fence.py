@@ -30,18 +30,56 @@ link:
   refuse them; both were seen passing before the parse changed. Reading the removal clause alone,
   as this module first did, could see neither.
 
-These tests read a markdown file and two module constants. They read no data, so they carry no
-holdout marker.
+These tests read a markdown file, two module constants, and -- for the registered trial count in
+section 4 -- the two committed ledgers under ``data/``. They read no **panel** data and nothing
+past ``dev_end``, so they carry no holdout marker, and the ledger read is byte-compared either
+side to prove it changed nothing.
 """
 
+import itertools
+import json
 import re
 from pathlib import Path
 
 import pytest
 
 from volab.compare.cohorts import MULTISTEP, SHOOTOUT
+from volab.compare.sink import COMPARISON_LEDGER
+from volab.config import load_settings
+from volab.features.targets import HORIZONS
+from volab.walkforward import LOSSES, TRIAL_LEDGER
 
-PREREGISTRATION = Path(__file__).resolve().parents[1] / "docs" / "holdout-preregistration.md"
+REPO = Path(__file__).resolve().parents[1]
+PREREGISTRATION = REPO / "docs" / "holdout-preregistration.md"
+
+# Written as words in the document's prose, so they are read as words here rather than by a digit
+# search that would also match the horizons in the same sentence. A word absent from this map
+# fails; it is not skipped, because skipping is how a count stops being checked without saying so.
+_NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+
+
+def _word(number: str) -> int:
+    assert number.lower() in _NUMBER_WORDS, f"{number!r} is not a number word this test knows"
+    return _NUMBER_WORDS[number.lower()]
+
+
+def _horizons_above_h1() -> tuple[int, ...]:
+    """The horizons the registered read scores above h=1, from the code's own horizon set."""
+    return tuple(horizon for horizon in HORIZONS if horizon >= 2)
+
 
 REGISTERED_H1 = (
     "har_levels",
@@ -163,3 +201,194 @@ def test_a_third_contestant_bullet_is_caught() -> None:
     )
     with pytest.raises(AssertionError, match="the registered read has exactly two groups"):
         _registered_contestants(amended)
+
+
+# -- section 1's prose counts, and section 4's trial-count table ---------------------------------
+#
+# Row 2 of the Phase 3 deferred findings: the document's own counts and its registered trial table
+# were tied to the code by nothing. Section 4 is the figure the holdout reveal reports a delta
+# against, so an untested tie there is the number the whole read is measured by.
+
+
+def _prose_counts(text: str) -> tuple[int, int, tuple[int, ...]]:
+    """``(at h=1, above h=1, the horizons named above h=1)`` from the Contestants sentence."""
+    match = re.search(
+        r"\*\*Contestants\.\*\* (\w+) at h=1; \*\*(\w+) at h=([^*]+)\*\*",
+        " ".join(text.split()),
+    )
+    assert match, "the Contestants sentence no longer states its two counts"
+    horizons = tuple(int(number) for number in re.findall(r"\d+", match.group(3)))
+    return _word(match.group(1)), _word(match.group(2)), horizons
+
+
+def _registered_figures(text: str) -> tuple[int, int]:
+    """The two ledger line counts section 4 records as read at registration."""
+    match = re.search(
+        r"`data/trials\.jsonl` line count at registration: \*\*(\d+)\.\*\* "
+        r"`data/comparisons\.jsonl`: \*\*(\d+)\.\*\*",
+        " ".join(text.split()),
+    )
+    assert match, "section 4 no longer records the two line counts read at registration"
+    return int(match.group(1)), int(match.group(2))
+
+
+def _table_milestones(text: str) -> list[tuple[int, int]]:
+    """``(added, running total)`` per row of section 4's table, in document order.
+
+    The first row states a total with no increment, so its ``added`` is the total itself. The
+    arithmetic between the rows is checked by the caller rather than trusted.
+    """
+    section = text[text.index("## 4. Trials already counted") : text.index("## 5.")]
+    rows: list[tuple[int, int]] = []
+    for line in section.splitlines():
+        if not line.startswith("|") or set(line) <= set("|- "):
+            continue
+        cell = line.split("|")[2].replace("*", "").strip()
+        if match := re.fullmatch(r"\+(\d+) = (\d+)", cell):
+            rows.append((int(match.group(1)), int(match.group(2))))
+        elif cell.isdigit():
+            rows.append((int(cell), int(cell)))
+    assert len(rows) > 1, "section 4's trial table no longer has rows this test can read"
+    return rows
+
+
+def _last_row_arithmetic(text: str) -> tuple[list[int], int, list[int], int]:
+    """The factors and products section 4 states for its last row."""
+    match = re.search(
+        r"The arithmetic of the last row: (\d+) contestants x (\d+) symbols x (\d+) "
+        r"horizon x (\d+) losses = (\d+), plus (\d+) x (\d+) x (\d+) x (\d+) = (\d+)",
+        " ".join(text.split()),
+    )
+    assert match, "section 4 no longer spells out the arithmetic of its last row"
+    numbers = [int(group) for group in match.groups()]
+    return numbers[:4], numbers[4], numbers[5:9], numbers[9]
+
+
+def test_the_prose_counts_are_the_sizes_of_the_registered_sets() -> None:
+    """ "Seven at h=1; six at h=5, 22 and 66" is a claim about the cohorts, and it is checked here
+    against them rather than being prose nothing reads. The horizons come from ``HORIZONS``, so
+    adding a horizon to the project makes this sentence wrong and says so."""
+    at_h1, above_h1, horizons = _prose_counts(PREREGISTRATION.read_text(encoding="utf-8"))
+    assert at_h1 == len(REGISTERED_H1) == len(SHOOTOUT.contestants)
+    assert above_h1 == len(REGISTERED_ABOVE) == len(MULTISTEP.contestants)
+    assert horizons == _horizons_above_h1()
+
+
+def _check_table_adds_up(text: str) -> int:
+    """Re-add section 4's table and check it reaches the registered count. Returns that count.
+
+    One function so the witness below exercises the assertions the green test does, rather than a
+    copy of them that could drift from it.
+    """
+    milestones = _table_milestones(text)
+    running = milestones[0][1]
+    assert milestones[0][0] == running, "the first row states a total, not an increment"
+    for added, total in milestones[1:]:
+        running += added
+        assert total == running, f"the row adding {added} does not reach {total}"
+    registered_trials, _ = _registered_figures(text)
+    assert running == registered_trials, (
+        f"section 4's table reaches {running} and it registers {registered_trials}"
+    )
+    return running
+
+
+def test_section_4s_table_adds_up_to_the_registered_trial_count() -> None:
+    """The table is a running total, and the figure the reveal measures its delta against is its
+    last row. Every step is re-added here, so a row edited alone fails."""
+    assert _check_table_adds_up(PREREGISTRATION.read_text(encoding="utf-8")) > 0
+
+
+def test_section_4s_last_row_is_the_shape_of_the_two_cohorts() -> None:
+    """ "7 contestants x 3 symbols x 1 horizon x 2 losses = 42, plus 6 x 3 x 3 x 2 = 108" is the
+    registered run's own shape, so every factor is a quantity the code holds: the two cohort
+    sizes, the configured universe, the horizons above h=1 and the loss set. The two products must
+    also be the last row's increment, which is what ties the arithmetic to the table above it."""
+    text = PREREGISTRATION.read_text(encoding="utf-8")
+    universe = len(load_settings().universe)
+    h1_factors, h1_product, above_factors, above_product = _last_row_arithmetic(text)
+    assert h1_factors == [len(SHOOTOUT.contestants), universe, 1, len(LOSSES)]
+    assert above_factors == [
+        len(MULTISTEP.contestants),
+        universe,
+        len(_horizons_above_h1()),
+        len(LOSSES),
+    ]
+    assert h1_product == h1_factors[0] * h1_factors[1] * h1_factors[2] * h1_factors[3]
+    assert above_product == (
+        above_factors[0] * above_factors[1] * above_factors[2] * above_factors[3]
+    )
+    assert h1_product + above_product == _table_milestones(text)[-1][0]
+
+
+def test_the_registered_figures_are_a_prefix_of_the_committed_ledgers() -> None:
+    """The tie the reveal actually measures by, and it is a **floor**, not an equality.
+
+    Both ledgers are append-only and section 4 itself says the reveal "takes a second count and
+    records both plus the delta ... since further work may legitimately add trials". Pinning
+    equality here would turn a legitimate run into a test failure, which is the mistake
+    ``test_the_committed_ledger_reads_correctly_and_is_not_touched`` records in
+    ``tests/test_leaderboard.py``. What is pinned instead:
+
+    * neither ledger may be shorter than the figure registered against it -- shrinkage means a
+      rewrite of an append-only file, and the delta the reveal reports would be meaningless;
+    * one trial line is one ``(model, symbol, horizon, loss)`` **within each run**, which is what
+      makes the table's arithmetic a count of configurations rather than of lines. Not across the
+      file: all three shootouts are kept, so a configuration recurs between runs by design;
+    * every milestone in section 4's table falls on a run boundary of the registered prefix, so
+      the table describes the runs the ledger actually holds.
+
+    Read-only: the bytes are compared either side.
+    """
+    text = PREREGISTRATION.read_text(encoding="utf-8")
+    registered_trials, registered_comparisons = _registered_figures(text)
+    trials_path = REPO / TRIAL_LEDGER
+    before = trials_path.read_bytes()
+    rows = [json.loads(line) for line in before.decode("utf-8").splitlines() if line.strip()]
+    comparisons = [
+        line
+        for line in (REPO / COMPARISON_LEDGER).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    assert len(rows) >= registered_trials, "the trial ledger is shorter than the registered count"
+    assert len(comparisons) >= registered_comparisons, "the comparison ledger has lost lines"
+
+    prefix = rows[:registered_trials]
+    boundaries, running = set(), 0
+    for at, group in itertools.groupby(prefix, key=lambda row: row["at"]):
+        lines = list(group)
+        # Within one run, and deliberately not across the file: section 4 keeps all three
+        # shootouts, so "the ledger says 414 things were tried and not 150" and the same
+        # configuration recurs by design. It is one line per configuration *per run* that makes
+        # each run's count the product of its factors.
+        configurations = {(r["model"], r["symbol"], r["horizon"], r["loss"]) for r in lines}
+        assert len(configurations) == len(lines), f"the run at {at} repeats a configuration"
+        running += len(lines)
+        boundaries.add(running)
+    for added, total in _table_milestones(text):
+        assert total in boundaries, f"the row reaching {total} (+{added}) is no run boundary"
+
+    assert trials_path.read_bytes() == before, "this test must not touch the ledger"
+
+
+def test_an_edited_trial_count_is_caught() -> None:
+    """The witness for the table tests above. Section 4's figures were read by nothing before this
+    commit, so an amendment to the registered count -- the number the reveal's delta is measured
+    against -- passed every test in this module.
+
+    Two amendments, because the table can be edited in two ways and one assertion catches each:
+    a row whose own arithmetic stops working, and a row that still adds up but no longer reaches
+    the registered figure. The second is the one a careful forger would write.
+    """
+    with pytest.raises(AssertionError, match="does not reach"):
+        _check_table_adds_up(_amended("**+150 = 414**", "**+150 = 415**"))
+    with pytest.raises(AssertionError, match="reaches 415 and it registers 414"):
+        _check_table_adds_up(_amended("**+150 = 414**", "**+151 = 415**"))
+
+
+def test_an_edited_prose_count_is_caught() -> None:
+    """The same for section 1's prose: "Seven at h=1" was read by nothing."""
+    at_h1, _, _ = _prose_counts(_amended("Seven at h=1", "Eight at h=1"))
+    assert at_h1 == 8, "the amendment did not take, so this witnesses nothing"
+    assert at_h1 != len(REGISTERED_H1)
