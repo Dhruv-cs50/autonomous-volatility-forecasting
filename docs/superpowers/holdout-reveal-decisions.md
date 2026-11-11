@@ -86,3 +86,60 @@ train on earlier holdout sessions, the grouping of "the ranking on each loss", a
 threshold that is arithmetically vacuous in a 209-session window. Each is reported as
 under-specified rather than resolved, which is the registration's own standard: a stated "this
 cannot be settled from what we wrote down" is a result.
+
+---
+
+## R218 — A `take` that read the holdout and then failed **still lifts the seal**, and that is the honest state
+
+**The question, raised in review.** `take` writes `record_reveal_completed` at step 16 and only then
+exits 13 (ambiguous champion) or 14 (truncation disagreed). So the command can exit non-zero having
+already done the irreversible half of its job — the shape that burns an operator, who reads a
+failure code, concludes "it did not work", and walks away from a lifted seal.
+
+**The ruling: keep the write.** By step 16 the holdout **has been read** — 38 logged looks, the
+figures in `details`. The seal's claim is that nobody has seen the data, and that claim is already
+false. Withholding the completion line would leave the *machinery* sealed while the data was
+actually seen, so the next run would present itself as the clean first read **with a log saying
+so**. That converts an awkward truth into a false provenance claim, which is strictly worse than
+lifting. The parent design's vocabulary for an unpaired `reveal_open` is "a crashed attempt,
+counted, not a lift", and a run that read all 38 looks and could not name a champion did not crash.
+
+**What it costs if it is wrong.** An operator who misreads a non-zero exit as "nothing happened"
+burns the one-time read without realising. R219 is the mitigation and it is not optional: this
+ruling is only defensible alongside it.
+
+## R219 — The seal-state sentence is **derived from the record**, never from the exit code, and there are **four** states
+
+**The error this corrects was mine.** Having decided R218, I told the implementer to make exits 13
+and 14 announce the lifted seal — and to extend the same treatment to exit 1. That is wrong, and the
+review seat that caught it was right: **exit 1 is the generic code for any unexpected exception,
+including one raised before the first read.** A message keyed on the code would have told an
+operator "the holdout is no longer sealed" when nothing was read and the reveal was still available.
+That is a false claim in the *more expensive* direction — it says a one-time read is spent when it is
+not, so the operator does not re-run. R218's hazard is a reader who thinks the seal is intact when
+it is lifted; this one is a reader who thinks it is lifted when it is intact.
+
+**The ruling: at exit, read the state and report what is there.** The sentence is a pure function of
+`store.audit_tally()` (the on-disk half) and `store.reveal_is_committed()` (the committed half), and
+of nothing else — not the exit code, not which gate fired. Four states:
+
+| on disk | at HEAD | what the operator is told |
+|---|---|---|
+| neither line | — | nothing was written; the reveal is untouched and still available |
+| `reveal_open` alone | — | the attempt is counted and **the seal is intact**; the next `take` is a new `reveal_id` |
+| **both lines** | **not committed** | **the holdout has been read and this run was the reveal**; the figures are in `details`, and **the seal lifts when `data/holdout_access.jsonl` is committed** |
+| both lines | committed | the seal is lifted; the holdout is ordinary history |
+
+**The third state is not an edge case — it is where every successful `take` ends.**
+`_reveal_committed` asks HEAD, so immediately after a clean run the record is on disk and uncommitted.
+"Lifted" is wrong there and "intact" is wrong too, and it is exactly the moment the operator most
+needs the precise sentence: the read is spent, and one commit stands between that fact and the
+machinery agreeing with it. It is also why the design's commit-then-retry procedure works — the
+first audit line dirties the tree at repository scope, so the next attempt refuses until the previous
+one's evidence is committed.
+
+**And it changes what the witness asserts, which is the better half of the ruling.** Not "code 13
+produces this wording" but **"the wording matches the on-disk and committed record"**, across every
+outcome the CLI can produce. A table keyed on exit codes is an enumeration, and this project has
+been bitten by stale enumerations before; a check derived from the record cannot go stale when
+someone renumbers a code or adds a failure path next year.
