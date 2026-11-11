@@ -733,8 +733,25 @@ Resolved before P5-D4 commits, and pinned there:
   prompt carries. Both are closed, and recorded because "unrepresentable" is a claim about the
   **whole** read surface and these are part of it.
 
-The broader lesson, worth more than the fix: **a count is a channel.** Whenever a reader reports how
-much it filtered, check who can see the report.
+**And the failure is itself one bit, which this record names rather than implying the set is
+empty.** Failing the sprint on a nonzero count is an observable derived from data past `dev_end`:
+one bit, "a line exists beyond the boundary". The same peer caught this, one step further down. So
+the honest statement is not "nothing computed over post-`dev_end` lines is observable". It is:
+
+> **No value or statistic from beyond `dev_end` reaches a prompt. One bit, that the invariant was
+> violated at all, reaches the operator as a sprint failure. That bit is only ever set by a harness
+> bug, never by anything the agent can cause or query.**
+
+That is still a strong claim, and it is true. It holds for the right reason: the agent cannot write
+to its own ledger past `dev_end`, because the child evaluates only up to it. So the agent cannot
+provoke the failure to learn the bit, and a bit that appears only when something is already broken
+is not a channel anyone can use. To keep it *exactly* true, the bit is **operator-only**. It goes to
+the sprint log and not into any checkpointer state a later sprint reads back into a prompt, and the
+planted-line witness checks a second sprint's prompts as well as the first's.
+
+The broader lesson, worth more than the fix: **a count is a channel. Whenever a reader reports how
+much it filtered, check who can see the report.** It generalises past this repository, and it applies
+recursively: the refusal triggered by a count is a channel too.
 
 **What this does not establish, kept separate:** that the *code* the child runs is free of a forward
 peek. That is truncation equivalence's job, inherited unchanged from Phase 2 and run by the child
