@@ -657,3 +657,61 @@ a rename already.
 
 *Cost if wrong:* a future legitimate use of that word as data in such a test has to spell it
 differently, and this record is where they will find out why.
+
+---
+
+## R208 — what "a peek is unrepresentable" earns, and what it does not
+
+The design's central claim is that a peek is **unrepresentable rather than forbidden**: no tool takes
+a date, the harness fixes the window from `dev_end`, and the agent selects from a closed vocabulary.
+A peer session asked the question that broke Phase 1's exit criterion four times — *what does this
+refuse to **express**, and what does it merely refuse to **do**?* — and the claim needs its scope
+stated, because it is easy to let the word carry more than it has earned.
+
+**Two attacks, and the answer to each.**
+
+**1. Composition: can two individually harmless selections together name a window?** No, and the
+reason is structural rather than a check. A `Proposal` has five fields — `family`,
+`extra_regressors`, `symbol`, `horizon`, `reference` — and **none is temporal**. `horizon` is one of
+`(1, 5, 22, 66)`, a forecast length and not a position in time; nothing combines with it to locate a
+date, because no field holds a date to combine. The window (`first = 2021-01-04`,
+`last = settings.splits.dev_end`, `every = 5`) is a set of module constants in `volab.candidate`
+that no field reaches. Closure is enforced where selection happens — `validate` refuses unknown
+keys, so the field set cannot be widened by adding one — **and again at the child**, which
+re-validates the file it reads, so a widened payload is refused at the boundary that would act on
+it rather than trusted from upstream.
+
+**2. A pattern of calls: can a sequence of legitimate calls encode what no single call could ask
+for?** The answer depends on which window, and the distinction is the whole point.
+
+- **For the holdout: closed, structurally.** Every byte the agent can read back is a function of
+  dev-window data alone. The child reads through `load_panel` with `end` fixed at `dev_end` (R184);
+  the agent's trial reader drops any line whose `last_origin` is past `dev_end` and reports how
+  many it dropped (P5-C3); and the agent reads no comparison file but its own, because
+  `comparisons.jsonl` records carry no origin dates to filter on (R183). Since no response depends
+  on a holdout value, **no pattern of responses can encode one** — a sequence of functions of dev
+  data is still a function of dev data. This is the property the word "unrepresentable" actually
+  earns.
+- **For the dev window: open, and only counted.** A pattern of calls is exactly how dev-window
+  overfitting happens. Each proposal returns real dev losses, and an agent that proposes fifty
+  configurations and keeps the best has searched the dev window, which no single call could do.
+  Nothing here refuses that. It is **counted** — every evaluation is a line on
+  `data/agent_trials.jsonl` — and the design's "What is not structural" item 1 says so. The pattern
+  attack therefore succeeds against the dev window, and the defence is the trial count, not a
+  refusal.
+
+**So the precise claim is:** *the agent cannot express a request for, or receive any function of,
+data past `dev_end`; it can search the dev window as hard as it likes, and every step of that search
+is counted.* The PR states it in those words. Stating only the first half would be the overclaim.
+
+**What this does not establish, kept separate:** that the *code* the child runs is free of a forward
+peek. That is truncation equivalence's job, inherited unchanged from Phase 2 and run by the child
+on every evaluation ("truncation equivalence: 250 of 250 origins identical" on the real measurement
+run, R205). The closed vocabulary keeps the agent from authoring such code; it does not prove the
+harness's own code clean, and nothing in Phase 5 claims it does.
+
+*Cost if wrong:* if a response channel exists that depends on a holdout value — a field added to a
+trial line later, a new reader, Phase 6 writing holdout rows somewhere the filter does not cover —
+the first bullet stops being true without any test noticing. The binding Phase 6 requirements in
+the design (count both agent ledgers at the reveal; give holdout comparison records a
+`last_origin` before any agent reads that file) exist to keep it true.
