@@ -51,6 +51,56 @@ and 52 lines with the pinned md5s; `git log -p 56bf9e2..HEAD -- data/` empty; no
 or `data/forecasts.jsonl` in the repository; and `git diff 56bf9e2 -- tests/` removes **no**
 `def test_` line (its ten removed lines are the `Splits(...)` constructions P4-05b widened).
 
+### At `656c4d2`: the mutation probe run in place, on the pre-fix tool
+
+**Read no count in this block as a verdict on the guards.** The probe exits **1** whenever any
+mutant is not exact, and its closing line reads "18 of 28 mutants did not fail exactly their
+witness" — a list the source names `survivors` though it holds non-survivors too. The number that
+speaks to coverage is the survivor count, and it is **one**.
+
+**28 of 28 mutants applied and ran**, no `plant anchor missing` halt, so all nine anchored texts
+held by execution. **10 exact · 17 wide · 1 survivor.**
+
+- **The survivor** is `the timeout kills the stage but not the stage's children`, which neutralises
+  the timeout's `os.killpg`. It is a **stale plant, not a guard hole**: `_sweep_the_group` arrived
+  in `28d81b3`, the plant was written in `48d5cfc`, and `48d5cfc` is an ancestor of `28d81b3`, so
+  the plant went inert the moment the second signalling site landed. Measured at two shas — FAILED
+  at `13b0aaf` (no sweep), passes at `656c4d2` (sweep present).
+- What it exposed, and what `89e0c88` fixes: `test_a_timeout_kills_the_stages_own_children_too` had
+  stopped distinguishing `os.killpg` from `process.kill()`, the group from the leader alone, because
+  the sweep supplies the grandchild's death either way. It had **not** stopped witnessing the kill
+  altogether — removing `killpg` outright still fails it, on the elapsed bound, measured at
+  **60.06s against `assert elapsed < 5`** on an isolated replica.
+- **All 17 wide rows are `W ⊆ F`**: every witness named did fail, and others did too. Of the 18
+  non-exact rows, **2** are an instrument defect in the exactness comparison, **2** are one witness
+  listed against the CLI pair that does not respond to them, **1** is the stale plant, and **13**
+  are descriptive witness lists behind a suite that has grown — exactly the maintenance step this
+  script's own note at lines 102-110 records having done once before.
+- Re-classified offline under a corrected exactness rule, exact goes **10 → 12**: a bare witness
+  naming a parametrised test can never equal a set of bracketed pytest ids.
+
+**Six instrument defects were found, five of them corrupting results toward the flattering reading.**
+`-rf` hides every ERROR, so a catch in fixture setup or teardown is invisible; `_LEDGERS` covers two
+of the four ledgers; the exit code and closing count merge blunt-but-caught with uncaught; `exact`
+compares raw pytest ids against bare `def` names; the parser truncates a parametrised id at its first
+whitespace, so a readable id prints corrupt. The sixth is the limit rather than a bug: **the probe
+verifies a plant's text went in and never that it still removes the behaviour, so it cannot
+distinguish a holed guard from an expired plant — a survivor is a question, not a finding.**
+
+**The repository was byte-identical after the run.** `data/trials.jsonl` 414 lines /
+`090e37b08f03d0548f63d1515ec8e35c` and `data/comparisons.jsonl` 52 / `b9f41c2651f10f3f9288d6cb427e2c9a`,
+both pins intact; no `.orig` sidecar survived, so every restore completed and was verified byte for
+byte; no `data/daily_runs.jsonl` and no `data/daily_run.lock`; and `data/forecasts.jsonl` unmoved at
+12 lines / `c4c088644ce73e4ec9941b4815e55ebf` — the file as found from the unattributed run of
+**12:02:25Z–12:04:37Z** on 2026-11-05 (R164), whose every row carries `git_sha` `b6ef92b`. The
+ledgers' pre-run copies were taken to `mutate-ledgers-vy3mvo6h` under the system temporary directory
+and were not needed.
+
+**Suite at `656c4d2`, reported by the session that ran it:** 2154 passed, 0 skipped, 247.45s, with
+`ruff check`, `ruff format --check` and `mypy src` clean and both ledgers read either side. The
+`2013` above is that figure at `5a017d9` and stands as such.
+
+
 **And at `fc266bb`, the close of the first slice:** **1780 passed**, 0 skipped, 240.25s; `ruff
 check` and `ruff format --check` clean over 104 files; `mypy src` clean over 44. The arithmetic,
 because a test count is a gate (R154): **1780 = 1734 + 41 + 5** — 41 tests in
@@ -159,7 +209,7 @@ pathspec and no two touch one file.
 | 3 | P4-06b, P4-05b | **closed.** `3db9b52`, `567616c` |
 | 4 | P4-06c | **closed.** `a233447` — and it also gave `volab.leaderboard` a public `ranked_trials`, so `volab.daily` stops importing a private name |
 | 5 | P4-04 | **closed.** `021623d` |
-| 6 | the delivery audit, a review seat, and the mutation probe **in place** | **the probe ran in place at `5a017d9`: 21 of 21 mutants fail exactly the tests named against them.** The audit has reported; a review seat is reading prose against execution |
+| 6 | the delivery audit, a review seat, and the mutation probe **in place** | **the probe ran in place at `5a017d9`: 21 of 21 mutants fail exactly the tests named against them.** Re-run at `656c4d2` with the probe grown to 28 mutants: **10 exact, 17 wide, 1 survivor** — see the dated block below, and read neither the exit code nor the "did not fail exactly" count as a verdict on the guards. The audit has reported; a review seat is reading prose against execution |
 | 7 | P4-08 — close what the audit found | the audit's findings are below, and they are not all cosmetic |
 
 **What wave 1 found that this board had claimed and the tree did not support**, now owned by
