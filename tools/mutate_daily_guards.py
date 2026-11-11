@@ -542,6 +542,18 @@ def _base_name(identifier: str) -> str:
     return identifier.split("[", 1)[0]
 
 
+def _test_name(line: str) -> str:
+    """The test named on a pytest line, out of one spelling for every reading here.
+
+    Everything after the first ``::``, up to the ``" - "`` pytest puts before a failure reason,
+    stripped. One function because two readings that disagree about how an id is spelled is the
+    defect this whole file was built to stop being possible: the short-summary parse once cut at
+    the first space, and a collection parse that cut differently would make the start-up check
+    below reject exactly the ids the verdict accepts.
+    """
+    return line.split("::", 1)[1].split(" - ")[0].strip()
+
+
 def _pytest_command(suite: tuple[str, ...]) -> list[str]:
     """The command run for every mutant: the whole of each ``suite`` file, quiet, summary only.
 
@@ -589,9 +601,9 @@ def _reported_tests(stdout: str, suite: tuple[str, ...]) -> tuple[frozenset[str]
     for line in stdout.splitlines():
         for path in suite:
             if line.startswith(f"FAILED {path}::"):
-                failed.add(line.split("::", 1)[1].split(" - ")[0].strip())
+                failed.add(_test_name(line))
             elif line.startswith(f"ERROR {path}::"):
-                errored.add(line.split("::", 1)[1].split(" - ")[0].strip())
+                errored.add(_test_name(line))
             elif line == f"ERROR {path}" or line.startswith(f"ERROR {path} - "):
                 raise SystemExit(f"{path} did not collect; pytest reported {line!r}")
     return frozenset(failed), frozenset(errored)
@@ -680,6 +692,94 @@ def _failing_tests(suite: tuple[str, ...]) -> tuple[frozenset[str], frozenset[st
     if "error" in completed.stdout.lower() and "passed" not in completed.stdout:
         raise SystemExit(f"the suite did not run:\n{completed.stdout}\n{completed.stderr}")
     return reported
+
+
+def _collect_command(suite: tuple[str, ...]) -> list[str]:
+    """``--collect-only`` over the same files every mutant runs: one node id a line, then a count.
+
+    No plant is in place when this runs and none is needed: collection imports the modules and
+    evaluates the ``parametrize`` decorators, which is where the ids come from, without executing
+    a single test body.
+    """
+    return [sys.executable, "-B", "-m", "pytest", "-q", "--collect-only", *suite]
+
+
+def _collected_tests(stdout: str, suite: tuple[str, ...]) -> frozenset[str]:
+    """Every test id ``--collect-only`` listed for the ``suite`` files, by name.
+
+    The same prefix match the short-summary reading makes, and for the same reason: a line naming
+    a file this run did not ask for says nothing about the ids of a test in the files every mutant
+    runs. The name comes out of ``_test_name``, so this reading and the verdict's cannot disagree
+    about how an id is spelled -- which is the only reason the check below can be trusted to
+    accept ``[mid holdout]`` and reject ``[mid``.
+    """
+    return frozenset(
+        _test_name(line)
+        for line in stdout.splitlines()
+        for path in suite
+        if line.startswith(f"{path}::")
+    )
+
+
+def _unknown_ids(
+    witnesses: tuple[str, ...], collected: frozenset[str]
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """Each bracketed witness no parametrisation generates, with the ids its test does generate.
+
+    **Bracketed witnesses only.** A bare name is resolved by ``_test_files``, which refuses one not
+    defined in exactly one test file, and ``_verdict`` reads it as "any one parametrisation of this
+    went red" -- so comparing a bare name against collected *ids* would reject all but two of the
+    witnesses in ``MUTANTS``. The reach of this check is therefore narrow and worth stating: it
+    establishes that a bracketed id exists in collection, nothing about whether it can go red, and
+    nothing at all about the plant that is supposed to make it go red.
+    """
+    unknown = []
+    for witness in witnesses:
+        if "[" not in witness or witness in collected:
+            continue
+        base = _base_name(witness)
+        unknown.append(
+            (witness, tuple(sorted(i for i in collected if _base_name(i) == base and "[" in i)))
+        )
+    return tuple(unknown)
+
+
+def _check_bracketed_witnesses(suite: tuple[str, ...], collected: frozenset[str]) -> None:
+    """Stop before any plant if a mutant names a parametrisation that does not exist.
+
+    A witness id with a typo in it can never appear in the red set, so the mutant carrying it can
+    never read exact. What it reads instead is ``BITES WIDELY``: the plant still reddens the
+    correctly spelled id, so the red set is not empty, and only a plant that reddened nothing at
+    all would print ``SURVIVES``. The corruption therefore runs the *unfavourable* way -- a guard
+    that fired is reported as having bitten past its list, and a list that has a typo in it looks
+    like a list that is wrong about the plant. Cheap to catch, so caught here: ask pytest what ids
+    it generates.
+
+    An empty collection is the stop and not the finding: read as data it says no id exists, which
+    would name every bracketed witness a typo at once.
+    """
+    if not collected:
+        raise SystemExit(f"{' '.join(suite)} collected no test at all; nothing can be checked")
+    for mutant in MUTANTS:
+        for witness, generated in _unknown_ids(mutant.witnesses, collected):
+            raise SystemExit(
+                f"witness {witness!r} of {mutant.label!r} names a parametrisation that does not"
+                f" exist; {_base_name(witness)} generates {list(generated) or 'no ids'}"
+            )
+
+
+def _collected(suite: tuple[str, ...]) -> frozenset[str]:
+    """Run the collection and read it, or stop naming what pytest printed."""
+    completed = subprocess.run(
+        _collect_command(suite),
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise SystemExit(f"collection failed:\n{completed.stdout}\n{completed.stderr}")
+    return _collected_tests(completed.stdout, suite)
 
 
 def _read_own_files() -> dict[str, bytes | None]:
@@ -771,6 +871,7 @@ def main() -> int:
         "copies of the ledgers and of whichever daily files exist, should a kill leave one moved:",
         backup,
     )
+    _check_bracketed_witnesses(suite, _collected(suite))
     if any(_failing_tests(suite)):
         raise SystemExit("the suite is already red; fix that before planting anything")
     # Two lists and not one, because they are two findings: a mutant nothing noticed is a

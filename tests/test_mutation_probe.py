@@ -653,3 +653,196 @@ def test_the_command_and_the_reading_together_catch_a_guard_that_reports_in_tear
     assert "1 passed" in completed.stdout, completed.stdout
     assert failed == frozenset()
     assert errored == frozenset({"test_the_body_passes_and_the_guard_reports"})
+
+
+# --- a bracketed witness against the ids its test generates ---------------------------------------
+
+# Produced by writing the file below into a directory of its own and running, from that directory:
+#
+#     python -B -m pytest -q --collect-only -p no:cacheprovider test_collect_probe.py
+#
+# The file holds a test parametrised over the same three prose ids as
+# ``test_a_holdout_date_is_refused_as_sealed`` in ``tests/test_daily_forecast.py``, plus one
+# unparametrised test, so the text below carries both shapes a witness can be spelled in.
+_COLLECT_OUTPUT = """\
+test_collect_probe.py::test_a_holdout_date_is_refused_as_sealed[in the seam after dev_end]
+test_collect_probe.py::test_a_holdout_date_is_refused_as_sealed[mid holdout]
+test_collect_probe.py::test_a_holdout_date_is_refused_as_sealed[the last holdout day]
+test_collect_probe.py::test_a_plain_one
+
+4 tests collected in 0.01s
+"""
+
+_COLLECT_SUITE = ("test_collect_probe.py",)
+
+
+def test_a_bracketed_witness_the_collection_does_not_hold_is_named_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The check itself: an id no parametrisation generates can never be matched.
+
+    A witness naming an id that does not exist can never appear in the red set, so its mutant can
+    never read exact. Traced through ``_verdict``, what it reads is ``BITES WIDELY`` and not
+    ``SURVIVES``: the plant still reddens the correctly spelled id, so the red set is not empty.
+    The typo makes a guard that fired look like one that bit past its list. Measured red with
+    ``_unknown_ids`` returning ``()`` unconditionally, which is the state of the tool before this
+    check: the typo passes and no reader is told the list cannot match.
+    """
+    probe = _probe(monkeypatch)
+    collected = frozenset(
+        {f"{_REFUSED_OR_CLOSED_WITNESS}[refused]", f"{_REFUSED_OR_CLOSED_WITNESS}[closed]"}
+    )
+
+    unknown = probe._unknown_ids((f"{_REFUSED_OR_CLOSED_WITNESS}[nonexistent]",), collected)
+
+    assert unknown == (
+        (
+            f"{_REFUSED_OR_CLOSED_WITNESS}[nonexistent]",
+            (f"{_REFUSED_OR_CLOSED_WITNESS}[closed]", f"{_REFUSED_OR_CLOSED_WITNESS}[refused]"),
+        ),
+    )
+
+
+def test_a_witness_naming_an_id_the_collection_does_hold_is_not_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The other side of the same call, so the check cannot pass by rejecting everything."""
+    probe = _probe(monkeypatch)
+    collected = frozenset({f"{_REFUSED_OR_CLOSED_WITNESS}[refused]"})
+
+    assert probe._unknown_ids((f"{_REFUSED_OR_CLOSED_WITNESS}[refused]",), collected) == ()
+
+
+def test_a_bare_witness_is_not_checked_against_the_collection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bare names are resolved elsewhere, and this check must not start deciding about them.
+
+    ``_test_files`` already refuses a bare name that is not defined in exactly one test file, and
+    ``_verdict`` reads a bare witness as "any one parametrisation of this went red". A bare name
+    is therefore legitimate, and a check that compared it to collected *ids* would reject every
+    bare witness in ``MUTANTS`` -- all but two of them.
+    """
+    probe = _probe(monkeypatch)
+
+    assert probe._unknown_ids((_REFUSED_OR_CLOSED_WITNESS,), frozenset()) == ()
+
+
+def test_an_id_with_spaces_is_collected_whole_and_its_truncation_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Why this check waited for the id-truncation fix, pinned so the order cannot be lost.
+
+    The reading that cut an id at its first space turned ``[mid holdout]`` into ``[mid``. Had this
+    check been added over that parse, it would have rejected the correctly spelled id and accepted
+    the fragment -- exactly backwards, and a stop at start-up rather than a wrong word in a table.
+    Both directions are asserted off one real collection: the whole id is there and the fragment is
+    not. Measured red with ``_collected_tests`` taking ``split()[0]`` instead of the shared
+    ``_test_name``, which reproduces the old cut.
+    """
+    probe = _probe(monkeypatch)
+
+    collected = probe._collected_tests(_COLLECT_OUTPUT, _COLLECT_SUITE)
+
+    assert f"{_SPACED_ID_TEST}[mid holdout]" in collected
+    assert probe._unknown_ids((f"{_SPACED_ID_TEST}[mid holdout]",), collected) == ()
+    assert probe._unknown_ids((f"{_SPACED_ID_TEST}[mid",), collected) == (
+        (
+            f"{_SPACED_ID_TEST}[mid",
+            (
+                f"{_SPACED_ID_TEST}[in the seam after dev_end]",
+                f"{_SPACED_ID_TEST}[mid holdout]",
+                f"{_SPACED_ID_TEST}[the last holdout day]",
+            ),
+        ),
+    )
+
+
+def test_a_collected_line_naming_a_file_outside_the_suite_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same prefix match the summary reading makes, for the same reason.
+
+    A collection this run did not ask for must not widen what the check accepts: an id that exists
+    somewhere else in the repository is still not an id of a test in the files every mutant runs.
+    """
+    probe = _probe(monkeypatch)
+
+    collected = probe._collected_tests(
+        "tests/test_elsewhere.py::test_a_plain_one\n\n1 test collected in 0.01s\n",
+        _COLLECT_SUITE,
+    )
+
+    assert collected == frozenset()
+
+
+def test_a_collection_that_came_back_empty_stops_the_run(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty collection would make every bracketed witness unknown, which is not a finding.
+
+    The failure mode this guards is a collection that did not happen -- an import error, a wrong
+    path, a pytest that exited before listing anything. Read as data it says "no id exists", which
+    would stop the run naming the witnesses as typos; so the emptiness itself is the stop, and it
+    names what it ran.
+    """
+    probe = _probe(monkeypatch)
+
+    with pytest.raises(SystemExit, match="collected no test at all"):
+        probe._check_bracketed_witnesses(_COLLECT_SUITE, frozenset())
+
+
+def test_a_mutant_whose_witness_names_an_id_that_does_not_exist_stops_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The branch that does the work, over a ``MUTANTS`` of one, so the stop is the whole result.
+
+    Measured red with the ``for mutant in MUTANTS`` loop deleted, which leaves the other tests in
+    this section green: ``_unknown_ids`` is pure and says nothing about whether anything calls it.
+    The message is asserted in three parts -- the branch's own phrase, the mutant's label, and the
+    ids the test does generate -- because a stop that does not say which list to edit sends its
+    reader back to the collection to work it out.
+    """
+    probe = _probe(monkeypatch)
+    collected = frozenset({f"{_REFUSED_OR_CLOSED_WITNESS}[refused]"})
+    monkeypatch.setattr(
+        probe,
+        "MUTANTS",
+        (
+            probe.Mutant(
+                label="a plant whose witness list has a typo in it",
+                relative_path="src/volab/daily/__main__.py",
+                before="x",
+                after="y",
+                witnesses=(f"{_REFUSED_OR_CLOSED_WITNESS}[refsued]",),
+            ),
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="names a parametrisation that does not exist") as stop:
+        probe._check_bracketed_witnesses(_COLLECT_SUITE, collected)
+
+    assert "a plant whose witness list has a typo in it" in str(stop.value)
+    assert f"{_REFUSED_OR_CLOSED_WITNESS}[refused]" in str(stop.value)
+
+
+def test_a_mutant_whose_witnesses_all_exist_does_not_stop_the_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The green counterpart, same patch: the check must not stop on a list that is right."""
+    probe = _probe(monkeypatch)
+    monkeypatch.setattr(
+        probe,
+        "MUTANTS",
+        (
+            probe.Mutant(
+                label="a plant whose witness list is right",
+                relative_path="src/volab/daily/__main__.py",
+                before="x",
+                after="y",
+                witnesses=(f"{_REFUSED_OR_CLOSED_WITNESS}[refused]", _LIVE_DATE_WITNESS),
+            ),
+        ),
+    )
+
+    probe._check_bracketed_witnesses(
+        _COLLECT_SUITE, frozenset({f"{_REFUSED_OR_CLOSED_WITNESS}[refused]"})
+    )
