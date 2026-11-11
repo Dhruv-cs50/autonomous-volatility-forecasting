@@ -462,7 +462,11 @@ def test_the_env_cannot_move_the_boundary_to_read_a_sealed_row(
     monkeypatch.setenv("VOLAB_SPLITS_HOLDOUT_START", "2026-07-01")
     moved = dataclasses.replace(
         synthetic_store.settings,
-        splits=Splits(dev_end=dt.date(2026, 6, 30), holdout_start=dt.date(2026, 7, 1)),
+        splits=Splits(
+            dev_end=dt.date(2026, 6, 30),
+            holdout_start=dt.date(2026, 7, 1),
+            holdout_end=dt.date(2026, 12, 31),
+        ),
     )
 
     with pytest.raises(HoldoutViolation, match="later than the 2025-12-31 pinned in"):
@@ -661,11 +665,20 @@ def test_every_date_has_exactly_one_region_and_they_follow_in_order() -> None:
     assert set(ranks) == {0, 1, 2}  # and the window shown really crosses all three
 
 
-def test_a_hand_built_splits_with_no_end_has_no_live_region() -> None:
-    """The default ``holdout_end`` keeps the meaning ``Splits`` had before it had an end."""
-    splits = Splits(dev_end=dt.date(2023, 12, 31), holdout_start=dt.date(2024, 1, 2))
+def test_splits_cannot_be_built_without_a_holdout_end() -> None:
+    """Omitting ``holdout_end`` is a ``TypeError``: no default silently means "never ends"."""
+    with pytest.raises(TypeError, match="holdout_end"):
+        Splits(dev_end=dt.date(2023, 12, 31), holdout_start=dt.date(2024, 1, 2))  # type: ignore[call-arg]
 
-    assert splits.holdout_end == dt.date.max
+
+def test_a_hand_built_splits_with_a_far_future_end_has_no_live_region() -> None:
+    """A holdout with no practical end is now said at the call site, as an explicit date."""
+    splits = Splits(
+        dev_end=dt.date(2023, 12, 31),
+        holdout_start=dt.date(2024, 1, 2),
+        holdout_end=dt.date.max,  # the holdout never ends here, so there is no live region
+    )
+
     assert splits.region_of(dt.date(2099, 1, 1)) is Region.HOLDOUT
     assert splits.region_of(dt.date.max) is Region.HOLDOUT
 

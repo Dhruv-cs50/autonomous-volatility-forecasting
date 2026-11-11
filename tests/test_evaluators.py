@@ -974,7 +974,11 @@ def test_settings_is_what_horizon_returns_is_handed(synthetic_store: SyntheticSt
         universe=synthetic_store.settings.universe,
         exogenous=synthetic_store.settings.exogenous,
         calendar=synthetic_store.settings.calendar,
-        splits=Splits(dev_end=later, holdout_start=later + dt.timedelta(days=1)),
+        splits=Splits(
+            dev_end=later,
+            holdout_start=later + dt.timedelta(days=1),
+            holdout_end=later + dt.timedelta(days=366),
+        ),
         storage_root=synthetic_store.settings.storage_root,
     )
     with pytest.raises(HoldoutViolation, match="later than the repository's configured dev_end"):

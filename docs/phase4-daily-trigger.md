@@ -31,21 +31,31 @@ checked by searching it for `schedule` and `cron` and is not asserted by any tes
 
 ## Which verb, and what it does today
 
-`python -m volab.daily` has **one verb today: `plan`**. It prints what a run would do and writes
-nothing: no run record, no ledger line, no payload. `run`, which executes the stages and writes the
-record, is being built as story P4-03b (the runner underneath it landed as P4-03). When it lands, the schedule should use **`run`**: change the one
-word after `volab.daily` in the plist, and the one word in the cron line, and nothing else.
+`python -m volab.daily` has **two verbs: `plan` and `run`.** `plan` prints what a run would do and
+writes nothing — no run record, no ledger line, no payload. `run` does the work: it writes a start
+line, executes the stages, and writes a completion line (story P4-03b, on top of P4-03's runner).
+
+**The plist and the cron line below schedule `plan`, deliberately, and you change one word to make
+them real.** Replace `plan` with `run` after `volab.daily` in the plist's `ProgramArguments`, and the
+same word in the cron line, and nothing else. They are left on `plan` because a schedule that ran
+the real stages on the day it was installed would run `volab.ingest backfill`, which fetches from
+the network and writes the **tracked** `data/vendor_payloads/` — see the last section.
 
 Two consequences of that, so that neither surprises you:
 
 - **Scheduled today, the job does nothing but print a plan.** That is a usable dry run of the
   trigger itself (does it fire, does it find `uv`, does it log), and no more.
-- **Every real date is currently past `dev_end`, so today the job exits 1.** The plan refuses a date
-  past `dev_end` and the CLI exits 1 on a refusal (a closed exchange and an already-completed date
-  are 0). The `live` region now exists in the configuration (`holdout_end` is 2026-10-30, story
-  P4-05), and that changes nothing here: `dev_end` is 2025-12-31, so every real date falls in the
-  **holdout** region and stays sealed until the user triggers the reveal. That refusal is the normal
-  outcome of this job until then, not a fault in the trigger.
+- **Every real date is past `dev_end`, so today the job exits 1.** The plan refuses any date past
+  `dev_end` and the CLI exits 1 on a refusal (a closed exchange and an already-completed date are
+  0). That refusal is the normal outcome of this job until the user triggers the holdout reveal, and
+  it is not a fault in the trigger.
+- **Which region a real date is in, stated exactly, because an earlier version of this document got
+  it wrong.** `dev_end` is 2025-12-31 and `holdout_end` is 2026-10-30 (story P4-05), so a date in
+  November 2026 is in the **`live`** region and not in the holdout. It is refused all the same: the
+  plan's only test is `as_of > dev_end`, and `live` is unreachable until the reveal because the
+  sealed window lies between here and there. **The refusal's wording is wrong for this case** — it
+  says "the holdout is sealed" for a live date too. That is a reporting defect, carried on the board
+  and owned by P4-08b, not a defect in the refusal itself.
 
 The date is taken inside the CLI as *today in New York*, so the schedule below has no date in it.
 The exchange calendar decides what a closed day means: on a holiday the job runs, finds no session,

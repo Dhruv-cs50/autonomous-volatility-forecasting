@@ -102,7 +102,11 @@ def test_unmarked_test_that_moves_the_boundary_fails(
             synthetic_store.write("bars_daily", "SPY", [HOLDOUT_DAY])
             moved = dataclasses.replace(
                 synthetic_store.settings,
-                splits=Splits(dev_end=dt.date(2099, 12, 31), holdout_start=dt.date(2100, 1, 2)),
+                splits=Splits(
+                    dev_end=dt.date(2099, 12, 31),
+                    holdout_start=dt.date(2100, 1, 2),
+                    holdout_end=dt.date(2100, 12, 31),
+                ),
             )
             monkeypatch.setattr(store, "load_settings", lambda *a, **k: moved)
 
@@ -296,7 +300,11 @@ def test_unmarked_test_that_reads_through_an_aliased_import_fails(
             synthetic_store.write("bars_daily", "SPY", [HOLDOUT_DAY])
             moved = dataclasses.replace(
                 synthetic_store.settings,
-                splits=Splits(dev_end=dt.date(2099, 12, 31), holdout_start=dt.date(2100, 1, 2)),
+                splits=Splits(
+                    dev_end=dt.date(2099, 12, 31),
+                    holdout_start=dt.date(2100, 1, 2),
+                    holdout_end=dt.date(2100, 12, 31),
+                ),
             )
             monkeypatch.setattr(store, "load_settings", lambda *a, **k: moved)
 
@@ -343,7 +351,11 @@ def test_unmarked_test_that_reads_through_a_pre_captured_reference_fails(
             synthetic_store.write("bars_daily", "SPY", [HOLDOUT_DAY])
             moved = dataclasses.replace(
                 synthetic_store.settings,
-                splits=Splits(dev_end=dt.date(2099, 12, 31), holdout_start=dt.date(2100, 1, 2)),
+                splits=Splits(
+                    dev_end=dt.date(2099, 12, 31),
+                    holdout_start=dt.date(2100, 1, 2),
+                    holdout_end=dt.date(2100, 12, 31),
+                ),
             )
             monkeypatch.setattr(store, "load_settings", lambda *a, **k: moved)
 
