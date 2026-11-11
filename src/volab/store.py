@@ -19,6 +19,16 @@ files, 5. the read, 6. absent columns, 7. a naive ``ts``, 8. a null ``as_of``, 9
 consistency, 10. the point-in-time filter, the irreducible-duplicate check and deduplication,
 11. an empty result, 12. the post-filter ``as_of`` assertion, 13. the audit line.
 
+Past ``dev_end`` the refusal is a function of this checkout's HEAD as well as of the arguments and
+the store: step 3 asks git whether a completed reveal record is committed, so the same call can be
+answered differently before and after the reveal commit (held fixed within a process by a memo).
+Reads at or below ``dev_end`` are unaffected, because ``past_dev_end and _reveal_committed(...)``
+short-circuits before git is asked. Every read the purity assertions take -- truncation
+equivalence, the walk-forward's fresh-interpreter origins, Phase 1's extent test -- is at
+``end <= dev_end`` (``walkforward.load_for`` reads at ``end == dev_end`` and nothing else), so they
+ask the predicate zero times and are exactly what they were. The dependency is real only for
+reads past ``dev_end``, which are otherwise refused or keyed.
+
 Step 0 exists because every rule below it reads ``dev_end`` from the settings it was handed. A
 caller who hands over a later boundary is not unlocking the holdout, it is moving it, and the
 two keys are never asked for -- so nothing downstream would ever see it.
@@ -357,7 +367,13 @@ def _reveal_committed(splits: Splits) -> bool:
 
 
 def _reset_reveal_cache() -> None:
-    """Forget the memo, forcing the next question back to git. It can only cause a re-derivation."""
+    """Forget the memo, forcing the next question back to git. It can only cause a re-derivation.
+
+    Exists for the tests. Calling it from production code would make a reveal commit landing
+    mid-process visible and break the per-process consistency the memo provides; the witness
+    ``test_the_cache_reset_is_reachable_only_from_the_tests`` (W23) fails if any call site or
+    mention appears under ``src/volab``, so that cannot happen quietly.
+    """
     _REVEAL_CACHE.clear()
 
 

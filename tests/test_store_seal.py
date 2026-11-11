@@ -1,6 +1,6 @@
 """The seal's lifecycle in ``volab.store``: the bound, the reveal record, and the shape of the code.
 
-Witnesses for ``docs/superpowers/specs/2026-11-10-seal-lifecycle-design.md`` (W1-W21). Nothing here
+Witnesses for ``docs/superpowers/specs/2026-11-10-seal-lifecycle-design.md`` (W1-W23). Nothing here
 holds a key: no ``@pytest.mark.holdout``, no ``VOLAB_HOLDOUT_UNLOCK``, no ``allow_holdout=True``.
 Where a read past a synthetic store's ``dev_end`` is needed, ``_unlock_granted`` is replaced and
 the ``end`` stays below the *repository's* ``dev_end``, so the conftest police stay armed and
@@ -412,6 +412,29 @@ def test_the_predicate_is_memoised_per_splits_and_only_reset_forces_a_re_ask(
     assert _REAL_REVEAL_COMMITTED(SPLITS) is True  # monotone within a process
 
 
+def test_the_answer_does_not_change_under_a_commit_landing_mid_process(
+    repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """W22. A commit landing mid-run is invisible to the process, and the staleness is only a cache.
+
+    The safe direction is the sealed one: a process that started before the reveal commit keeps
+    refusing until it is restarted, rather than an answer quietly changing halfway through a
+    measurement. ``_reset_reveal_cache`` shows the held answer is a memo and not a wrong answer.
+    Real git against a temp repository; only the repository root is redirected.
+    """
+    monkeypatch.setattr(store, "_REPO_ROOT", repo)
+    monkeypatch.setattr(store, "_REVEAL_CACHE", {})
+
+    assert _REAL_REVEAL_COMMITTED(SPLITS) is False
+    _commit_record(repo, _text(_open(), _complete()))
+    assert store._reveal_committed_in(repo, SPLITS) is True  # git itself now says yes
+
+    assert _REAL_REVEAL_COMMITTED(SPLITS) is False  # the process has not moved
+
+    store._reset_reveal_cache()
+    assert _REAL_REVEAL_COMMITTED(SPLITS) is True
+
+
 # ---- the log: ordering, crash, and failure ---------------------------------------------------
 
 
@@ -639,6 +662,29 @@ def test_nothing_but_git_and_the_splits_decides_the_seal() -> None:
     # And the one that takes a root takes it for testability: load_panel never names it.
     assert not _names(_function("load_panel"), "_reveal_committed_in")
     assert not _names(_function("load_panel"), "_REPO_ROOT")
+
+
+def test_the_cache_reset_is_reachable_only_from_the_tests() -> None:
+    """W23. One definition, no call site and no mention outside it anywhere under ``src/volab``.
+
+    The reset cannot set the answer to True, but it lets a reveal commit landing mid-process
+    become visible, which W22's consistency forbids. Test-only today; this keeps it so.
+    """
+    name = "_reset_reveal_cache"
+    definitions = 0
+    for path in sorted(_SRC.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.FunctionDef) and node.name == name:
+                assert path == _SRC / "store.py"
+                definitions += 1
+            mentioned = (
+                (isinstance(node, ast.Name) and node.id == name)
+                or (isinstance(node, ast.Attribute) and node.attr == name)
+                or (isinstance(node, ast.alias) and node.name == name)
+                or (isinstance(node, ast.Constant) and node.value == name)
+            )
+            assert not mentioned, f"{path} names {name}"
+    assert definitions == 1
 
 
 def test_only_one_function_opens_the_audit_log() -> None:
