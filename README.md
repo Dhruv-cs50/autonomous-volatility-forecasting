@@ -34,7 +34,7 @@ demand.
 | 3 — Implied vol and evaluators | A horizon-matched IV contestant, and evaluators that score decisions | merged |
 | 4 — Scheduler | Unattended daily runs, the run log and lock, and the guards that keep a live stage off the reported ledgers | merged (#17, #18) |
 | 5 — Agent layer | An LLM research agent that cannot express a peek: a closed vocabulary with no date in any tool, a transitive import fence, its own counted ledger, and a human gate in a separate process | merged (#20) |
-| 6 — Write-up and reveal | The one-time sealed holdout read and the write-up | not started |
+| 6 — Write-up and reveal | The reveal's gate and trigger, the one-time sealed holdout read, and the write-up | gate and trigger in progress (#22) — **the holdout is still unread** |
 
 ## What the harness contains
 
@@ -168,7 +168,11 @@ and `uv run --locked python tools/reproduce_e1.py` applies it to a throwaway tre
 methods against it. The whole-suite figure is 648 tests — everything but the four Phase 2 test
 files the driver names — with one skip that names itself (`test_store_guard` declines to run
 outside a git work tree, and a `git archive` tree has no `.git`), so in an ordinary checkout it
-reads 647 of 648. An earlier **644 of 645** here was sprint 1's tree, `21dc15b`, which had 663
+reads 647 of 648. Both denominators are the Phase 2-era tree. The suite collects **2205** tests
+as of Phase 4's merge, so the E1 and E2 rows are a record of what those methods did on the tree
+they were run against, and not a count of today's suite — re-deriving them would mean re-running
+the plant, which `tools/reproduce_e1.py` still does from a checkout. An earlier **644 of 645**
+here was sprint 1's tree, `21dc15b`, which had 663
 tests and two Phase 2 test files rather than four. `tools/README.md` lists every probe behind a figure quoted here or in
 `docs/superpowers/phase2-decisions.md`.
 E1 escapes perturbation because at the cutoff a fixture can only present `|r_next|` from a finite
