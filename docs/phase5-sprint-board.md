@@ -16,8 +16,8 @@ states the sha it was verified at, and a line number is treated as perishable (R
 | 0 | scaffold: ignores, boards, package stubs | done (`ee16c3d` + scaffold commit) |
 | A | the fences, before any code of the phase | **done** (`ec80441`, `185a021`) |
 | B | the vocabulary and the `HarX` contestant | **done** (`60796ca`, `e4d6e59` + a fix round) |
-| C | the child, the sprint log, the counts | in progress |
-| D | the ports and the roles | not started |
+| C | the child, the sprint log, the counts | C1 and C2 done (`3e15fd7`, `6da1eaa`); **C3 not started** |
+| D | the ports and the roles | D1+D2 done (`91de85b`); **D3, D4, D5 not started** |
 | E | the human gate, the CLI, the exit criterion | not started |
 | F | close out: audit, README, PR | not started |
 
@@ -29,11 +29,11 @@ states the sha it was verified at, and a line number is treated as perishable (R
 | P5-A2 | The three new packages reach no read path and name no unlock key | implementer | 1h | A1 | done (`185a021`) |
 | P5-B1 | `HarX`: HAR plus a declared subset of the vocabulary | implementer | 1h | — | done (`7a5e928`, `e4d6e59`) |
 | P5-B2 | The closed vocabulary, `Proposal`, `validate`, `gate`, canary payloads | implementer | 1h | — | done (`aae33db`, `60796ca`) |
-| P5-C1 | The evaluation child and the two agent ledgers | implementer | 1h | B1, B2 | in progress |
-| P5-C2 | The sprint event log and the pending approval | implementer | 45m | B2 | in progress |
+| P5-C1 | The evaluation child and the two agent ledgers | implementer | 1h | B1, B2 | done (`3e15fd7`) |
+| P5-C2 | The sprint event log and the pending approval | implementer | 45m | B2 | done (`6da1eaa`) |
 | P5-C3 | `LedgerCounts`, the ledger reader, the leaderboard's added line | implementer | 1h | A2, C1 | todo |
-| P5-D1 | The `Completer` port, the urllib edge client, the fake | implementer | 45m | — | todo |
-| P5-D2 | The `Checkpointer` port and two credential-free implementations | implementer | 1h | — | todo |
+| P5-D1 | The `Completer` port, the urllib edge client, the fake | implementer | 45m | — | done (`91de85b`) |
+| P5-D2 | The `Checkpointer` port and two credential-free implementations | implementer | 1h | — | done (`91de85b`) |
 | P5-D3 | Subprocess-per-evaluation | implementer | 45m | C1 | todo |
 | P5-D4 | The six roles, the seven-step machine, the sprint | implementer | 1h | C2, D1, D2, D3 | todo |
 | P5-D5 | The canary bites, and an accepted canary voids the sprint | implementer | 45m | D4 | todo |
@@ -124,3 +124,29 @@ extracting it (R195).
 - **Review found an R32 defect in P5-B1** — a docstring quoting a per-fit timing whose author had
   measured a different figure — and an inaccurate mechanism claim about how a null HAR column at
   the origin is handled. Both corrected.
+
+## Where this stands at the first pull request, stated plainly
+
+**Built, tested and committed:** both fences (A1, A2), the closed vocabulary with its gate and canary
+payloads (B2), the `HarX` contestant (B1), the evaluation child with its two agent ledgers (C1), the
+sprint event log and pending approval (C2), and the two ports — the LLM completer and the
+checkpointer — each with a fake and neither needing a credential (D1, D2).
+
+**Not built, and therefore not claimed:**
+
+| story | what is missing |
+|---|---|
+| P5-C3 | `LedgerCounts`, the read-only ledger reader, and the leaderboard's added line. **So the leaderboard does not yet print the agent ledgers' counts**, which is the surface R183 promises. |
+| P5-D3 | the subprocess-per-evaluation runner |
+| P5-D4 | the six roles and the seven-step sprint machine |
+| P5-D5 | the canary tests. The six payloads and their distinct refusal codes exist and are tested in `tests/test_agent_vocabulary.py`; what is missing is the test that an **accepted** canary voids a sprint. |
+| P5-E1 | `python -m volab.promote` and its three refusals |
+| P5-E2 | `python -m volab.agent` |
+| P5-E3 | **the exit criterion.** No sprint runs end to end yet, so the framework's "one full weekly sprint runs end to end without touching the holdout" is **not met** by this pull request. |
+
+The components a sprint is assembled from exist and are tested; the assembly does not. That is the
+honest summary and the pull request says it in those words.
+
+**The agent ledgers are empty**, and R205 says why: the only runs against the real store were two
+measurements whose output was deleted. `data/trials.jsonl` stands at 414 lines and
+`data/comparisons.jsonl` at 52 — the pre-registration's own counts, unmoved.

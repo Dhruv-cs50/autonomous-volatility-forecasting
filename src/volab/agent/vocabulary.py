@@ -30,8 +30,11 @@ construction), so naming one gives an exactly singular design.
 
 **What is deliberately *not* excluded: a column that is constant in some window.** Constancy is a
 property of a window, not of a column, so a static list would be wrong the day the window moves.
-``has_distribution`` is the live instance today (measured on the real SPY table up to ``dev_end``,
-2026-11-10: one distinct value over 2,312 rows, hence collinear with the intercept). A proposal
+``has_distribution`` is the live instance today: measured on 2026-11-10 over the real SPY table
+read to ``dev_end`` (2025-12-31), it holds **one distinct value over 2,312 rows** and is therefore
+collinear with the intercept. The date is when the measurement was taken, not the boundary it was
+taken to; an earlier wording conflated the two, which is the sort of slip R32 exists to catch. A
+proposal
 naming it is refused at fit time by ``HarX.fit`` as a ``ModelSkip`` naming the column, which skips
 one model at one origin and leaves the origin standing for everyone else.
 

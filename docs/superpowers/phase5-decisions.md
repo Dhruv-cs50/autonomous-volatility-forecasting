@@ -495,3 +495,90 @@ quiet-approval failure the human gate exists to prevent.
 *Cost if wrong:* the gate would clear candidates nobody approved. That is the most serious failure
 available in this subsystem, which is why the contract is written down rather than left to the
 implementation to rediscover.
+
+---
+
+## R202 — the no-date witness cannot be written with `is`, and that is a latent defect wider than this phase
+
+R184 says the witness asserts no argparse action's `type` **is** `dt.date.fromisoformat`. As written
+that assertion can never be true, and the implementer found it: `fromisoformat` is a classmethod, so
+every attribute access builds a **new bound method object** and `is` is false even for a parser that
+genuinely uses it. A witness written with `is` would pass vacuously — it would report "no date
+option" about a parser that had one.
+
+**Ruling: the comparison is `==`, and the scan ships with a plant that proves it bites** — a
+date-typed parser the test constructs and asserts is caught. R184's wording is corrected to `==`.
+
+**The wider point, recorded as a follow-up rather than fixed here:** any other identity-based
+witness in this repository over a classmethod or a bound method has the same hole, and it is the
+quietest kind, because the test passes. Auditing the suite for `is`-based assertions over bound
+methods is **not Phase 5's** and is carried as a follow-up.
+
+*Cost if wrong:* none in the direction taken — `==` is strictly weaker than `is` and the plant is
+what makes the test real. The cost of the original wording would have been a guard that always
+passed.
+
+---
+
+## R203 — the child's exit codes, and one comparison record per loss
+
+Both ratified as the implementer built them, because both are more honest than what my brief said.
+
+**Exit codes.** `0` evaluated; `1` evaluated but the built rows disagree with the persisted table
+(the walk-forward CLI's own meaning, and an uncaught exception too); `2` left to argparse; `3`
+refused for coverage, no fit and no trial line; `4` the proposal file refused at the boundary,
+nothing read and nothing written; `5` refused by the audit, models fitted and nothing appended.
+Deliberately **not** `2` for a refusal, as `walkforward` uses, because argparse already exits 2 and a
+runner could not then tell a usage error from a refusal.
+
+**One comparison record per loss, so two lines per evaluation, not one.** My brief said "one
+comparison record". `Comparison` carries a single `loss` and `data/comparisons.jsonl` already holds
+one line per loss, so matching that shape is what keeps R183's promise that a merged ledger is a
+`cat` away. `first_origin` and `last_origin` are taken from the **comparable** origins of that loss
+rather than from the requested window, and are null when that set is empty — which is the honest
+reading, since the requested window is not what was scored.
+
+*Cost if wrong:* a reader counting "comparisons per sprint" must divide by the number of losses. The
+alternative cost was a ledger that could not be concatenated with the one it mirrors.
+
+---
+
+## R204 — coverage is reported NOT CHECKED when no persisted feature table exists, and that gap is stated rather than closed
+
+`run_configuration` falls through to `evaluate` when the store holds no persisted `har_daily` table,
+so in that case the child's `coverage_refusal` does not run and a sparse column would be **absorbed
+rather than refused**. Closing it would mean changing `volab.walkforward` or performing a second,
+duplicate check.
+
+**Ruling: state it, do not close it.** It is unreachable on the real store, which always has the
+persisted table, and the only paths that reach it are synthetic test stores that build no feature
+table. Changing `walkforward` for a case that cannot occur in a real run is the wrong trade, and a
+second check that could disagree with the first is worse than one.
+
+*Cost if wrong:* a synthetic harness could believe a sparse proposal was evaluated when its coverage
+was never checked. The docstring says so at the point where it matters.
+
+---
+
+## R205 — one measurement run touched the real store, and why that is not the run R194 holds
+
+For sizing, the child was run **once** against the real store — SPY at h=5, three references plus a
+two-extra `HarX`, 250 origins at stride 5. **Measured: 45.4 s wall**, of which 36.6 s in-process, the
+rest interpreter start and imports; it wrote 8 trial lines and 2 comparison records and printed
+"truncation equivalence: 250 of 250 origins identical". A second run reproduced a **real** coverage
+refusal: `iv_h1` at h=1 exited 3, reporting that the first qualifying origin is 2023-05-16 with 119
+of 251 origins before it, and wrote no trial line.
+
+**Those outputs were deleted and are not in the tree.** Verified afterwards: `data/agent_trials.jsonl`
+and `data/agent_comparisons.jsonl` do not exist, `data/trials.jsonl` stands at **414 lines** and
+`data/comparisons.jsonl` at **52** — the exact counts the pre-registration recorded at registration.
+Nothing a reader counts has moved.
+
+**This is not the run R194 holds**, and the distinction is worth being precise about rather than
+glossed. R194 holds a *sprint* whose trial lines would **persist** in newly reported ledgers before
+the reveal. A measurement whose output was deleted, from files that were untracked when they were
+written, left no ledger line and entered no commit. What R194 still forbids, and what has not
+happened, is a sprint that leaves agent ledger lines in the tree.
+
+**So the agent ledgers are empty at merge.** The PR must say that, and must not present an empty
+ledger as a sprint that found nothing.
