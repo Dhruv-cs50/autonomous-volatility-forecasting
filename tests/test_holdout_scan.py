@@ -188,3 +188,9 @@ def test_the_scan_is_not_vacuous_against_the_real_store() -> None:
     assert "imports HOLDOUT_UNLOCK_ENV" in findings
     assert "names HOLDOUT_UNLOCK_ENV" in findings
     assert not any(variable in finding for finding in findings)
+
+
+def test_the_strict_matcher_does_not_flag_the_violation_error() -> None:
+    """The matchers differ on purpose: a loose rule would flag a module that catches this error."""
+    assert holdout_keys_in("from volab.errors import HoldoutViolation\n") == []
+    assert holdout_keys_in("try:\n    pass\nexcept HoldoutViolation:\n    pass\n") == []

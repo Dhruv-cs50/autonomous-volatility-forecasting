@@ -2,9 +2,11 @@
 
 Reading past ``splits.dev_end`` needs ``allow_holdout=True`` **and** the environment variable
 ``VOLAB_HOLDOUT_UNLOCK=1``. The Phase 5 packages must never name either, and this module is the
-detector; the tests that apply it to those packages live elsewhere. It is written fresh rather
-than extracted from ``tests/test_daily.py`` (R187) so that no file another story is editing is
-refactored underneath it.
+detector; the tests that apply it to those packages live elsewhere. It was first written fresh
+(R187) so that no file another story was editing was refactored underneath it; it is now the one
+home of the key *derivation*, which ``tests/test_daily.py`` imports. The two files keep different
+*matchers* on purpose: that guard flags any identifier containing "holdout" or "unlock", this one
+flags only the exact keys.
 
 **Both names are derived, never typed (R151).** The environment variable is read from
 ``volab.config.HOLDOUT_UNLOCK_ENV``. The parameter name is read from ``store.py``'s own

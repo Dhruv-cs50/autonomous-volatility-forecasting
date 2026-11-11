@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
+from holdout_scan import holdout_key_names
 
 import volab.daily.__main__ as daily_cli
 import volab.daily.runlog as runlog
@@ -471,26 +472,13 @@ def test_the_append_detector_can_fail() -> None:
 
 
 def _holdout_key_names() -> frozenset[str]:
-    """The two keys a sealed read needs, derived rather than typed.
+    """The two keys a sealed read needs, as a set.
 
-    The environment variable comes from ``volab.config.HOLDOUT_UNLOCK_ENV``, which exists so that
-    one definition cannot drift from the refusal that names it. The parameter name is read from
-    ``store.py``'s own ``def load_panel`` by AST and **not** from ``inspect.signature`` of the
-    imported function: ``conftest``'s holdout police replace that object with a
-    ``(*args, **kwargs)`` wrapper for the whole session (R153), so the signature at runtime is the
-    police's and not the store's. Rename either key and this guard follows; type either as a
-    string literal here and it would not.
+    The derivation lives once, in ``tests/holdout_scan.py`` (R151, R187): the environment variable
+    from ``volab.config.HOLDOUT_UNLOCK_ENV`` and the parameter from ``store.py``'s ``def
+    load_panel`` by AST. This guard keeps its own, looser *matcher* below; only the keys are shared.
     """
-    source = (_SOURCE_ROOT / "store.py").read_text(encoding="utf-8")
-    parameters: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.FunctionDef) and node.name == "load_panel":
-            arguments = node.args
-            for argument in [*arguments.args, *arguments.kwonlyargs, *arguments.posonlyargs]:
-                if "holdout" in argument.arg:
-                    parameters.add(argument.arg)
-    assert parameters, "load_panel no longer has a holdout parameter; this guard needs rewriting"
-    return frozenset(parameters) | {HOLDOUT_UNLOCK_ENV}
+    return frozenset(holdout_key_names())
 
 
 def _code_names_and_strings(source: str) -> tuple[frozenset[str], frozenset[str]]:
@@ -656,6 +644,12 @@ def test_the_holdout_key_guard_does_not_fire_on_a_docstring_that_names_the_keys(
     planted = '"""Reading past dev_end needs allow_holdout and VOLAB_HOLDOUT_UNLOCK."""\n'
 
     assert _holdout_keys_in(planted) == ()
+
+
+def test_the_loose_matcher_still_flags_a_renamed_holdout_name() -> None:
+    """The keys are now shared, but this guard's matcher is still the loose substring one."""
+    assert _holdout_keys_in("my_holdout_flag = True\n") == ("my_holdout_flag",)
+    assert _holdout_keys_in("force_unlock = True\n") == ("force_unlock",)
 
 
 # --- derived guard 3: the clock is called in exactly one place --------------------------------
