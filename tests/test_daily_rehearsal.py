@@ -47,7 +47,7 @@ import json
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 
@@ -110,6 +110,10 @@ class WriterEntryPoints:
     functions: frozenset[str]
     classes: frozenset[str]
     modules: frozenset[str]
+    # Which writer module(s) define each name above. Explanatory only: nothing matches on it, so a
+    # violation can say *why* a name counts as a writer (R213). Defaulted so a construction with
+    # the three original fields still works.
+    defined_in: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
     @property
     def names(self) -> frozenset[str]:
@@ -131,6 +135,7 @@ def _writer_entry_points(sources: Mapping[str, str]) -> WriterEntryPoints:
     """
     functions: set[str] = set()
     modules: set[str] = set()
+    defined_in: dict[str, set[str]] = {}
     for module, source in sources.items():
         if _is_daily(module) or not any(name in source for name in _LEDGER_FILENAMES):
             continue
@@ -138,14 +143,21 @@ def _writer_entry_points(sources: Mapping[str, str]) -> WriterEntryPoints:
             if _appends_to_a_file(ast.unparse(function)):
                 functions.add(function.name)
                 modules.add(module)
-    classes = {
-        node.name
-        for module in modules
-        for node in ast.walk(ast.parse(sources[module]))
-        if isinstance(node, ast.ClassDef)
-        and any(function.name in functions for function in _functions(node))
-    }
-    return WriterEntryPoints(frozenset(functions), frozenset(classes), frozenset(modules))
+                defined_in.setdefault(function.name, set()).add(module)
+    classes: set[str] = set()
+    for module in modules:
+        for node in ast.walk(ast.parse(sources[module])):
+            if isinstance(node, ast.ClassDef) and any(
+                function.name in functions for function in _functions(node)
+            ):
+                classes.add(node.name)
+                defined_in.setdefault(node.name, set()).add(module)
+    return WriterEntryPoints(
+        frozenset(functions),
+        frozenset(classes),
+        frozenset(modules),
+        {name: frozenset(found) for name, found in defined_in.items()},
+    )
 
 
 def _imports_of(module: str, source: str, known: Mapping[str, str]) -> set[str]:
@@ -334,7 +346,11 @@ def _closure_violations(
                 and not any(k != "import" and n == name for k, n, _ in outside)
             ):
                 continue
-            found.append(f"{module}:{line} names {name} ({kind})")
+            # The prefix is the long-standing one; the cause is appended (R213), because the name
+            # alone does not say which writer module made it a writer.
+            because = ", ".join(sorted(entries.defined_in.get(name, ())))
+            cause = f" (a writer entry point because {because} defines it)" if because else ""
+            found.append(f"{module}:{line} names {name} ({kind}){cause}")
         found.extend(f"{module}: {problem}" for problem in _opaque_imports(sources[module]))
     return found
 
@@ -1266,3 +1282,54 @@ def test_a_fake_module_in_place_of_a_stage_that_really_runs_is_a_gap(tmp_path: P
 def test_the_root_scan_fires_on_every_spelling_it_claims_to_see(planted: str) -> None:
     """Three ways to give a CLI a root, all of which the scan must see."""
     assert _root_arguments(planted) == [1]
+
+
+# --- a false positive explains itself (R213) -----------------------------------------------------
+
+_HELPER_WRITER = (
+    'LEDGER = "trials.jsonl"\n\n\n'
+    "def _helper(path, line):\n"
+    '    with open(path, "a") as handle:\n'
+    "        handle.write(line)\n"
+)
+_DAILY_OWN_HELPER = (
+    "def _helper(path, line):\n    return path, line\n\n\n"
+    "def run(path):\n    return _helper(path, 1)\n"
+)
+
+
+def test_a_violation_names_the_writer_module_that_made_the_name_a_writer() -> None:
+    """R213: ``runlog._append`` was flagged and nothing said which writer's ``_append`` did it."""
+    sources = {"volab.agent.sprintlog": _HELPER_WRITER, "volab.daily.runlog": _DAILY_OWN_HELPER}
+    entries = _writer_entry_points(sources)
+
+    violations = _closure_violations(sources, frozenset({"volab.daily.runlog"}), entries)
+
+    assert len(violations) == 1
+    # The existing prefix is unchanged; the cause is appended after it.
+    assert violations[0].startswith("volab.daily.runlog:6 names _helper (")
+    assert "volab.agent.sprintlog" in violations[0]
+
+
+def test_a_delegating_writer_is_still_flagged_by_its_bare_name() -> None:
+    """The matcher is by bare name on purpose: ``JsonlSink.append_trials`` delegates."""
+    sources = {
+        "volab.walkforward": (
+            'LEDGER = "trials.jsonl"\n\n\n'
+            "def append_trials(path, rows):\n"
+            '    with open(path, "a") as handle:\n'
+            "        handle.write(rows)\n"
+        ),
+        "volab.compare.sink": (
+            "from volab.walkforward import append_trials\n\n\n"
+            "class JsonlSink:\n"
+            "    def append_trials(self, rows):\n"
+            "        append_trials(self.path, rows)\n"
+        ),
+        "volab.daily.runner": "def go(sink, rows):\n    sink.append_trials(rows)\n",
+    }
+    entries = _writer_entry_points(sources)
+
+    violations = _closure_violations(sources, frozenset({"volab.daily.runner"}), entries)
+
+    assert any(v.startswith("volab.daily.runner:2 names append_trials") for v in violations)
