@@ -54,11 +54,10 @@ against it ends with every child refused.
   one outcome a shell caller or a CI job must never read as success. Every outcome other than
   ``failed`` and this one used to exit 0, so this was invisible outside the sprint log.
 
-**Ledger counts.** ``volab.counts.count_all`` is the repository's counter, but it imports
-``volab.walkforward.count_trials`` and so reaches ``volab.store`` (the fence reports
-``volab.agent.__main__ -> volab.counts -> volab.walkforward -> volab.store``). :func:`_count_all`
-repeats it over the three ledger paths, and ``tests/test_agent_cli.py`` pins it to ``count_all``
-on the same files so the two cannot drift silently.
+**Ledger counts.** ``show`` uses ``volab.counts.count_all``. That module is standard-library only
+(R212), so importing it does not cross the R192 store-reach fence; it used to import
+``volab.walkforward.count_trials`` and reach ``volab.store``, which is why this file once carried
+its own copy.
 
 **Git state.** ``volab.store.git_state`` is the repository's helper, but ``volab.store`` is the
 panel's read path and this module is inside the store-reach fence (R192), so it cannot be imported
@@ -87,6 +86,7 @@ from volab.agent.memory import FileCheckpointer
 from volab.agent.sprintlog import events, sprint_ids, sprint_log_path
 from volab.agent.vocabulary import Proposal, agent_cohort_name
 from volab.config import load_settings
+from volab.counts import count_all
 from volab.errors import ConfigError
 
 EXIT_OK = 0
@@ -141,24 +141,6 @@ def _git_state(scope: Path) -> tuple[str, bool | None]:
         ":(exclude)data/features",
     )
     return sha, None if status is None else bool(status)
-
-
-_LEDGERS = {
-    "trials": Path("data") / "trials.jsonl",
-    "agent_trials": Path("data") / "agent_trials.jsonl",
-    "agent_comparisons": Path("data") / "agent_comparisons.jsonl",
-}
-
-
-def _count_all(root: Path) -> dict[str, int]:
-    """Non-blank lines per ledger under ``root``; an absent file is ``0`` and is not created."""
-    counts = {}
-    for name, relative in _LEDGERS.items():
-        path = root / relative
-        lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-        counts[name] = sum(1 for line in lines if line.strip())
-    counts["total"] = counts["trials"] + counts["agent_trials"]
-    return counts
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -255,8 +237,9 @@ def _show(root: Path, sprint_id: str | None) -> int:
         print(f"sprint {chosen}")
         for event in events(log, chosen):
             print(f"  {event}")
-    for name, count in _count_all(root).items():
-        print(f"{name}: {count}")
+    counted = count_all(root)
+    for name in ("trials", "agent_trials", "agent_comparisons", "total"):
+        print(f"{name}: {getattr(counted, name)}")
     return EXIT_OK
 
 

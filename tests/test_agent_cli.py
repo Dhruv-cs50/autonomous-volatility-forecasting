@@ -306,22 +306,22 @@ def test_show_reads_the_ledger_where_the_evaluation_child_writes_it(
     assert "agent_trials: 1" in capsys.readouterr().out
 
 
-def test_the_local_ledger_counter_agrees_with_the_repositorys_count_all(tmp_path: Path) -> None:
-    """``__main__`` cannot import ``volab.counts`` (it reaches the store); this pins the copy."""
+def test_show_prints_the_four_counts_from_count_all(tmp_path: Path, capsys) -> None:
+    """R212: ``show`` reads ``volab.counts.count_all`` directly; its lines are the fields' names."""
     data = tmp_path / "data"
     data.mkdir()
     (data / "trials.jsonl").write_text('{"a": 1}\n\n{"a": 2}\n')
     (data / "agent_trials.jsonl").write_text('{"b": 1}\n   \n')
     (data / "agent_comparisons.jsonl").write_text('{"c": 1}\n{"c": 2}\n{"c": 3}\n')
+    assert cli._show(tmp_path, None) == cli.EXIT_OK
     counted = count_all(tmp_path)
-    assert cli._count_all(tmp_path) == {
-        "trials": counted.trials,
-        "agent_trials": counted.agent_trials,
-        "agent_comparisons": counted.agent_comparisons,
-        "total": counted.total,
-    }
-    assert cli._count_all(tmp_path / "absent") == dict.fromkeys(cli._LEDGERS, 0) | {"total": 0}
-    assert not (tmp_path / "absent").exists()
+    assert (counted.trials, counted.agent_trials, counted.agent_comparisons) == (2, 1, 3)
+    assert capsys.readouterr().out.splitlines()[-4:] == [
+        "trials: 2",
+        "agent_trials: 1",
+        "agent_comparisons: 3",
+        "total: 3",
+    ]
 
 
 def test_the_cli_git_state_agrees_with_the_store_git_state_it_duplicates() -> None:
