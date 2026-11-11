@@ -353,6 +353,26 @@ def _ranked(trials: Sequence[TrialLine]) -> list[tuple[str, TrialLine]]:
     return out
 
 
+def ranked_trials(trials: Sequence[TrialLine]) -> list[tuple[str, TrialLine]]:
+    """``(rank, trial)``, best first, exactly as the table prints them. Public, deliberately.
+
+    ``_ranked`` is this module's own name for it and stays private because the rendering uses it
+    and nothing else was meant to. It had a second caller anyway: ``volab.daily.champion`` needs
+    to know who is first, and the leaderboard offered no public way to ask, so it imported the
+    private name -- a convention broken by the only route open, not a ratchet tripped. Unlike
+    ``volab.store``, no test forbids a private import from this module across the whole tree;
+    the one scan there is reads ``volab.daily``'s imports
+    (``test_nothing_under_daily_imports_a_private_name_from_another_package``). This wrapper is the
+    sanctioned route rather than a second ranking: it **is** ``_ranked``, so the rank a caller
+    reads and the rank the table prints cannot differ, and this module still computes nothing of
+    its own -- a sort by a stored loss and a count of strictly better stored losses, as before.
+
+    ``trials`` must belong to one run (``TrialLine.run``) and one loss; ranking across either is
+    the caller's mistake to avoid, as it is for the rendering.
+    """
+    return _ranked(trials)
+
+
 def _row(
     rank: str,
     trial: TrialLine,

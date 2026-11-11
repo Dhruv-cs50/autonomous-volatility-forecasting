@@ -433,7 +433,11 @@ def test_passed_settings_may_not_move_dev_end_later(synthetic_store) -> None:
     synthetic_store.write("bars_daily", "SPY", [HOLDOUT_DAY])
     moved = dataclasses.replace(
         synthetic_store.settings,
-        splits=Splits(dev_end=dt.date(2099, 12, 31), holdout_start=dt.date(2100, 1, 2)),
+        splits=Splits(
+            dev_end=dt.date(2099, 12, 31),
+            holdout_start=dt.date(2100, 1, 2),
+            holdout_end=dt.date(2100, 12, 31),
+        ),
     )
 
     with pytest.raises(HoldoutViolation, match="later than the repository"):
@@ -444,7 +448,11 @@ def test_passed_settings_may_move_dev_end_earlier(synthetic_store) -> None:
     """An earlier ``dev_end`` is more conservative, so it is allowed."""
     earlier = dataclasses.replace(
         synthetic_store.settings,
-        splits=Splits(dev_end=dt.date(2023, 6, 30), holdout_start=dt.date(2023, 7, 3)),
+        splits=Splits(
+            dev_end=dt.date(2023, 6, 30),
+            holdout_start=dt.date(2023, 7, 3),
+            holdout_end=dt.date(2023, 12, 29),
+        ),
     )
     synthetic_store.write("bars_daily", "SPY", [DEV_DAY])
 

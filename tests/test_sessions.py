@@ -99,7 +99,11 @@ def _settings() -> Settings:
         universe=("SPY",),
         exogenous=("VIX",),
         calendar="XNYS",
-        splits=Splits(dev_end=dt.date(2025, 12, 31), holdout_start=dt.date(2026, 1, 2)),
+        splits=Splits(
+            dev_end=dt.date(2025, 12, 31),
+            holdout_start=dt.date(2026, 1, 2),
+            holdout_end=dt.date(2026, 10, 30),
+        ),
         storage_root=Path("data"),
     )
 
