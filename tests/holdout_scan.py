@@ -10,13 +10,17 @@ refactored underneath it.
 ``volab.config.HOLDOUT_UNLOCK_ENV``. The parameter name is read from ``store.py``'s own
 ``def load_panel`` **by AST and not by** ``inspect.signature``: ``tests/conftest.py``'s holdout
 police replace ``volab.store.load_panel`` with a wrapper for the whole session, so the signature
-at runtime may be the police's rather than the store's (R153). Rename either key and the scan
-follows.
+at runtime may be the police's rather than the store's (R153). The environment variable's name is
+fully derived. The parameter is found by a search whose own filter is a typed fragment
+(``"holdout"`` in the argument's name), so a rename that drops the fragment is caught as a loud
+failure of the derivation's assert, not silently tracked.
 
 **The matching rules are deliberately not symmetric.** Identifiers are matched loosely -- a keyword
-argument, a bare name, or an attribute access -- so ``allow_holdout=False`` "for clarity" is caught
-too. String constants are matched strictly, by equality with the environment variable's name, so
-unrelated prose that merely contains it is not an offence. **Docstrings are exempt**, because
+argument, a bare name, an attribute access, or a declared parameter (``def f(allow_holdout=False)``)
+-- so ``allow_holdout=False`` "for clarity" is caught too. String constants are matched strictly, by
+equality with either the environment variable's name or the parameter's name (the latter closes
+``load_panel(x, **{"allow_holdout": True})``), so unrelated prose that merely contains them is not
+an offence. **Docstrings are exempt**, because
 modules say in prose that they never unlock the holdout and a text search would trip over the
 sentence that promises it. Comments are not in the AST at all and so need no exemption.
 
@@ -28,8 +32,10 @@ loosely as a ``Name``, an ``Attribute`` and an import ``alias``. It is **not** w
 "holdout"/"unlock" substring over every identifier: ``volab.errors.HoldoutViolation`` contains
 "holdout", and a module that legitimately catches it must not trip the ban.
 
-What this does not cover: a key assembled at runtime (``"VOLAB_" + "HOLDOUT_UNLOCK"``) or reached
-through ``getattr``. It reads syntax, not behaviour.
+What this does not cover: a key assembled at runtime (``"VOLAB_" + "HOLDOUT_UNLOCK"``), a name
+reached through ``getattr`` with a computed string, a dict unpack whose key is itself computed, and
+a string that merely *contains* a key, such as the shell-style ``"VOLAB_HOLDOUT_UNLOCK=1"``
+(equality is the rule, so it is not flagged). It reads syntax, not behaviour.
 """
 
 from __future__ import annotations
@@ -103,6 +109,8 @@ def holdout_keys_in(source: str) -> list[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.keyword) and node.arg == parameter:
             found.append(f"passes {parameter}=")
+        elif isinstance(node, ast.arg) and node.arg == parameter:
+            found.append(f"declares {parameter}")
         elif isinstance(node, ast.Name) and node.id == parameter:
             found.append(f"names {parameter}")
         elif isinstance(node, ast.Attribute) and node.attr == parameter:
@@ -115,4 +123,6 @@ def holdout_keys_in(source: str) -> list[str]:
             found.append(f"reads .{node.attr}")
         elif isinstance(node, ast.Constant) and node.value == environment and node not in exempt:
             found.append(f"names {environment} outside a docstring")
+        elif isinstance(node, ast.Constant) and node.value == parameter and node not in exempt:
+            found.append(f"names {parameter} as a string outside a docstring")
     return found

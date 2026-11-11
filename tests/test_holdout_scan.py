@@ -7,12 +7,14 @@ the helper itself, because a ban nobody has watched fail is a convention rather 
 from __future__ import annotations
 
 import ast
+import inspect
 from pathlib import Path
 
 import pytest
 from holdout_scan import holdout_constant_names, holdout_key_names, holdout_keys_in
 
 import volab
+import volab.store as store
 from volab.config import HOLDOUT_UNLOCK_ENV
 
 _STORE = Path(volab.__file__).resolve().parent / "store.py"
@@ -26,7 +28,9 @@ def test_the_environment_key_is_the_one_config_defines() -> None:
 def test_the_parameter_key_is_the_one_store_py_declares() -> None:
     """The first name is ``allow_holdout``, and ``store.py`` really declares it keyword-only.
 
-    The second assertion reads ``store.py`` by AST (as the helper does) and finds a keyword-only
+    This is a witness, not an independent derivation: it re-runs the helper's own AST logic and
+    types the expected value, because a second derivation would be one more thing to drift. The
+    second assertion reads ``store.py`` by AST (as the helper does) and finds a keyword-only
     parameter of that name defaulting to ``False``, so the value above is shown to have come from
     the real function rather than from a string that happens to agree.
     """
@@ -48,46 +52,63 @@ def test_the_parameter_key_is_the_one_store_py_declares() -> None:
     assert defaults[parameter].value is False
 
 
+_STRING_FINDING = "names VOLAB_HOLDOUT_UNLOCK outside a docstring"
+
+
 @pytest.mark.parametrize(
     ("source", "expected"),
     [
-        ("load_panel(x, allow_holdout=True)\n", "passes allow_holdout="),
-        ("allow_holdout\n", "names allow_holdout"),
-        ("settings.allow_holdout\n", "reads .allow_holdout"),
-        (
+        pytest.param(
+            "load_panel(x, allow_holdout=True)\n", "passes allow_holdout=", id="keyword argument"
+        ),
+        pytest.param("allow_holdout\n", "names allow_holdout", id="bare name"),
+        pytest.param("settings.allow_holdout\n", "reads .allow_holdout", id="attribute"),
+        pytest.param(
+            "def f(allow_holdout=False):\n    pass\n",
+            "declares allow_holdout",
+            id="declared parameter",
+        ),
+        pytest.param(
+            "load_panel(x, **{'allow_holdout': True})\n",
+            "names allow_holdout as a string outside a docstring",
+            id="parameter name as a string in a dict unpack",
+        ),
+        pytest.param(
             "import os\nos.environ['VOLAB_HOLDOUT_UNLOCK']\n",
-            "names VOLAB_HOLDOUT_UNLOCK outside a docstring",
+            _STRING_FINDING,
+            id="environ subscript",
         ),
-        (
-            "import os\nos.environ.get('VOLAB_HOLDOUT_UNLOCK')\n",
-            "names VOLAB_HOLDOUT_UNLOCK outside a docstring",
+        pytest.param(
+            "import os\nos.environ.get('VOLAB_HOLDOUT_UNLOCK')\n", _STRING_FINDING, id="environ get"
         ),
-        (
+        pytest.param(
             "import os\nos.environ.get(HOLDOUT_UNLOCK_ENV)\n",
             "names HOLDOUT_UNLOCK_ENV",
+            id="constant in environ.get",
         ),
-        ("import os\nos.environ[HOLDOUT_UNLOCK_ENV]\n", "names HOLDOUT_UNLOCK_ENV"),
-        ("from volab.config import HOLDOUT_UNLOCK_ENV\n", "imports HOLDOUT_UNLOCK_ENV"),
-        ("import volab.config as c\nc.HOLDOUT_UNLOCK_ENV\n", "reads .HOLDOUT_UNLOCK_ENV"),
+        pytest.param(
+            "import os\nos.environ[HOLDOUT_UNLOCK_ENV]\n",
+            "names HOLDOUT_UNLOCK_ENV",
+            id="constant in environ subscript",
+        ),
+        pytest.param(
+            "from volab.config import HOLDOUT_UNLOCK_ENV\n",
+            "imports HOLDOUT_UNLOCK_ENV",
+            id="import of the constant",
+        ),
+        pytest.param(
+            "import volab.config as c\nc.HOLDOUT_UNLOCK_ENV\n",
+            "reads .HOLDOUT_UNLOCK_ENV",
+            id="constant as attribute",
+        ),
         # R193: the child inherits its environment unchanged. This "scrub" is the exact thing that
         # ruling forbids, and it is the case that must stay red.
-        (
+        pytest.param(
             "import os\n{k: v for k, v in os.environ.items() if k != 'VOLAB_HOLDOUT_UNLOCK'}\n",
-            "names VOLAB_HOLDOUT_UNLOCK outside a docstring",
+            _STRING_FINDING,
+            id="environment scrub (R193)",
         ),
     ],
-    ids=(
-        "keyword argument",
-        "bare name",
-        "attribute",
-        "environ subscript",
-        "environ get",
-        "environment scrub (R193)",
-        "constant in environ.get",
-        "constant in environ subscript",
-        "import of the constant",
-        "constant as attribute",
-    ),
 )
 def test_the_scan_detects_each_spelling(source: str, expected: str) -> None:
     """Each source names a key in code, and the expected finding is among the results."""
@@ -100,7 +121,10 @@ def test_the_scan_detects_each_spelling(source: str, expected: str) -> None:
         '"""Never passes allow_holdout and never reads VOLAB_HOLDOUT_UNLOCK."""\nx = 1\n',
         'def f() -> None:\n    """Never passes allow_holdout or reads VOLAB_HOLDOUT_UNLOCK."""\n',
         "# a comment naming VOLAB_HOLDOUT_UNLOCK and allow_holdout\nx = 1\n",
+        'class C:\n    """Never passes allow_holdout or reads VOLAB_HOLDOUT_UNLOCK."""\n',
+        'async def g():\n    """Never passes allow_holdout or reads VOLAB_HOLDOUT_UNLOCK."""\n',
         "from volab.store import load_panel\nload_panel(ds, end=d)\n",
+        "SHELL = 'VOLAB_HOLDOUT_UNLOCK=1'\n",
         (
             "from volab.errors import HoldoutViolation\n"
             "try:\n    pass\nexcept HoldoutViolation:\n    pass\n"
@@ -110,8 +134,11 @@ def test_the_scan_detects_each_spelling(source: str, expected: str) -> None:
     ids=(
         "module docstring",
         "function docstring",
+        "class docstring",
+        "async function docstring",
         "comment",
         "ordinary read",
+        "shell-style assignment string (a documented limit)",
         "catching HoldoutViolation",
         "string merely containing the name",
     ),
@@ -123,6 +150,17 @@ def test_the_scan_ignores_prose_and_longer_strings(source: str) -> None:
     not an offence; identifiers are matched loosely, which the red cases above cover.
     """
     assert holdout_keys_in(source) == []
+
+
+def test_the_derivation_works_while_the_conftest_police_is_installed() -> None:
+    """R153: this (unmarked) test runs with ``store.load_panel`` replaced by the police wrapper.
+
+    The premise is asserted, not assumed: the installed object's signature no longer lists the
+    parameter, so ``inspect.signature`` would have found nothing. The derivation reads the source
+    file by AST and still returns the real name.
+    """
+    assert "allow_holdout" not in inspect.signature(store.load_panel).parameters
+    assert holdout_key_names()[0] == "allow_holdout"
 
 
 def test_the_constant_name_is_discovered_from_config_not_typed() -> None:
