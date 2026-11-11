@@ -704,6 +704,38 @@ for?** The answer depends on which window, and the distinction is the whole poin
 data past `dev_end`; it can search the dev window as hard as it likes, and every step of that search
 is counted.* The PR states it in those words. Stating only the first half would be the overclaim.
 
+**Amended: the read surface includes counts, refusals and orderings, and the first draft of this
+record missed one.** The same peer pointed at a clause in this record's own premise: *"the trial
+reader drops **and counts** any line past `dev_end`"*. That count is a **statistic computed over
+data past the boundary**. It is not a holdout value. But "everything the agent can read back is a
+function of dev data" is false as stated if the count is among what it reads, and that is the class
+of escape that beat Phase 1: a quantity over data the harness believed excluded, invisible because
+nothing the suite varies changes it. **It was in the agent's prompt.** The in-flight sprint machine
+formatted `{excluded} lines excluded` into text sent to the model. Today it is always 0, which is
+exactly why no test would have noticed.
+
+Resolved before P5-D4 commits, and pinned there:
+
+- **Counts.** Nothing computed over lines past `dev_end` enters any `Prompt`, *including the count*.
+  `TrialView.excluded` still exists, because a silent drop would understate the trial count **to a
+  human**. It goes to the sprint log, which is the operator's surface and is read back into no
+  prompt. And since the child never evaluates past `dev_end`, a nonzero count on the **agent**
+  ledger is an integrity anomaly: the sprint fails loudly rather than continuing on a filtered
+  view. Witness: a planted post-`dev_end` line, after which **no prompt `FakeCompleter` recorded
+  contains any trace of the line or of the count**. It is written to fail against the leaking
+  version before the fix.
+- **Refusals.** A refusal is an observation, so a refusal that depended on holdout state would be
+  a bit about the holdout. None can: every refusal the agent can trigger — the gate's codes, the
+  child's coverage, proposal and audit refusals — is computed from the proposal and from data read
+  with `end` fixed at `dev_end`. Stated as a consequence of R184, not left implied.
+- **Ordering.** Kept lines come back in file order, which does not depend on which lines were
+  dropped. **Timing** is not an agent observable: a read is a function call whose duration no
+  prompt carries. Both are closed, and recorded because "unrepresentable" is a claim about the
+  **whole** read surface and these are part of it.
+
+The broader lesson, worth more than the fix: **a count is a channel.** Whenever a reader reports how
+much it filtered, check who can see the report.
+
 **What this does not establish, kept separate:** that the *code* the child runs is free of a forward
 peek. That is truncation equivalence's job, inherited unchanged from Phase 2 and run by the child
 on every evaluation ("truncation equivalence: 250 of 250 origins identical" on the real measurement
