@@ -897,3 +897,60 @@ whichever outcome occurred. The scripted run is deterministic, so it is now pinn
 *Cost if wrong:* two copies that can drift. Each is test-coupled, so a drift fails a test rather than
 a production sprint, which is the condition under which a copy is acceptable here (the same shape as
 R195's duplicated runner loop).
+
+---
+
+## R213 — every red CI run was one name collision between this phase and Phase 4's guard
+
+**Symptom.** From the moment `volab.agent.sprintlog` existed, every pull-request CI run failed, and
+after `main` was merged in (`f8fc0d3`) every push run failed too. Ten failing runs, checked one by
+one: each fails on **exactly the same three tests** in `tests/test_daily_rehearsal.py` and nothing
+else, with 2,566-2,672 others passing. The guard reported `volab.daily.runlog:138 names _append`.
+
+**Mechanism.** Phase 4's guard (`_writer_entry_points`, merged with PR #18) decides which functions
+write a reported ledger **by bare name**. A `def` qualifies when its module is not daily, the module's
+source **mentions** a ledger filename anywhere (a substring test), and the `def` appends to a file. It
+then flags any module on the live daily path that *names* one of those bare names.
+`src/volab/agent/sprintlog.py` met all three: its docstring mentions `agent_trials.jsonl`, which
+contains the substring `trials.jsonl`, and its private helper `_append` appends to
+`agent_sprints.jsonl`. So the bare name `_append` became a "writer entry point", and
+`volab/daily/runlog.py`'s **own, unrelated** `_append` — which writes `daily_runs.jsonl` and sits on
+the live daily path — was reported as naming one.
+
+**It was a false positive; nothing leaked.** `sprintlog` is not a ledger writer: it mentions
+`agent_trials.jsonl` only to say it is *not* that file, and it appends to a gitignored event log. The
+property the guard protects — no live daily stage reaches a reported-ledger writer — held throughout.
+
+**Proven before anything was changed**, by recomputing the guard over an in-memory copy of the source
+tree while the exit-criterion agent was using the worktree: renaming only `sprintlog._append` took the
+violations to `[]`, and removing `sprintlog` from the scan did the same. It was the sole trigger.
+
+**Why push passed and pull-request failed, before the merge.** A `pull_request` run tests the branch
+merged into `main`. The branch alone had no `test_daily_rehearsal.py`, so its push runs were green;
+the merged tree had both the guard and `sprintlog`. After `main` was merged into the branch, push runs
+had both as well. **Each change was correct in isolation and wrong in combination.**
+
+**Trigger.** Two instructions I gave, each sound on its own: P5-C2 was told to *mirror*
+`daily/runlog.py`, so it copied runlog's helper name verbatim; and R183 required its docstring to
+explain that the sprint log is not the trial ledger, which named `agent_trials.jsonl`. The guard
+arrived on `main` after this branch was cut, so the two never met until merged.
+
+**And the miss that let it through.** After merging `main` I ran a hand-picked set of seam tests that
+included `tests/test_daily.py` but not `tests/test_daily_rehearsal.py`. This is R211's lesson
+recurring within the same day: **a hand-picked subset reports on what it picked.**
+
+**Fix.** `sprintlog._append` is renamed `_append_event`, with a comment at the definition saying why
+it must not be "harmonised" back to runlog's name. Reproduced red locally before the change (the same
+three tests), green after.
+
+**Not fixed here, recorded as a Phase 4 follow-up.** The guard's bare-name matching will collide with
+the next private `_append` anyone writes, and its substring ledger test still classes `sprintlog` as a
+writer *module* after the rename (harmless today, since no daily module names `_append_event`). The
+root fix is to match on `(module, name)` rather than name alone. That is deliberately not done in this
+phase: the guard's own docstring says name-matching is load-bearing — it is how a delegating method
+such as `JsonlSink.append_trials` is caught without a second rule — so changing it is a design
+decision for the guard's owner, not a CI unblock.
+
+*Cost if wrong:* none in the direction taken — a private helper is renamed. The cost of leaving the
+guard as is: the same false positive returns whenever two non-daily and daily modules share a private
+helper name, and it will look, as this one did, like the agent reaching the ledger.

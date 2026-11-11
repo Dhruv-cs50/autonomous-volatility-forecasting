@@ -111,7 +111,14 @@ def _json_default(value: object) -> str:
     raise TypeError(f"{type(value).__name__} is not JSON serialisable")
 
 
-def _append(path: Path, line: dict[str, Any]) -> None:
+# Named ``_append_event`` and deliberately NOT ``_append``, although this module mirrors
+# ``volab.daily.runlog``, whose helper is ``_append``. ``tests/test_daily_rehearsal.py`` finds
+# the functions that write a reported ledger by *bare name*, and this module mentions
+# ``agent_trials.jsonl`` (a substring of ``trials.jsonl``) while appending to a file. So a
+# helper named ``_append`` here was classed as a ledger writer, and runlog's own, unrelated
+# ``_append`` -- on the live daily path -- was then reported as naming one. That failed CI on
+# every run once Phase 4's guard and this module met on ``main`` (R213). Keep the names apart.
+def _append_event(path: Path, line: dict[str, Any]) -> None:
     """Append one JSON line and get it onto the disk before returning.
 
     Serialised *before* the file is opened, so a value that cannot be written (a ``NaN``, a type
@@ -136,7 +143,7 @@ def record_start(
     dirty: bool | None,
 ) -> None:
     """Write the start line for ``sprint_id``, before the sprint does anything else."""
-    _append(
+    _append_event(
         path,
         {
             "kind": "start",
@@ -166,12 +173,12 @@ def record_event(path: Path, *, sprint_id: str, kind: str, **fields: Any) -> Non
                 f"a proposal event must carry {_PROPOSAL_JOIN_KEY}, "
                 f"or its trial lines cannot be found; missing {missing}"
             )
-    _append(path, {"kind": kind, "sprint_id": sprint_id, **fields})
+    _append_event(path, {"kind": kind, "sprint_id": sprint_id, **fields})
 
 
 def record_completion(path: Path, *, sprint_id: str, outcome: str, at: dt.datetime) -> None:
     """Write the completion line for ``sprint_id``. The start line is left exactly as it was."""
-    _append(
+    _append_event(
         path,
         {"kind": "complete", "sprint_id": sprint_id, "outcome": outcome, "ended_at": at},
     )
