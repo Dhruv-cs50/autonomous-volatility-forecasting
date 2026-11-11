@@ -877,3 +877,117 @@ pattern: a small untrue number is the kind that survives by being small, and it 
 sprints last time. **Both of this ruling's two corrections were found by a reviewer reading it
 against the table, neither by its author** — the same finding Phase 3's close recorded eleven times
 over, and the reason a verdict column is a recommendation and not a decision.
+
+---
+
+## R180 — the four `before the reveal` rows are discharged, and a leak detector is widened in what it searches for and not in how near it matches
+
+### Numbered R180, not R156, and the gap is deliberate
+
+R156 is taken. **Phase 4 claimed R156 onward** for `docs/superpowers/phase4-decisions.md` (R156's
+own text: "the numbers are global; only the file is new"), and it had reached **R164** at the time
+of writing. The brief that commissioned this work said "R155 is the highest I know of", which was
+true of `phase3-decisions.md` and false of the project — exactly the failure R150 exists to
+prevent, arriving in the shape R150 predicted: a report of another branch's state, taken on trust.
+The scan that settled it, over every ref and every worktree rather than over `main`:
+
+```
+for b in $(git branch -a --format='%(refname:short)'); do
+  for f in $(git ls-tree -r --name-only "$b" | grep 'docs/superpowers/.*\.md$'); do
+    git show "$b:$f" | grep -ohE '\bR[0-9]{2,3}\b'
+  done
+done | sed 's/R//' | sort -n | uniq | tail
+```
+
+`R165` was free and is **not** taken here. Two Phase 4 sessions were working while this ran, either
+could claim the next number, and R156 anticipated this case precisely: Phase 3's open findings
+"will keep appending there". So **R165-R179 are reserved for Phase 4's continuation** and Phase 3's
+reopened work resumes at **R180**. This is R150's own remedy — "a gap in the sequence costs a
+reader one sentence; a second collision costs a renumber" — applied a second time rather than
+relearned.
+
+### What discharged each row
+
+Four rows of the board's deferred-findings table, the ones R155's triage marked
+`before the reveal` because they affect what the registered read *reports*. Each was re-derived
+from the code before it was touched, because R155's lesson is that seven of fifteen rows had
+misstated the tree after the table was reviewed, audited and closed. All four held.
+
+| row | commit | what discharged it |
+|---|---|---|
+| 10 | `fbf92df` | `_describe`'s NOT KNOWN branch now reads the count instead of printing a literal `0` |
+| 13 | `03a830e` | the leak detector searches a transform family and every `k` in 1..h |
+| 1 | `ab263f0` | the registered h>=2 contestant set is parsed, not inferred from the "minus" clause |
+| 2 | `16a38fd` | the prose counts and section 4's trial table are tied to the code |
+
+Collected tests **1856 -> 1873**, the deltas being +4, +5, +2 and +6, each stated in its own
+commit message (R154). The baseline is 1856 at `ee16c3d` and **not** the 1734 the brief carried,
+which was measured at `56bf9e2` before PRs #16 and #17 merged.
+
+`docs/holdout-preregistration.md` is byte-identical to `origin/main`, md5
+`1620e031c0a34b409a321cb00fe61567`. It is REGISTERED and R130 holds its content hash, so every
+planted amendment in rows 1 and 2 is an in-memory transform of the text; the one on-disk plant was
+reverted and the hash re-checked. Both ledgers are untouched at 414 and 52 lines.
+
+### The design question row 13 raised, and the answer
+
+The row asked whether the detector's `atol=1e-12, rtol=0` should be widened, and warned that
+"widen it" must not become "make it flaky". Both halves of that warning are right, and they point
+in opposite directions, so the answer separates two things the word "widen" conflates.
+
+**The tolerance stays at 1e-12, and widening it would make this detector worse.** The detector
+scans every numeric cell of a training frame, an origin's row and a return series against the
+forward returns of every base session. HAR features are *built* to track `|r|` and `r**2` — that
+is what volatility clustering means — so a loose match against transforms of future returns flags
+features that are doing their job. A detector that cries wolf is one that gets muted, and a muted
+leak detector is worse than a narrow one because it still reads as a guard.
+
+**What widens is the search space, each member still matched exactly.** Two axes:
+
+- a closed family of transforms (`_LEAK_TRANSFORMS`): as is, negated, squared, as a simple
+  return. A leak need not arrive as the return itself — a sign convention at the evaluator seam, a
+  variance response, or a log-against-simple mix-up transforms it on the way in.
+- every `k` from 1 to the horizon, each with its own knowability rule (`t + k <= origin`), because
+  tomorrow's one-day return is the classic look-ahead and the detector searched only for `h`.
+
+**What it still cannot catch, stated rather than implied.** An unknown rescale `c * r` is out of
+reach and stays out of reach: cell matching cannot see an unknown constant, and the only way to
+reach it would be the loose tolerance this ruling refuses. Nor can it catch an arbitrary nonlinear
+transform. **This is a detector for leaks that arrive whole**, and that sentence now sits in the
+function's own docstring, where a reader meets it, instead of being a property nobody had written
+down.
+
+The witness is parametrised over the family rather than listing its members (R151), so a transform
+added to the family cannot arrive without a witness. The mutation proving it bites — the detector
+searching `_LEAK_TRANSFORMS[:1]` while the family declares four — was run against the final code
+and reverted, and three of the four cells went red.
+
+### Two errors of this pass, both caught by a test rather than by me
+
+Recorded because this phase's close named the pattern: **the hard claims were verified and the easy
+ones were trusted.** Both of these were easy claims.
+
+1. **The floor was put on the wrong quantity.** Guarding `abs(planted) > 1e-6` — the obvious
+   reading, and the one suggested to me — *silently disables* the squared member, because `r ** 2`
+   of this view's 3e-4 return is 9e-8. The witness caught it on its first run. The floors are now
+   separated by job: 1e-6 on the **return**, to skip a flat session whose near-zero return many
+   unrelated cells sit close to, and 1e-9 on the **transformed value**, to keep the 1e-12 match a
+   strict one rather than a zero-against-zero artefact. The `as is` path reduces to the original
+   guard, so the case that already worked is unchanged.
+2. **Configuration uniqueness was asserted across the file instead of within a run.** Row 2's new
+   test failed with `assert 154 == 414` and was right to: section 4 keeps all three shootouts, so
+   "the ledger says 414 things were tried and not 150" and a configuration recurs between runs *by
+   design*. The invariant is one line per `(model, symbol, horizon, loss)` **per run**, which is
+   what makes the table's arithmetic a count of configurations.
+
+A third belongs to the brief rather than to this pass, and is the reason R150 keeps earning its
+place: it reported `origin/main` at `56bf9e2`, the suite at 1734 and the next ruling number as
+R156. All three were stale, and `git log -1 origin/main` plus two greps settled each before any
+work was cut.
+
+### What this ruling does not claim
+
+It does not say the eight rows still open should be fixed, or in what order. Row 14 (`now`) is real
+and was deliberately left: it is a different guard — `_imports` not reading `node.level` — and
+bundling it here would have put an unrelated change in a PR whose subject is what the registered
+read reports. Rows 3 and 6 remain held by R154. The `verdict` column stays a recommendation.
