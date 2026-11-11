@@ -34,6 +34,16 @@ Exit codes. ``2`` is argparse's own usage error and is left alone:
   ``validate``. Nothing was read from the store and nothing was written to a ledger.
 * ``5`` -- **refused by the audit**: a build read past its cutoff (R63). Models were fitted and
   nothing was appended. This is an integrity defect, not a property of the proposal.
+* ``6`` -- **the configuration was refused**, so no evaluation was possible. The expected cause is
+  a ``storage.root`` outside the repository: ``volab.config._validate_storage_root`` resolves it
+  against the repository root *derived from the installed package*, so neither
+  ``load_settings(path=...)`` nor ``VOLAB_STORAGE_ROOT`` can aim this child at a temporary
+  directory (R206; ``volab.daily.__init__`` states the same constraint and
+  ``tests/test_daily_rehearsal.py`` pins both routes). Settings must be loaded **before** the
+  proposal can be judged, because ``validate`` needs ``settings.universe``, so this cannot be
+  fixed by reordering. What is fixed is the *refusal*: a ``ConfigError`` here escaped as an
+  uncaught traceback, which told a caller nothing. No result file is written, because no
+  evaluation began.
 
 What this does not do: it does not run more than one proposal, retry, or decide what a refusal
 means for a sprint. It never appends to ``data/trials.jsonl`` or ``data/comparisons.jsonl``.
@@ -54,7 +64,7 @@ from typing import Any
 from volab.agent.vocabulary import Proposal, validate
 from volab.candidate import EvaluationOutcome, evaluate_proposal
 from volab.config import load_settings
-from volab.errors import ProposalRefused
+from volab.errors import ConfigError, ProposalRefused
 from volab.walkforward import git_state
 
 EXIT_OK = 0
@@ -63,6 +73,8 @@ EXIT_USAGE = 2  # argparse's, never returned by this module's own code
 EXIT_COVERAGE_REFUSED = 3
 EXIT_PROPOSAL_REFUSED = 4
 EXIT_AUDIT_REFUSED = 5
+# No result file is written for this one: the evaluation never began.
+EXIT_CONFIG_REFUSED = 6
 
 # The repository root, the scope the dirty flag must ask about (R70): the default scope is the
 # package, and an edit to ``config/base.yaml`` -- which carries ``dev_end`` -- then reads clean.
@@ -155,7 +167,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Before anything else, so a refusal still proves a new process ran.
     print(f"candidate pid: {os.getpid()}", flush=True)
     result_path = Path(arguments.result)
-    settings = load_settings()
+    # ``validate`` needs ``settings.universe``, so the configuration is loaded before the proposal
+    # is judged and that order cannot be inverted. What can be improved, and is, is the refusal:
+    # a ``ConfigError`` here used to escape as an uncaught traceback (R206).
+    try:
+        settings = load_settings()
+    except ConfigError as refused:
+        print(f"configuration refused, so no evaluation is possible: {refused}")
+        return EXIT_CONFIG_REFUSED
 
     try:
         proposal = _read_proposal(Path(arguments.proposal), settings.universe)

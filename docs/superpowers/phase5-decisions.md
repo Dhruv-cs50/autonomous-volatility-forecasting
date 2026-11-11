@@ -611,6 +611,31 @@ the argument parsing and the exit-code mapping of the real entry point are **not
 end-to-end witness. They are covered separately by `tests/test_candidate_cli.py` and
 `tests/test_agent_runner.py`, and the PR must not claim the rehearsal covers them.
 
+**Amended after a peer session checked Phase 4, whose treatment is fuller than this and which this
+record now cites rather than re-deriving.** Verified on `origin/phase-4-scheduler`:
+
+- `src/volab/daily/__init__.py` states the constraint in a **stronger** form — the repository root
+  `storage.root` is resolved against is *derived from the installed package*, so neither
+  `load_settings(path=...)` **nor** `VOLAB_STORAGE_ROOT` can name a temporary directory. My first
+  draft mentioned only the environment variable; the config-file route is the one someone reaches
+  for next, and it is refused identically.
+- `tests/test_daily_rehearsal.py` pins **both** routes, and `tests/conftest.py` "builds its
+  `Settings` by hand for exactly that reason".
+
+So **the hand-built `Settings` is this repository's house pattern, not a Phase 5 concession** — which
+is how this record should have read in the first place.
+
+**What is genuinely ours is the ordering, and it is a defect rather than an inherited constraint.**
+Phase 4's `daily/forecast.py` parses its input first and loads settings second; `candidate.__main__`
+loaded settings first, so a refused configuration escaped as an **uncaught traceback** instead of
+saying why. The order itself cannot be inverted — `validate` needs `settings.universe` — so what is
+fixed is the refusal: `load_settings` is now wrapped, and a `ConfigError` exits **6** with the reason
+printed and **no result file**, since no evaluation began. Witness:
+`test_a_storage_root_outside_the_repository_is_refused_intelligibly_and_writes_no_result`.
+
+The distinction the peer drew is the right one and worth keeping: *"cannot be aimed at a temp store"*
+is true of both subsystems, by design; *"cannot explain why"* was only ours.
+
 ---
 
 ## R207 — the holdout-marker scan matches the bare literal `"holdout"`, and over-matching is the right direction

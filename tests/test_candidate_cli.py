@@ -656,3 +656,33 @@ def test_each_child_is_a_fresh_interpreter_with_its_own_pid(tmp_path: Path) -> N
         pids.append(int(match.group(1)))
         assert json.loads(result.read_text(encoding="utf-8"))["pid"] == pids[-1]
     assert pids[0] != pids[1]
+
+
+def test_a_storage_root_outside_the_repository_is_refused_intelligibly_and_writes_no_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A ``ConfigError`` from ``load_settings`` exits 6 with a reason, not an uncaught traceback.
+
+    The child **cannot** be aimed at a temporary store, and that is by design rather than an
+    oversight: ``volab.config._validate_storage_root`` resolves ``storage.root`` against the
+    repository root *derived from the installed package*, so neither ``VOLAB_STORAGE_ROOT`` nor a
+    settings file handed to ``load_settings`` can name ``tmp_path``. ``volab.daily.__init__``
+    states the same constraint and ``tests/test_daily_rehearsal.py`` pins both routes.
+
+    What this test pins is not that constraint but the **refusal**: settings must be loaded before
+    the proposal can be judged, because ``validate`` needs ``settings.universe``, so the ordering
+    cannot be inverted -- and before R206 a ``ConfigError`` therefore escaped as a traceback that
+    told the caller nothing. It asserts the exit code, that the reason names the rule, and that
+    **no result file is written**, because no evaluation began.
+
+    It does not assert anything about a valid configuration; the other tests in this module cover
+    that.
+    """
+    monkeypatch.setenv("VOLAB_STORAGE_ROOT", str(tmp_path))
+    result = tmp_path / "result.json"
+
+    code = cli.main(["--proposal", str(tmp_path / "nothing.json"), "--result", str(result)])
+
+    assert code == cli.EXIT_CONFIG_REFUSED
+    assert "must be inside the repository" in capsys.readouterr().out
+    assert not result.exists(), "no result file may be written when no evaluation began"
