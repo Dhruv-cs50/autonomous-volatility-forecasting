@@ -24,11 +24,11 @@ runs cannot touch live data until this lands.** Phase 4 is already built and mer
 |---|---|---|---|---|
 | HR-1 | `holdout_end` in `Splits`, with the override direction **reversed** | `src/volab/config.py`, its YAML, `tests/` | `VOLAB_SPLITS_HOLDOUT_END` may move the boundary **later only**; an earlier value is refused. The mirror of `dev_end`, which may move **earlier only** | **already done** `85de6a5` ("P4-05: the live region"), nine days before this board existed. Verified directly: `holdout_end` is 2026-10-30, `Region` is DEV/HOLDOUT/LIVE, `region_of` classifies 2026-11-10 as LIVE, and six witnesses cover both refusal directions and the equal case. The implementer dispatched for it **stopped and reported** rather than rewriting working code |
 | HR-2 | Architect: the seal's lifecycle in `store.py` | `docs/superpowers/specs/` | a design for: live unreachable before the reveal, the seal lifting on a **completed reveal record asked of git** rather than a flag, and log-before-read ordering | **done** `ca027b8`, corrected at `c03e7d7` after its own review round. 21 witnesses, 7 of them shape witnesses, and a 19-item refusal list in §8 |
-| HR-3 | The seal lifecycle, implemented, **marker-free** | `src/volab/store.py`, `tests/` | three regions enforced **by consuming the `Region` classifier P4-05 already shipped, not a second one**; the record written **and flushed before** the read; a second append-only line marks completion; no other route lifts the seal | todo, after HR-1 and HR-2 |
+| HR-3 | The seal lifecycle, implemented, **marker-free** | `src/volab/store.py`, `tests/` | three regions enforced **by consuming the `Region` classifier P4-05 already shipped, not a second one**; the record written **and flushed before** the read; a second append-only line marks completion; no other route lifts the seal | **done** `b82f138`, with `5322ba0`, `1072968` and `344feb5` on top. Built by one writer while a second was dispatched for it; the second verified rather than rebuilt and found W10 red at `b82f138`. 65 tests in `tests/test_store_seal.py`, W1-W21 plus W22 (a mid-process commit is invisible) and W23 (the cache reset has no production call site) |
 | HR-4 | The reveal itself: fingerprint, the multi-read span, scoring | new module + CLI, `tests/` | refuses on a dirty tree or a missing pre-registration; records the pre-registration's content hash, the champion's config, git sha, dirty flag and a content hash; spans several reads because derived tiers stop at `dev_end`; retries are **counted, not forbidden** | todo, after HR-3 |
 | HR-5 | The dress rehearsal | `tools/` and/or `tests/` | the **whole** procedure runs against a pseudo-holdout carved inside dev, on a **separate storage root**, leaving no mark on the real audit log | todo, after HR-4 |
-| HR-1b | `VOLAB_SPLITS_HOLDOUT_END` refused in **both** directions | `src/volab/config.py`, `tests/` | P4-05 permitted a *later* override because it "only withholds data". The seal design makes `holdout_end` the read bound and the two keys reach that region, so a later override turns live dates into holdout dates a key-holder may read pre-reveal. Refused either way; `dev_end` unchanged | in progress (disjoint from HR-3) |
-| HR-7 | The daily's **own** seal | `src/volab/daily/`, `tests/` | `daily/__init__.py:117` holds its own `if as_of > dev_end: refused`, so **after the reveal `daily plan` still refuses every real date** and Phase 4 never gets a live morning. `store.py` lifting its seal does not lift that one. `plan_for` stays pure: a `revealed: bool = False` keyword defaulting to the sealed answer, `__main__` supplying `store.reveal_is_committed()` at the seam `_today()` already enters, and the refusal written `if not revealed and as_of > dev_end` — **no upper bound once revealed**. Also triages `ingest.curate`'s and the features CLI's `end=dev_end` pins into seal pins and research pins; `walkforward.load_for` is a research pin and stays at `dev_end` forever | todo, after HR-3. File set disjoint from HR-4 and HR-5, so it may run beside them |
+| HR-1b | `VOLAB_SPLITS_HOLDOUT_END` refused in **both** directions | `src/volab/config.py`, `tests/` | P4-05 permitted a *later* override because it "only withholds data". The seal design makes `holdout_end` the read bound and the two keys reach that region, so a later override turns live dates into holdout dates a key-holder may read pre-reveal. Refused either way; `dev_end` unchanged | **done** `4275e9e`. Found mid-flight with one witness still red (`test_env_overrides_apply_to_every_field` set a later `holdout_end`) and finished rather than reverted: that override is now the file's own literal. 1876 tests green |
+| HR-7 | The daily's **own** seal | `src/volab/daily/`, `tests/` | `daily/__init__.py:200` (`:117` before #18 moved it) holds its own `if as_of > dev_end: refused`, so **after the reveal `daily plan` still refuses every real date** and Phase 4 never gets a live morning. `store.py` lifting its seal does not lift that one. `plan_for` stays pure: a `revealed: bool = False` keyword defaulting to the sealed answer, `__main__` supplying `store.reveal_is_committed()` at the seam `_today()` already enters, and the refusal written `if not revealed and as_of > dev_end` — **no upper bound once revealed**. Also triages `ingest.curate`'s and the features CLI's `end=dev_end` pins into seal pins and research pins; `walkforward.load_for` is a research pin and stays at `dev_end` forever | todo, after HR-3. File set disjoint from HR-4 and HR-5, so it may run beside them | **done** `7b0aa79`. `plan_for` gains a keyword-only `revealed: bool = False` and stays pure; the refusal is `if not revealed and as_of > dev_end`, with no upper bound once revealed; `daily/__main__` is the only caller and passes `reveal_is_committed()`. 18 tests in `tests/test_daily_reveal.py`, five mutants killed by hand, and shape witnesses that no argparse flag, env var or `Settings` field can feed `revealed=` |
 | HR-6 | `delivery-auditor` at sprint close | — | the board and the repository agree | todo, last |
 
 ## Serialisation, stated rather than wished away
@@ -114,3 +114,68 @@ is about **120 reads, every one in DEV, with zero predicate calls**. I had inven
 would have pushed the predicate toward something cheap and forgeable; caching is a footnote. The
 measured cost is **0 ms on the shootout path** and 35.6 ms once per process for the reveal,
 rehearsal or daily.
+
+
+## What HR-3 found, and one lesson this board has now learned twice
+
+**HR-3 was already built when its implementer arrived**, at `b82f138`, by a writer working in this
+shared checkout while a second was dispatched for the same story. The second verified it against
+HR-2's design instead of rebuilding it — the behaviour HR-1's implementer established — and that
+is what caught the two defects below. The cost was one duplicated dispatch and no lost work, but
+the board's "one implementer at a time in `store.py`, never two" was held by luck rather than by
+bookkeeping: `git log` is the only thing that said so, and it was checked after the fact.
+
+**W10 was red at `b82f138`.** `Splits.holdout_end` is a **required** field — `567616c` ("P4-05b")
+removed its `dt.date.max` default on 2026-11-05 — so the SIGKILL child's hand-built `Splits`
+raised `TypeError` before it reached the kill. Fixed at `5322ba0`. A story was committed with a
+witness failing, which is the thing the delivery model says closes a story and does not.
+
+**HR-2's design was written against a five-day-stale tree, and this is the lesson repeated.** The
+board already records, about HR-1, "board against the repository, not against a design". HR-2's
+design then reasoned about `Splits.holdout_end` defaulting to `dt.date.max` — §4's whole rationale
+for clamping rather than refusing, and §8 item 17 — because this branch was cut from `main` at
+`c207c59`, *before* #18 merged `P4-05b`. The design was not wrong when its parent was written; it
+was wrong about the tree it would be implemented in. **The clamp is still correct and W19 still
+tests it**, but it now guards only the later-override case, not the omitted-field case it was
+argued from. §4 and §8 item 17 are stale as written and are superseded by this note.
+
+**`load_panel` is no longer a pure function of its arguments and the store**, and the purity is
+removed only past `dev_end`. `revealed = past_dev_end and _reveal_committed(effective)`
+short-circuits, so every read at or below `dev_end` asks the predicate zero times and is
+bit-for-bit what it was: truncation equivalence, the per-origin fresh interpreters, the extent test
+and the byte-identity leakage checks are untouched, which HR-2 measured rather than argued (120
+reads in a shootout, every one at `end == dev_end`, zero predicate calls). Past `dev_end` the
+refusal depends on this checkout's HEAD, resolved once per process per splits key and memoised, so
+a commit landing mid-run is invisible rather than quietly both — W22. The honest limit: two
+*different* splits keys in one process resolve at two different moments, and only a test asks
+about more than one today.
+
+**Unexplained, and recorded rather than dismissed.**
+`tests/test_daily_runner.py::test_a_run_abandoned_mid_stage_leaves_a_start_with_no_completion_and_a_retryable_date`
+failed once in a loaded full-suite run and passed alone. Not confirmed flaky — unexplained.
+
+
+## What HR-7 found, one correction to its own report, and a new story
+
+**Its triage of the `end=dev_end` pins, comments only and no behaviour changed.** Seal pins, to be
+lifted by a later story: `ingest/__main__._curate` (it decides which rows enter the curated tier),
+and `features/__main__`'s `_exogenous`, `_bars` and `_build`'s `through=` (features are derived
+from curated rows, so a live-region feature exists only if these lift). Research pins, staying at
+`dev_end` forever: `walkforward.load_for`, untouched, and — found outside the brief —
+`evaluators/__main__`, `compare/__main__` and `walkforward/__main__`, whose scoring and
+walk-forward reads are research boundaries. `ingest/curate.py` pins nothing itself.
+
+**One claim in HR-7's report is wrong, and checking it rather than relaying it is the point.** It
+reported that because `main()` now calls `reveal_is_committed()` on every invocation, existing
+`daily_cli.main` tests shell out to git, and that on reveal day any of them expecting a live date
+to be refused would flip to `work`. Neither holds. `reveal_is_committed()` calls
+`_reveal_committed` **by name inside `store`**, which is exactly what HR-3's conftest stub
+replaces for an unmarked test. Verified directly rather than argued: inside an unmarked test
+`store._reveal_committed.__qualname__` is `_forbid_holdout_unlock.<locals>.<lambda>`, so the
+public accessor returns `False` from the stub and spawns no subprocess. The suite's meaning does
+not change on reveal day and no git runs — which is the property HR-3 added that stub for, now
+confirmed to reach one module further than the story that added it tested.
+
+| id | story | files | acceptance | state |
+|---|---|---|---|---|
+| HR-8 | A revealed date past the calendar's last session | `src/volab/daily/`, `tests/` | HR-7 removed the upper bound, correctly. A consequence: with `revealed=True`, an `--as-of` past the XNYS calendar's last session (2027-11-10) now reaches `is_session` and raises `DateOutOfBounds` instead of returning a plan. Before HR-7 it was refused before the calendar was asked. Not a seal hole and not reachable by a daily run on today's date, but a traceback where an outcome belongs. Turn it into a `no_session` or `refused` outcome with the calendar's bound named | todo, found by HR-7 and deliberately left outside it |
