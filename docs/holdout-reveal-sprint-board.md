@@ -254,3 +254,40 @@ which is the correct outcome rather than a gap.
   1 covers an exception raised *before* the first read, and a code-keyed message would tell an
   operator their one-time read was spent when it was not. Four states, and the third (both lines on
   disk, not yet committed) is where **every** successful `take` ends.
+
+## Phase 5's two requirements for the reveal, one of them corrected
+
+Phase 5 (the agent layer, merged in #20) passed on two items it had held for Phase 6. Neither is in
+this branch, and the reason is the lesson this board has now learned three times: **this branch was
+cut from `main` at `c207c59`, before #20 merged**, so `src/volab/counts.py` does not exist here at
+all (`git cat-file -e origin/main:src/volab/counts.py` succeeds; the local path does not). `main`
+has since moved to `842ed35` with #23. `origin/main` must be merged in before either item is acted
+on — after the implementer in `src/volab/reveal/` commits, never over its uncommitted tree.
+
+**Item 1, accepted with a refinement.** Phase 5 writes agent trials to `data/agent_trials.jsonl`
+and agent comparisons to `data/agent_comparisons.jsonl`, separately, to honour R139 — nothing
+appends to `trials.jsonl` before the reveal. Both are empty today but a sprint could fill them. The
+refinement: the reveal reports the **registered pair exactly as registered** (`trials.jsonl` 414,
+`comparisons.jsonl` 52), because §4 names those two files and a second count that silently changed
+its denominator would make the delta meaningless — **and alongside it** `counts.count_all(root)`'s
+total, labelled as a disclosed superset with its reason. Both numbers, and no amendment to a
+registered document.
+
+**Item 2's premise is wrong, in Phase 5's own favour, and it was checked rather than relayed.** The
+claim was that holdout comparison rows without a `last_origin` would make R208 stop holding "and no
+test notices". `origin/main:src/volab/agent/ledger.py:68` **fails closed**: its docstring says *"A
+line with no `last_origin` is excluded and counted"* and the code is `if "last_origin" not in row:`
+→ excluded, exclusion counted. So such a row cannot reach an LLM prompt; it is dropped and the drop
+is visible. The real consequence is a **completeness** gap, not a leak — and no agent reads
+`comparisons.jsonl` at all, because R183 gave the agent its own. Phase 5 has since agreed. So
+`last_origin` is worth adding, and it does not block the reveal.
+
+**Item 3, already satisfied by construction and verified.** Holdout rows must land in
+`trials.jsonl`, never `data/agent_trials.jsonl`, or every sprint would log them as integrity
+anomalies. The reveal writes through `JsonlSink` (`compare/sink.py:40`, `data/comparisons.jsonl`)
+and `walkforward`'s `TRIAL_LEDGER` (`data/trials.jsonl`), and **nothing in this tree names the agent
+ledgers at all**. Nothing to do; recorded so a later change cannot quietly break it.
+
+| id | story | files | acceptance | state |
+|---|---|---|---|---|
+| HR-9 | Phase 5's ledger items | `src/volab/reveal/`, `tests/` | after merging `origin/main`: the reveal's fingerprint reports the registered pair **and** `count_all`'s total as a labelled superset; the reveal's comparison rows carry a `last_origin` so the agent's R208 filter discriminates rather than blanket-excluding them | todo, blocked on the merge |
