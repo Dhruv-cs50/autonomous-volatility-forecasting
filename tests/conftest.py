@@ -215,6 +215,13 @@ def _forbid_holdout_unlock(
 
     monkeypatch.setattr(store, "_unlock_granted", refuse_unmarked_unlock)
 
+    # Pre-reveal the predicate is False anyway; on the day a completed reveal record is committed
+    # it would not be, and every unmarked test would start reading past ``dev_end`` freely. So an
+    # unmarked test sees the window sealed whatever HEAD says, and the suite's meaning does not
+    # change on reveal day. Called by name inside ``store`` for exactly this reason, like
+    # ``_unlock_granted``. Tests of the predicate call ``_reveal_committed_in`` directly.
+    monkeypatch.setattr(store, "_reveal_committed", lambda splits: False)
+
     # Wrapping ``_unlock_granted`` polices whoever reaches for the keys. It is blind to a test
     # that moves the boundary instead -- passing a hand-built ``Settings`` whose ``dev_end`` is
     # later than the repository's -- because no key is ever asked for. ``volab.store`` refuses
