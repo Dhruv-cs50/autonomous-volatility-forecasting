@@ -364,11 +364,23 @@ def _describe(decision: Decision) -> list[str]:
             f"{decision.distribution_holdings_affected} of {decision.origins} holding(s) affected "
             "(close-to-close P&L is wrong on those)"
         )
-    else:
+    elif decision.vol_target[decision.contestants[0]].distribution_sessions == 0:
         lines.append(
             "    ex-dates: NOT KNOWN -- the dividend source holds no row for this symbol at or "
             "before dev_end (no source, an empty one, or rows only after the seal), so a count "
             f"of 0 ({decision.distribution_window} session(s) looked at) is not evidence of none"
+        )
+    else:
+        # The two sides disagree: the flag comes from the raw dividend tier and the count from the
+        # curated flags, so a stale curation reaches here. Printing the literal "0" of the branch
+        # above would contradict the figure the sink writes for this same run.
+        lines.append(
+            f"    ex-dates: {decision.vol_target[decision.contestants[0]].distribution_sessions} "
+            f"session(s) of {decision.distribution_window}, but the source is NOT KNOWN -- the "
+            "curated flags mark those sessions while the dividend source holds no row for this "
+            "symbol at or before dev_end, which indicates a stale curation, so the count cannot "
+            f"be trusted either way; {decision.distribution_holdings_affected} of "
+            f"{decision.origins} holding(s) affected (close-to-close P&L is wrong on those)"
         )
     return lines
 
