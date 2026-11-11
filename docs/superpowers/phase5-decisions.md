@@ -397,3 +397,101 @@ branch's ledger state, because those two are tracked.
 phase merged a design they did not choose. Mitigated by keeping the credential boundary and the
 ledger question (R183, R194) as the user's, and by stating this substitution rather than letting a
 reader assume the gate was met.
+
+---
+
+## R198 — `HarX` keeps its extras in `Domain.requires`, and the thin/null skips are defence in depth
+
+A review seat found that because `HarX` declares its extra regressors in `Domain.requires`,
+`evaluate` drops an origin for the **whole cohort** when a declared column is null or thin —
+*before* `HarX.fit` runs. So two of its three `ModelSkip` branches are largely unreachable inside a
+cohort, and the first version of its docstring claimed R87's isolation ("leaves the origin in place
+for everyone else") for cases that cannot reach it.
+
+`Domain`'s own docstring in `src/volab/models/base.py` states the mechanism outright: a declared
+column "costs **every** contestant its origins, by three routes in `volab.walkforward`, each of
+which reads `cohort.requires_at`", while `Evaluation.comparable` is explicitly *not* such a route.
+
+**Ruling: keep the extras in `requires`.** The third route is the one that earns it —
+`coverage_refusal` refuses a window beginning before a declared column has enough history, so a
+proposal naming a sparse column is refused **up front**, with a reason an operator reads and no
+trial line written. The alternative is worse than it looks: with the extras undeclared, an agent
+could shrink the whole cohort's origin count — and so `n_eff`, and so every DM/MCS figure in that
+sprint — merely by naming a sparse column. An up-front refusal prevents the case; a `ModelSkip`
+would only absorb it.
+
+What changed is therefore the docstring, not the code. It now says that the null-extra and
+thin-training skips are defence in depth for callers that are **not** `evaluate` (the conformance
+suite, and direct use), that `evaluate` screens both cohort-wide first, and that the
+**singular-design** branch is the one that genuinely fires under `evaluate`, because `evaluate` does
+not pre-screen for collinearity.
+
+*Cost if wrong:* a legitimate proposal naming a column with short history is refused rather than
+evaluated on the sessions where it exists. That is the conservative direction, and the refusal names
+itself so the operator can see why.
+
+---
+
+## R199 — `has_distribution` stays in the vocabulary, because constancy is a property of the window
+
+P5-B2's fittability witness measured that `has_distribution` has **one distinct value over 2,312
+rows** on the real SPY feature table (2026-11-10), so it is collinear with the intercept and every
+proposal naming it is refused.
+
+**Ruling: keep it.** The refusal should **ask the data** rather than consult a static exclusion
+list, exactly as the sparse-`iv_h1` case does — a column that is constant in this window may not be
+in a later one, and a static list would need editing for it to become usable. What this requires is
+that the refusal be *clean*, and it is: `HarX.fit` catches `fit_ols`'s `SchemaError` and re-raises
+`ModelSkip` naming the column, so one model skips one origin and the origin stands for everyone
+else.
+
+The witness is positive rather than an admission: a test derives the constant columns **from the
+data** and asserts each is refused as a `ModelSkip` naming it, and it fails if no column is constant,
+so it cannot pass vacuously. The strict-xfail that first recorded the complaint was deleted.
+
+*Cost if wrong:* one vocabulary slot that is unusable today, which the agent will learn to stop
+proposing only by proposing it and reading the refusal. Cheaper than a list that goes stale.
+
+---
+
+## R200 — what the ratchets actually caught, recorded because an unbitten guard is not evidence
+
+This project does not accept a guard whose only evidence is that nothing bad has happened. Each of
+Phase 5's new ratchets has drawn blood, and these are the instances:
+
+- **The transitive store-reach fence caught the realistic two-hop plant.** A planted
+  `src/volab/agent/_plant.py` containing exactly `from volab.features.targets import HORIZONS`
+  failed with `volab.agent._plant reaches the store through volab.agent._plant ->
+  volab.features.targets -> volab.store (R192)`. A per-file scan passes that import. The plant was
+  deleted and never committed.
+- **The unlock scan missed three spellings across two review rounds, all now closed:** reaching the
+  environment variable through `volab.config.HOLDOUT_UNLOCK_ENV` instead of its literal; passing the
+  parameter as a string through `**{"allow_holdout": True}`; and a function *definition*
+  `def f(allow_holdout=False)`, which is an `ast.arg` and neither a `Name` nor a `keyword`.
+- **The fittability witness found two defects in the design it was handed** (R185's amendment, and
+  R199).
+- **Review found an R32 defect**: a docstring quoting a per-fit timing whose own author had measured
+  a different figure. The number was dropped rather than swapped, because the author had not
+  reproduced the figure it was offered — which is the correct treatment.
+
+**Stated limits of all four scans**, because a ratchet whose limits are unstated invites the trust
+this project withholds: they read syntax and the import graph only. A runtime `importlib` import, a
+name reached through `getattr`, a key assembled from fragments, and `python -m volab.candidate` in a
+subprocess are all invisible to them.
+
+---
+
+## R201 — `volab.promote` writes `proposal_id` on its `promoted` event
+
+A contract discovered while building the sprint log, recorded here because it binds a module that
+does not exist yet. `pending_approvals` treats a proposal as promoted when a `promoted` event
+carrying the **same `proposal_id`** exists — keyed on the proposal, not the sprint, because one
+sprint may raise several candidates and promoting one must not silently clear the others.
+
+So `volab.promote` **must** write `proposal_id` on the `promoted` event. If it wrote only
+`sprint_id`, every pending approval from that sprint would read as promoted, which is the
+quiet-approval failure the human gate exists to prevent.
+
+*Cost if wrong:* the gate would clear candidates nobody approved. That is the most serious failure
+available in this subsystem, which is why the contract is written down rather than left to the
+implementation to rediscover.
