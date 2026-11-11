@@ -13,7 +13,8 @@ refused at the boundary that reads it. The file is a JSON object holding the fiv
 ``validate`` takes, and the proposal ``validate`` returns must carry the same id.
 
 **The result is a file and not stdout** because a comparison record is about 10 KB against a
-16 KiB output tail. It is written on every outcome that reaches a verdict (``status`` is ``ok`` or ``refused``,
+16 KiB output tail. It is written on every outcome that reaches a verdict (``status`` is ``ok``
+or ``refused``,
 including a refused proposal file), and holds the pid, the cohort, the reason, the trial count and
 the records. A run that exits 1 because of the truncation comparison has still written its result;
 an uncaught exception writes none and exits with Python's own 1.
