@@ -142,7 +142,9 @@ _FAILED_VERDICTS = frozenset(
     {"crashed", "usage_error", "unrecognised", "audit_refused", "proposal_refused", "disagrees"}
 )
 
-Outcome = Literal["completed", "voided_by_canary", "no_candidate", "awaiting_approval", "failed"]
+# ``completed`` was in this type and never returned; removed rather than left as a value a reader
+# would go looking for (R209). A sprint that runs to the end is one of the last three.
+Outcome = Literal["voided_by_canary", "no_candidate", "awaiting_approval", "failed"]
 
 
 class SprintAlreadyComplete(VolabError):
@@ -155,9 +157,8 @@ class SprintResult:
 
     ``proposals``, ``accepted`` and ``refused`` count the *model's* proposals that reached the gate:
     the canary is excluded from all three and reported by ``canary_refused``, which is true only
-    when the gate ran and refused it. ``completed`` is part of the interface and is never returned
-    by this version: a sprint that runs to the end is ``no_candidate``, ``awaiting_approval`` or
-    ``failed``.
+    when the gate ran and refused it. A sprint that runs to the end is ``no_candidate``,
+    ``awaiting_approval`` or ``failed``; one whose gate accepts a canary is ``voided_by_canary``.
     """
 
     sprint_id: str
