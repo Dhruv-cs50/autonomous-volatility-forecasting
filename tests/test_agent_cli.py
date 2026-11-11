@@ -183,7 +183,15 @@ def test_a_full_sprint_through_main_submits_aimed_at_the_storage_root_and_checkp
     )
     out = capsys.readouterr().out
     assert "sprint 2026-11-10-cli:" in out
-    assert status == (cli.EXIT_FAILED if ": failed" in out else cli.EXIT_OK)
+    # Pinned rather than derived from ``out``. The earlier form, ``status == (EXIT_FAILED if
+    # ": failed" in out else EXIT_OK)``, read the expected code back out of the program's own
+    # output, so it checked only that the code agreed with the message, and it passed whichever
+    # outcome occurred. The scripted run is deterministic: three proposals accepted, the canary
+    # refused in slot 02, and the sprint pausing for a human rather than promoting.
+    assert status == cli.EXIT_OK
+    assert ": awaiting_approval" in out
+    assert "accepted 3, refused 0, canary refused True" in out
+    assert "python -m volab.promote --proposal-id" in out, "the CLI must point at the separate gate"
     assert submit.roots, "no proposal reached the evaluation seam"
     assert set(submit.roots) == {tmp_path / "data"}
     assert list((tmp_path / "data" / "agent_checkpoints").glob("*.jsonl"))
@@ -286,3 +294,23 @@ def test_the_local_ledger_counter_agrees_with_the_repositorys_count_all(tmp_path
     }
     assert cli._count_all(tmp_path / "absent") == dict.fromkeys(cli._LEDGERS, 0) | {"total": 0}
     assert not (tmp_path / "absent").exists()
+
+
+def test_the_cli_git_state_agrees_with_the_store_git_state_it_duplicates() -> None:
+    """``volab.agent.__main__._git_state`` copies ``volab.store.git_state``; pin them together.
+
+    The copy exists because ``volab.store`` is on the far side of the R192 fence: the agent
+    package may not import it, directly or transitively. A copy that drifts would mis-record the
+    sha or the dirty flag a sprint stamps on its approval (R70) -- quietly, because both still
+    return a plausible pair. So both are called on the same tree here and must agree exactly.
+    This test may import the store; test modules are not inside the fence.
+
+    It does not prove the two agree on every tree state, only on this one; a divergence confined to,
+    say, a detached HEAD would pass. That limit is the price of a copy instead of an import.
+    """
+    import volab
+    from volab.store import git_state as store_git_state
+
+    repository = Path(volab.__file__).resolve().parents[2]
+
+    assert cli._git_state(repository) == store_git_state(repository)

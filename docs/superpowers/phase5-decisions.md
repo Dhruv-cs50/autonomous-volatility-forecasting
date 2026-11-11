@@ -859,3 +859,41 @@ is not optional.
 *Cost if wrong:* none in the direction taken — the fix aligns the sprint with three modules that
 already agreed. The cost of the defect, had it shipped, was an agent layer that could never promote
 anything, with a leak guard that guarded an empty file, and a test suite reporting all of it green.
+
+---
+
+## R212 — the fence caught `volab.counts` reaching the store, so the CLI keeps two copies, each pinned to its original
+
+The agent CLI (P5-E2, `cb9803f`) could import neither `volab.counts.count_all` nor `git_state`.
+**The R192 fence refused both, and that is the fence working, not a defect in it.**
+`volab.counts` (P5-C3) imports `count_trials` from `volab.walkforward`, which reaches `volab.store`,
+so the fence reported `volab.agent.__main__ -> volab.counts -> volab.walkforward -> volab.store` the
+moment the CLI tried it. No one had planned for `volab.counts` to be on the read path; the transitive
+walk found it. `git_state` lives in `volab.store` itself.
+
+**Ruling: two local copies in `volab.agent.__main__`, each test-coupled to the original, rather than
+a fence relaxed or `volab.counts` reworked mid-phase.**
+
+- `_count_all` is pinned to `volab.counts.count_all` over the same three ledger files.
+- `_git_state` is pinned to `volab.store.git_state` by
+  `test_the_cli_git_state_agrees_with_the_store_git_state_it_duplicates`, which I added after the
+  story landed: the CLI shipped the copy with **no** coupling, and a drifting copy would mis-record
+  the sha or dirty flag a sprint stamps on its approval (R70) while still returning a plausible
+  pair. Its stated limit: it proves agreement on the tree it runs on, not on every tree state.
+
+The cleaner fix is to make `volab.counts` store-free — counting `trials.jsonl` from a path literal
+rather than importing `count_trials` — which would let the CLI import it. **Not done here**: it
+changes a module the leaderboard depends on, and the deliberate reuse of `count_trials` there was
+R186's way of keeping the leaderboard's headline and its new line in agreement. Recorded as a
+follow-up.
+
+**Also fixed after the story landed: a test that could not fail.** The full-sprint CLI test asserted
+`status == (EXIT_FAILED if ": failed" in out else EXIT_OK)` — it read the expected exit code back
+out of the program's own output, so it checked only that the code agreed with the message and passed
+whichever outcome occurred. The scripted run is deterministic, so it is now pinned: exit 0, outcome
+`awaiting_approval`, three proposals accepted, the canary refused, and the output pointing at
+`python -m volab.promote` as a separate process.
+
+*Cost if wrong:* two copies that can drift. Each is test-coupled, so a drift fails a test rather than
+a production sprint, which is the condition under which a copy is acceptable here (the same shape as
+R195's duplicated runner loop).
