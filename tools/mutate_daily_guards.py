@@ -14,11 +14,17 @@ of them to match what the probe had observed, so "fails exactly its named tests"
 construction of the list. A plant that breaks *more* than its list is therefore a finding about the
 plant or about the tests (a guard that is blunter than its name, two tests that overlap) and not a
 failure of the code; it is reported, and the list is a record of the finding. What the figure is
-worth is **"every plant is noticed by something that names it"** -- a mutant that fails nothing is
-a hole in the guards, and one that fails something its list does not name is a changed fact to be
-read. It is not a claim of one-to-one precision between a defect and a test, and a reader should
-not take it for one. The figure also covers only the test files named below: a plant that broke a
-test in a file no witness lives in would not be seen.
+worth is **"every plant is noticed by something that names it"** -- a mutant nothing goes red
+under is a hole in the guards, and one that reddens something its list does not name is a changed
+fact to be read. It is not a claim of one-to-one precision between a defect and a test, and a
+reader should not take it for one. The figure also covers only the test files named below: a plant
+that broke a test in a file no witness lives in would not be seen.
+
+**What "noticed" is read out of.** A mutant's run is read from pytest's short summary: the tests
+it names ``FAILED`` and the tests it names ``ERROR``, which are two counts and not one -- a guard
+that reports a violation from a fixture's teardown leaves the test itself passed and its teardown
+errored. Both sets are printed for every mutant, and the comparison against the witness list is
+over the two together, so a guard that only ever reports in teardown is a bite and not a hole.
 
 **Which test files it runs is derived, not listed.** Every mutant names its witnesses; each name is
 looked up as a ``def`` in ``tests/test_*.py``, and the files holding them are the files run for
@@ -40,11 +46,32 @@ ledger-immutability check can only be seen red by a stage that really appends to
 ``data/trials.jsonl``. So the two ledgers are copied to a temporary directory before the first
 plant (printed, so a ``SIGKILL`` leaves a path to restore from), compared after *every* mutant, and
 written back byte for byte if they moved. A ledger that moved under a mutant not declared
-``moves_ledger`` stops the script. The ledgers are untracked-or-committed data that the board pins
-by line count and digest; read both before and after a run.
+``moves_ledger`` stops the script. Both ledgers are tracked, and the board pins each by line count
+and digest; read both before and after a run.
 
-It writes nothing else outside the source files it plants into, plus a ``.orig`` sidecar beside
-each while that file is planted, and pytest's own caches. No store read, no network.
+**The daily path's own two files are kept too**, by a different route because their failure mode
+is a different one. ``data/forecasts.jsonl`` and ``data/daily_runs.jsonl`` are not reported
+numbers, so a mutant that moves one is printed and nothing more: it neither stops the run nor
+changes that mutant's verdict. They are read before the first plant and put back after every
+mutant all the same, because a file one mutant wrote is state every later mutant then runs
+against, and a checkout left with a changed log costs whoever owns that log. Either may
+legitimately be absent, so absence is part of the reading; a file found where one was absent is
+**moved aside into the backup directory and never deleted**, since neither file is tracked and the
+reading that called it absent may have been taken as much as half an hour earlier.
+
+**The bound on that, said plainly: it holds for the duration of a run of this script and nowhere
+else.** Outside a run these two files have no restore at all. What watches ``data/forecasts.jsonl``
+is ``tests/test_daily_forecast.py``'s autouse guard, and that *reports* a change from teardown
+without putting anything back -- so an ordinary suite run that wrote the repository's own log would
+be reported and the file left as written, with no blob to recover from. Tracking them instead was
+never the alternative, and ``volab.daily.forecast``'s own docstring says why: until the reveal, the
+champion on every forecast line is a *pseudo*-champion (the field is fixed to ``PSEUDO_KIND`` with
+no parameter to say otherwise), so a tracked file would put unregistered numbers into git.
+
+Outside the source files it plants into, it writes a ``.orig`` sidecar beside each while that file
+is planted; the ledger and own-file copies, and any moved-aside file, under the printed backup
+directory; the two ledgers and the daily path's own two files, when a plant moved one; and
+pytest's own caches. No store read, no network.
 
 **It refuses to start unless the suite is already green**, because a witness that was red before
 the plant would read as "bites". The original text is written to ``<file>.orig`` before planting,
@@ -52,6 +79,11 @@ so a ``SIGKILL`` between the plant and the restore leaves the original on disk r
 a dead process's memory; the sidecar is removed once the restore is verified byte for byte.
 
     uv run --locked python tools/mutate_daily_guards.py
+
+It exits 0 only if every mutant was exact, 1 if any mutant was noticed by nothing, and 2 if none
+was missed but some were noticed more widely than the list named against them. The three are
+counted and printed separately, because a hole in the guards and a stale witness list are
+different findings.
 
 Two mutants (the verb not passing its timeout, the kill not reaching a grandchild) make a probe
 stage sleep out its sixty seconds before the test can fail, and every mutant runs the whole of
@@ -69,8 +101,20 @@ from dataclasses import dataclass
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 # The two reported ledgers, which no plant may leave moved. Named here and not derived because they
-# are the thing being protected; the daily path's own files are not reported numbers.
+# are the thing being protected. Both are tracked, so the copy this script takes is the second of
+# two routes back; the daily path's own files, below, are neither reported numbers nor tracked.
 _LEDGERS = ("data/trials.jsonl", "data/comparisons.jsonl")
+# The daily path's own two files. Not reported numbers -- so a plant that moves one is printed
+# rather than a stop, and does not change its verdict -- and kept all the same, because a file one
+# mutant wrote is state every later mutant then runs against, and a checkout left with a changed
+# log costs whoever owns that log. Neither is tracked (``.gitignore`` un-ignores the two ledgers and
+# not these), so for whichever of them is present, the copy this script takes is the only route
+# back: narrowing this list again would leave real data with nothing behind it.
+_OWN_FILES = ("data/forecasts.jsonl", "data/daily_runs.jsonl")
+# The three verdicts a mutant can be given, which are three different findings.
+_EXACT = "bites"
+_WIDE = "BITES WIDELY"
+_UNCAUGHT = "SURVIVES"
 # The command the trigger-installer plant calls. Joined from two pieces because this file sits under
 # ``tools/``, which the very guard being tested scans: written whole, the script would be the
 # installer it plants and the guard would be red before any plant went in.
@@ -493,8 +537,124 @@ def _test_files() -> tuple[str, ...]:
     return tuple(sorted(files))
 
 
-def _failing_tests(suite: tuple[str, ...]) -> frozenset[str]:
-    """The names of every failing test in the ``suite`` files, whole.
+def _base_name(identifier: str) -> str:
+    """A pytest id with any parametrisation dropped: ``name[case]`` -> ``name``."""
+    return identifier.split("[", 1)[0]
+
+
+def _pytest_command(suite: tuple[str, ...]) -> list[str]:
+    """The command run for every mutant: the whole of each ``suite`` file, quiet, summary only.
+
+    ``-rfE`` and not ``-rf``, because ``-r`` *selects* what the short summary reports rather than
+    adding to pytest's default. A test that passes while a fixture raises in its teardown is
+    counted an error and not a failure, and under ``-rf`` pytest printed no ``ERROR`` line at all
+    -- so no reading below, matching whatever verbs it liked, could have seen one. The guard that
+    reports that way is ``tests/test_daily_forecast.py``'s autouse guard on
+    ``data/forecasts.jsonl``: a mutant that made production code write that file is caught at
+    runtime, and under the old flag it was read here as noticed by nothing.
+    """
+    return [sys.executable, "-B", "-m", "pytest", "-q", "--tb=no", "-rfE", *suite]
+
+
+def _reported_tests(stdout: str, suite: tuple[str, ...]) -> tuple[frozenset[str], frozenset[str]]:
+    """The tests the short summary names failed, and the tests it names errored, by name.
+
+    Two sets and not one, because pytest counts them separately and a reader needs to see which
+    is which: a test whose body fails is ``FAILED``, and one that passes while its fixture raises
+    in teardown is ``ERROR``. The same test can be printed under both -- a failing body still has
+    a teardown -- so a name can appear in each.
+
+    Only lines naming one of the ``suite`` files count, which is what the prefix match is for: it
+    ties a summary line to a file this run was asked for, so text that merely looks like one -- a
+    nested pytest run's own output reaching the same stream, say -- is not read as a result of this
+    run.
+
+    The name is everything after ``::`` up to the ``" - "`` pytest puts before the reason, and
+    **not** up to the first space, because an id written to be read contains spaces.
+    ``test_a_holdout_date_is_refused_as_sealed`` is parametrised over prose ids, and cutting at the
+    first space printed ``...sealed[in``, ``...sealed[mid`` and ``...sealed[the`` -- one per
+    parametrisation, so the count was right while none of the three ids existed. The bound accepted
+    with that: an id containing ``" - "`` itself would still be cut, and none in this repository
+    does. Taking the whole id is also what a later check needs -- "reject a bracketed witness that
+    is not among the ids its test generates" would reject a correctly spelled ``[mid holdout]``
+    while the parse cannot produce one.
+
+    **A file that did not collect is a stop, not a line to drop.** pytest prints that as
+    ``ERROR <path>`` with no test after it, and every claim about a witness in a file that never
+    imported is vacuous -- while a dropped line would leave both sets empty, which is how "noticed
+    by nothing" is printed.
+    """
+    failed: set[str] = set()
+    errored: set[str] = set()
+    for line in stdout.splitlines():
+        for path in suite:
+            if line.startswith(f"FAILED {path}::"):
+                failed.add(line.split("::", 1)[1].split(" - ")[0].strip())
+            elif line.startswith(f"ERROR {path}::"):
+                errored.add(line.split("::", 1)[1].split(" - ")[0].strip())
+            elif line == f"ERROR {path}" or line.startswith(f"ERROR {path} - "):
+                raise SystemExit(f"{path} did not collect; pytest reported {line!r}")
+    return frozenset(failed), frozenset(errored)
+
+
+def _verdict(failed: frozenset[str], errored: frozenset[str], witnesses: tuple[str, ...]) -> str:
+    """The word printed for a mutant: one of the three above, read over both sets together.
+
+    The union and not the failures alone, which corrupted the verdict in both directions. A plant
+    whose only catcher reports from a fixture's teardown fails nothing and errors whatever test that
+    fixture was watching, and reading failures alone called that ``SURVIVES`` -- the word for a hole
+    in the guards, said of a guard that had done its job. A plant that fails its witness *and*
+    errors some unrelated test read as ``bites``, the verdict nothing invites a reader to question,
+    when it had bitten wider than its list. ``witnesses`` keeps the meaning it always had: the set a
+    mutant must leave red, whichever verb each was printed under.
+
+    **A witness may be spelled with or without a parametrisation id, and the two mean different
+    things.** pytest prints ``name[id]``, so a bare ``name`` compared raw could never appear in the
+    red set at all and its mutant read wide while the guard it names had fired. A bare witness is
+    therefore read as "at least one parametrisation of this went red", which is a choice and not a
+    derivation: the other reading, *every* parametrisation, would tie a witness list to a
+    parametrisation count nobody writing one looks up. So the bare spelling is legitimate rather
+    than something to be corrected -- it says "any one of them" -- and the one thing it cannot do is
+    demand a *particular* parametrisation. That is the bracketed form's job, so a bracketed witness
+    is still compared exactly and the bracketed side is never folded: two mutants name two different
+    ids of the one test because the id says which code path broke, and folding would let a plant
+    that broke the other one satisfy them. The rule is this simple because no two mutants' witness
+    sets collide once the bare names are allowed their ids, so the hazard is inside a mutant's own
+    list and not between two of them.
+    """
+    red = failed | errored
+    wanted_ids = {witness for witness in witnesses if "[" in witness}
+    wanted_bases = {witness for witness in witnesses if "[" not in witness}
+    bases_red = {_base_name(identifier) for identifier in red}
+    exact = (
+        wanted_ids <= red
+        and wanted_bases <= bases_red
+        and all(
+            identifier in wanted_ids or _base_name(identifier) in wanted_bases for identifier in red
+        )
+    )
+    if exact:
+        return _EXACT
+    return _UNCAUGHT if not red else _WIDE
+
+
+def _exit_code(uncaught: int, wide: int) -> int:
+    """0 if every mutant was exact, 1 if any was noticed by nothing, 2 if some only bit wide.
+
+    Three codes and not two. One code made the two findings indistinguishable, and they are not
+    the same thing: a mutant nothing noticed is a hole in the guards, which is what this script
+    exists to find, while one noticed more widely than its list is a fact about the list or the
+    plant. A wide run does not exit 0 either -- the sentence this script's figure is cited for is
+    "each failing exactly the witnesses named against it and no other", and a wide result is that
+    sentence not holding.
+    """
+    if uncaught:
+        return 1
+    return 2 if wide else 0
+
+
+def _failing_tests(suite: tuple[str, ...]) -> tuple[frozenset[str], frozenset[str]]:
+    """Every test in the ``suite`` files that went red, from a run of the whole of each file.
 
     **The whole files and not ``-k <witness>``**, which is what the first version of this script
     ran. Selecting the witness can only establish that the witness fails; the claim being made is
@@ -502,21 +662,82 @@ def _failing_tests(suite: tuple[str, ...]) -> frozenset[str]:
     others. The difference matters in both directions: a mutant that also breaks four unrelated
     tests is a blunter instrument than the sentence claims, and one whose witness fails for an
     incidental reason would read the same.
+
+    Two sets come back, the failed and the errored, as ``_reported_tests`` reads them out of the
+    short summary; "failing" here means red under either verb.
     """
     completed = subprocess.run(
-        [sys.executable, "-B", "-m", "pytest", "-q", "--tb=no", "-rf", *suite],
+        _pytest_command(suite),
         cwd=REPO,
         capture_output=True,
         text=True,
         check=False,
     )
+    # The reading first, so that a file which did not collect is named by the stop that knows
+    # which file it was. The check below is the one it cannot make: it catches a run that
+    # produced no passes at all, whatever went wrong, including ways that print no summary.
+    reported = _reported_tests(completed.stdout, suite)
     if "error" in completed.stdout.lower() and "passed" not in completed.stdout:
         raise SystemExit(f"the suite did not run:\n{completed.stdout}\n{completed.stderr}")
-    return frozenset(
-        line.split("::", 1)[1].split()[0]
-        for line in completed.stdout.splitlines()
-        if line.startswith(tuple(f"FAILED {path}::" for path in suite))
-    )
+    return reported
+
+
+def _read_own_files() -> dict[str, bytes | None]:
+    """The bytes each of the daily path's own files holds, ``None`` for one that is absent."""
+    return {
+        name: ((REPO / name).read_bytes() if (REPO / name).exists() else None)
+        for name in _OWN_FILES
+    }
+
+
+def _put_own_files_back(kept: dict[str, bytes | None], backup: pathlib.Path) -> tuple[str, ...]:
+    """Put each of the daily path's own files back as ``kept`` found it; the names that had moved.
+
+    Four cases, because absence is part of the reading on both sides. **Unchanged** does nothing.
+    **Present and changed** has the bytes it is about to write over copied into ``backup`` first,
+    then the baseline written back, and both verified. **Absent before and present now** is *moved
+    aside* into ``backup`` and never deleted. **Present before and gone now** is simply written
+    back: the bytes that were there are the ones going back, so there is nothing to keep.
+
+    The second and third cases are the same argument. Neither of these files is tracked, so bytes
+    lost here have no blob and no copy behind them, and the reading they are judged against was
+    taken before a run that takes the better part of half an hour -- another session's daily job, or
+    a person, writes the same paths, so what is found is not certainly the plant's. Keeping it costs
+    a copy and cannot lose anything. ``_put_ledgers_back`` deliberately does not do this, and the
+    asymmetry is the point: the two ledgers are tracked, so ``git restore --source=<sha>`` recovers
+    them whatever this script does. Same operation, different consequence.
+
+    Raises if any of that did not land, naming the printed backup directory, for the reason
+    ``_put_ledgers_back`` raises: a tool whose job is to find defects must not commit one.
+    """
+    moved: list[str] = []
+    for name, data in kept.items():
+        path = REPO / name
+        current = path.read_bytes() if path.exists() else None
+        if current == data:
+            continue
+        moved.append(name)
+        if data is None:
+            # A directory per file kept, so two mutants writing the same path cannot collide.
+            aside = pathlib.Path(tempfile.mkdtemp(dir=backup, prefix="moved-aside-")) / path.name
+            path.rename(aside)
+            if path.exists() or aside.read_bytes() != current:
+                raise SystemExit(f"FAILED TO MOVE {name} ASIDE; look in {backup}")
+            print(f"moved aside rather than deleted: {name} -> {aside}", flush=True)
+            continue
+        if current is None:
+            path.write_bytes(data)
+            if path.read_bytes() != data:
+                raise SystemExit(f"FAILED TO RESTORE {name}; a copy is in the printed backup")
+            print(f"restored {name}, which had been removed", flush=True)
+            continue
+        aside = pathlib.Path(tempfile.mkdtemp(dir=backup, prefix="replaced-")) / path.name
+        aside.write_bytes(current)
+        path.write_bytes(data)
+        if path.read_bytes() != data or aside.read_bytes() != current:
+            raise SystemExit(f"FAILED TO RESTORE {name}; a copy is in the printed backup")
+        print(f"restored {name}; the bytes it replaced are in {aside}", flush=True)
+    return tuple(moved)
 
 
 def _read_ledgers() -> dict[str, bytes]:
@@ -539,13 +760,24 @@ def main() -> int:
     suite = _test_files()
     print("test files, derived from the witnesses:", *suite)
     ledgers = _read_ledgers()
+    own_files = _read_own_files()
     backup = pathlib.Path(tempfile.mkdtemp(prefix="mutate-ledgers-"))
-    for name, data in ledgers.items():
-        (backup / pathlib.Path(name).name).write_bytes(data)
-    print("ledger copies, should a kill leave one moved:", backup)
-    if _failing_tests(suite):
-        raise SystemExit("the suite is already failing; fix that before planting anything")
-    survivors: list[str] = []
+    for name, data in {**ledgers, **own_files}.items():
+        # A file that was absent is copied nowhere: there are no bytes to keep, and
+        # ``_put_own_files_back`` puts absence back by moving whatever now exists into here.
+        if data is not None:
+            (backup / pathlib.Path(name).name).write_bytes(data)
+    print(
+        "copies of the ledgers and of whichever daily files exist, should a kill leave one moved:",
+        backup,
+    )
+    if any(_failing_tests(suite)):
+        raise SystemExit("the suite is already red; fix that before planting anything")
+    # Two lists and not one, because they are two findings: a mutant nothing noticed is a
+    # statement about the guards, and one noticed more widely than its list is a statement about
+    # the list or the plant.
+    wide: list[str] = []
+    uncaught: list[str] = []
     for mutant in MUTANTS:
         target = REPO / mutant.relative_path
         original = target.read_text(encoding="utf-8")
@@ -555,7 +787,7 @@ def main() -> int:
         sidecar.write_text(original, encoding="utf-8")
         target.write_text(original.replace(mutant.before, mutant.after, 1), encoding="utf-8")
         try:
-            failing = _failing_tests(suite)
+            failed, errored = _failing_tests(suite)
         finally:
             target.write_text(original, encoding="utf-8")
             if target.read_text(encoding="utf-8") != original:
@@ -564,22 +796,50 @@ def main() -> int:
                 )
             sidecar.unlink()
             moved = _put_ledgers_back(ledgers)
+            # After the ledgers, so that a restore failure here cannot skip theirs.
+            own_moved = _put_own_files_back(own_files, backup)
         if moved and not mutant.moves_ledger:
             raise SystemExit(f"a ledger moved under {mutant.label!r}; it has been put back")
-        exact = failing == frozenset(mutant.witnesses)
-        verdict = "bites" if exact else ("SURVIVES" if not failing else "BITES WIDELY")
-        print(f"{verdict:12} | {mutant.label} -> {sorted(failing) or 'nothing failed'}", flush=True)
-        if not exact:
-            survivors.append(f"{mutant.label}: failing set was {sorted(failing)}")
+        if own_moved:
+            # Printed and nothing more. These are not reported numbers, so a mutant that moved
+            # one neither stops the run nor changes its verdict below; it is put back so that the
+            # next mutant runs against the state this one found, and named so that a reader can
+            # see which mutant wrote where.
+            print(f"put back under {mutant.label!r}: {', '.join(own_moved)}", flush=True)
+        verdict = _verdict(failed, errored, mutant.witnesses)
+        # Both sets, named, and the errored one even when it is empty: a guard that reports in
+        # teardown is counted errored and not failed, and a line that printed only non-empty sets
+        # would leave a reader unable to tell "none errored" from "errors not looked for".
+        print(
+            f"{verdict:12} | {mutant.label} -> failed {sorted(failed) or 'nothing'};"
+            f" errored {sorted(errored) or 'nothing'}",
+            flush=True,
+        )
+        finding = f"{mutant.label}: failed {sorted(failed)}, errored {sorted(errored)}"
+        if verdict == _UNCAUGHT:
+            uncaught.append(finding)
+        elif verdict == _WIDE:
+            wide.append(finding)
 
     print()
-    if survivors:
-        print(f"{len(survivors)} of {len(MUTANTS)} mutants did not fail exactly their witness:")
-        for label in survivors:
-            print(f"  - {label}")
-        return 1
-    print(f"all {len(MUTANTS)} mutants fail exactly the tests named against them, and no others")
-    return 0
+    print(
+        f"{len(MUTANTS) - len(wide) - len(uncaught)} exact, {len(wide)} wide,"
+        f" {len(uncaught)} noticed by nothing, of {len(MUTANTS)} mutants"
+    )
+    if uncaught:
+        print("noticed by nothing -- a hole in the guards, which is what this script hunts:")
+        for finding in uncaught:
+            print(f"  - {finding}")
+    if wide:
+        print("noticed more widely than their list -- a fact about the list or the plant:")
+        for finding in wide:
+            print(f"  - {finding}")
+    if not uncaught and not wide:
+        print(
+            f"all {len(MUTANTS)} mutants left red exactly the tests named against them and no"
+            " others -- failed or errored, a bare witness counting any one of its parametrisations"
+        )
+    return _exit_code(len(uncaught), len(wide))
 
 
 if __name__ == "__main__":
