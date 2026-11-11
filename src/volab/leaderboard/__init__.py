@@ -59,9 +59,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from volab.counts import AGENT_COMPARISON_LEDGER, AGENT_TRIAL_LEDGER, count_all
+from volab.counts import agent_ledgers_line, count_all
 from volab.errors import VolabError
-from volab.walkforward import BASELINE_COHORT_NAME, LOSSES, TRIAL_LEDGER, count_trials
+from volab.walkforward import BASELINE_COHORT_NAME, LOSSES, TRIAL_LEDGER
 
 # Repeated from ``volab.compare.sink``, which is not imported (see the module docstring).
 COMPARISON_LEDGER = Path("data") / "comparisons.jsonl"
@@ -411,8 +411,8 @@ def render(root: Path) -> tuple[list[str], bool]:
     trials, legacy = read_trials(root)
     comparisons = read_comparisons(root)
 
-    headline = count_trials(root)
     combined = count_all(root)
+    headline = combined.trials
     by_cohort = Counter(t.cohort for t in trials)
     if sum(by_cohort.values()) != headline:
         raise LeaderboardError(
@@ -428,10 +428,7 @@ def render(root: Path) -> tuple[list[str], bool]:
         f"  by cohort: {breakdown}" if trials else "  by cohort: none",
         # Added beneath the headline, whose text is unchanged (R186). Printed as zeros when the
         # agent ledgers are absent: an omitted line cannot be read as "no agent trials".
-        f"  agent ledgers: {combined.agent_trials} agent trial(s) in "
-        f"{AGENT_TRIAL_LEDGER.as_posix()}, {combined.agent_comparisons} agent comparison "
-        f"record(s) in {AGENT_COMPARISON_LEDGER.as_posix()}; {combined.total} trial(s) across "
-        "both trial ledgers",
+        agent_ledgers_line(combined),
     ]
     if legacy:
         lines.append(

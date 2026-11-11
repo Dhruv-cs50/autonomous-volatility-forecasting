@@ -158,3 +158,55 @@ def test_the_reader_does_not_modify_the_ledger(tmp_path) -> None:
     before = (tmp_path / TRIAL_LEDGER).read_bytes()
     ledger.read_trials(tmp_path, dev_end=DEV_END)
     assert (tmp_path / TRIAL_LEDGER).read_bytes() == before
+
+
+# --- the import ban (R186): ``count_trials`` is reachable only from its definition and counts ---
+
+_COUNT_TRIALS_HOMES = frozenset({Path("walkforward/__init__.py"), Path("counts.py")})
+
+
+def _count_trials_users(sources: dict[Path, str]) -> list[str]:
+    """Every ``path:line`` that imports or names ``count_trials`` in code.
+
+    Walked by ``ast``, so a docstring or comment that merely mentions the function is not a use
+    (``volab.agent.__main__`` keeps such a mention, R212). Modules in ``_COUNT_TRIALS_HOMES`` are
+    exempt: the definition, and ``count_all``, which calls it.
+    """
+    found: list[str] = []
+    for path, source in sorted(sources.items()):
+        if path in _COUNT_TRIALS_HOMES:
+            continue
+        for node in ast.walk(ast.parse(source)):
+            used = (
+                (
+                    isinstance(node, ast.ImportFrom)
+                    and any(a.name == "count_trials" for a in node.names)
+                )
+                or (isinstance(node, ast.Name) and node.id == "count_trials")
+                or (isinstance(node, ast.Attribute) and node.attr == "count_trials")
+            )
+            if used:
+                found.append(f"{path.as_posix()}:{node.lineno}")
+    return found
+
+
+def _src_sources(root: Path) -> dict[Path, str]:
+    return {p.relative_to(root): p.read_text(encoding="utf-8") for p in root.rglob("*.py")}
+
+
+def test_no_module_but_the_definition_and_counts_uses_count_trials() -> None:
+    users = _count_trials_users(_src_sources(REPO / "src" / "volab"))
+    assert users == [], (
+        "these modules reach count_trials directly and could print the first ledger's count "
+        f"without the agent ledgers' (R186); use volab.counts.count_all: {users}"
+    )
+
+
+def test_the_ban_catches_a_planted_import_and_a_planted_attribute_use(tmp_path) -> None:
+    (tmp_path / "walkforward").mkdir()
+    (tmp_path / "walkforward" / "__init__.py").write_text("def count_trials(root): ...\n")
+    (tmp_path / "counts.py").write_text("from volab.walkforward import count_trials\n")
+    (tmp_path / "mentions.py").write_text('"""Mentions count_trials in prose only."""\n')
+    (tmp_path / "planted.py").write_text("from volab.walkforward import count_trials\n")
+    (tmp_path / "attr.py").write_text("import volab.walkforward as w\nn = w.count_trials(1)\n")
+    assert _count_trials_users(_src_sources(tmp_path)) == ["attr.py:2", "planted.py:1"]

@@ -13,10 +13,11 @@ ledgers' paths. It resolves reference models and loads ``arch``, which costs thr
 ``tests/test_counts.py`` pins each to ``volab.candidate``'s constant. The trial ledger's count is
 ``volab.walkforward.count_trials``, the writers' own function.
 
-**What this does and does not claim (R186).** The only enforcement is that the leaderboard
-headline prints both counts. Other entry points -- the walk-forward, compare and evaluators CLIs
--- still call ``count_trials`` directly and can print the first ledger's count alone; no import ban
-stops them, and none of them was migrated here.
+**What this claims (R186).** ``count_trials`` is reachable only from its definition and this
+module: ``tests/test_counts.py`` derives that by walking ``src/volab``, so every surface that prints
+a trial count holds the agent ledgers' counts and prints :func:`agent_ledgers_line` beside it.
+``volab.agent.__main__`` keeps its own pinned copy because the R192 fence forbids it importing this
+module (R212).
 
 An absent ledger counts as zero and is not created.
 """
@@ -41,6 +42,20 @@ class LedgerCounts:
     agent_trials: int
     agent_comparisons: int
     total: int
+
+
+def agent_ledgers_line(counts: LedgerCounts) -> str:
+    """The one line every surface printing a trial count prints beside it (R186).
+
+    Zeros are printed when the agent ledgers are absent: an omitted line cannot be read as "no
+    agent trials". The wording is the leaderboard's, which builds the line from this function.
+    """
+    return (
+        f"  agent ledgers: {counts.agent_trials} agent trial(s) in "
+        f"{AGENT_TRIAL_LEDGER.as_posix()}, {counts.agent_comparisons} agent comparison "
+        f"record(s) in {AGENT_COMPARISON_LEDGER.as_posix()}; {counts.total} trial(s) across "
+        "both trial ledgers"
+    )
 
 
 def _count_lines(path: Path) -> int:

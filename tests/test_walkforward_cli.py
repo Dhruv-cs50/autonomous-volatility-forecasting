@@ -164,7 +164,8 @@ def test_a_run_writes_one_ledger_line_per_configuration_it_evaluated(
         )
         == 0
     )
-    capsys.readouterr()
+    # R186: the trial count is never printed without the agent ledgers' beside it.
+    assert "  agent ledgers: 0 agent trial(s) in data/agent_trials.jsonl" in capsys.readouterr().out
 
     expected = len(module.MODELS) * len(module.LOSSES)
     assert count_trials(tmp_path) == expected

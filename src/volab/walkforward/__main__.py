@@ -36,6 +36,7 @@ from pathlib import Path
 import pandas as pd
 
 from volab.config import Settings, load_settings
+from volab.counts import agent_ledgers_line, count_all
 from volab.errors import DatasetNotFound
 from volab.features.targets import HORIZONS
 from volab.paths import Tier
@@ -46,7 +47,6 @@ from volab.walkforward import (
     LOSSES,
     MODELS,
     append_trials,
-    count_trials,
     git_state,
     load_for,
     run_configuration,
@@ -99,7 +99,7 @@ def _run(settings: Settings, arguments: argparse.Namespace) -> int:
         print(f"no {calendar.name} sessions between {arguments.start} and {arguments.stop}")
         return 1
 
-    before = count_trials(settings.storage_root.parent)
+    before = count_all(settings.storage_root.parent).trials
     # Stamped at the start, with the sha, so every line of one run shares one timestamp and that
     # timestamp is when the numbers were produced rather than when they were written.
     started_at = dt.datetime.now(dt.UTC)
@@ -147,8 +147,10 @@ def _run(settings: Settings, arguments: argparse.Namespace) -> int:
                 return 2
             failures += outcome.disagrees
 
-    after = count_trials(settings.storage_root.parent)
+    counted = count_all(settings.storage_root.parent)
+    after = counted.trials
     print(f"trials: {written} appended, ledger now {after} line(s), was {before}")
+    print(agent_ledgers_line(counted))
     print(f"models counted: {len(MODELS)}, losses: {sorted(LOSSES)}")
     print(f"ran in {time.perf_counter() - started:.1f}s")
     return 1 if failures else 0
