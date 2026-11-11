@@ -1001,7 +1001,8 @@ true as stated.
   `promote`, while `research` treats the same line as an integrity failure. Both now fail it the same
   way, through one shared helper.
 
-**Assigned to fix round B (claims and witnesses; not yet started when this was written):** the prompt-inventory docstrings in `roles.py`, which
+**Fixed in fix round B (`4c6f9eb`); every new witness was shown to fail under a deliberate
+mutation before it was trusted:** the prompt-inventory docstrings in `roles.py`, which
 said the only date-shaped text any role sees is the run date (the Critic also sees dev-bounded origin
 dates); a **mechanical** prompt-inventory witness, since R208 had held only by reading the code; the
 rehearsal's missing non-vacuity check on the one `load_panel` call Phase 5 itself authors
@@ -1009,6 +1010,16 @@ rehearsal's missing non-vacuity check on the one `load_panel` call Phase 5 itsel
 vocabulary is *derived* from `FEATURE_COLUMNS`, so adding a feature column used to widen the agent's
 vocabulary silently. The docstring called it "a positive allowlist", which was true only about target
 columns.
+
+The mutations, so a later reader can repeat them. Putting `pid`, `output_tail` or `exit_code`
+into the Critic's prompt in `roles.py` each failed the new prompt-inventory witness
+(`test_no_field_of_a_childs_outcome_that_must_stay_out_of_a_prompt_reaches_one`). That witness has
+non-vacuity checks too: six prompts recorded, three submits, and the fields that *should* reach a
+prompt asserted present. Making `_persisted` skip its read, or skipping its rebinding, each failed
+the rehearsal. Removing one exclusion from the vocabulary failed the new snapshot pin. The same
+mutation left the old derivation test passing, which proves that test was a tautology. The
+planted-line test the review called vacuous was: the sprint halts before any model call, so it now
+asserts `completer.prompts == ()` and claims only the halt.
 
 **Recorded, not fixed:**
 
