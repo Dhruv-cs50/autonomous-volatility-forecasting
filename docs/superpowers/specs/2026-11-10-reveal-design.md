@@ -104,8 +104,9 @@ written, in the fixed order below; each has its own exit code and its own senten
 refusals can only be answered after a read has happened, and those cost an attempt.**
 
 `gates()` is pure: it takes the facts and returns the refusals it found, in order, and the CLI exits
-on the first. Purity is what makes the twelve-cell table in W1 a table rather than a shape a reader
-must trust.
+on the first. Purity is what makes W1 a table rather than a shape a reader must trust. **Every
+gate is referred to by its `name`, never by its row number**: the numbers below are a reading aid
+in this document and the implementer must not encode them.
 
 ```python
 # src/volab/reveal/__init__.py
@@ -160,7 +161,7 @@ its own repo-scoped flag rather than trusting the audit line's (§11, finding 4)
 | # | gate | exit | when it is known |
 |---|---|---|---|
 | 8 | `keys_not_held` | **10** | the first sealed read raises `HoldoutViolation`: the operator did not export the unlock variable, so `_unlock_granted` is `False` and the bound is `dev_end`. **No look line is written** — a step-3 refusal in `load_panel` touches no filesystem — but the `reveal_open` line already exists, so this attempt is counted and the next one is a new `reveal_id`. |
-| 9 | `window_not_ingested` | **11** | after stage A: a symbol's curated bars do not reach the last XNYS session at or before `holdout_end`. Today the raw bars stop at **2026-10-20**, six sessions short, so **this gate fires on the repository as it stands** and `python -m volab.ingest` must run first. The registered window's *end* is a commitment (§1, "Window"), unlike its origin counts (§5, predictions), so a short window is not the registered read. |
+| 9 | `window_not_ingested` | **11** | after stage B's **three bars reads, deliberately the first reads of stage B** (look 16 of 38): a symbol's curated bars do not reach the last XNYS session at or before `holdout_end`. Today the raw bars stop at **2026-10-20**, six sessions short, so **this gate fires on the repository as it stands** and `python -m volab.ingest` must run first. The registered window's *end* is a commitment (§1, "Window"), unlike its origin counts (§5, predictions), so a short window is not the registered read. |
 | 10 | `canary_disagrees` | **12** | after stage A: a curated frame read at `end=dev_end` is not identical to the one read at `end=dev_end` before stage A. See §5. |
 
 **Why gate 8 cannot be hoisted.** Asking "do I hold the key" before writing anything would need
@@ -294,15 +295,21 @@ and each still leaves an `look_open`/`look_close` pair with `outcome="DatasetNot
 documented behaviour and it is correct: a key-holder's refused read is still a look.
 
 **Stage B — curated → features and targets, and the panel the scoring uses.** The reveal reads each
-exogenous series **once, shared across symbols** (the shape `features/__main__._build` already
-uses), and each symbol's bars once, then does three things with the frames in hand:
+symbol's bars **first**, then each exogenous series **once, shared across symbols** (the shape
+`features/__main__._build` already uses), then does three things with the frames in hand:
 
 | read | tier | count |
 |---|---|---|
+| `volab.panel.load_bars`, per symbol | CURATED | 3 |
 | `volab.panel.load_exogenous(vix_family)`, per series | CURATED | 4 |
 | `volab.panel.load_exogenous(fred_daily)`, per series | CURATED | 3 |
-| `volab.panel.load_bars`, per symbol | CURATED | 3 |
 | | | **10** |
+
+**The bars come first so the `window_not_ingested` gate fires at look 16 of 38** rather than at 35.
+That gate reads the bars' maximum `as_of`, and it fires on the repository as it stands, so paying
+19 further looks before finding out would be a self-inflicted cost. Hoisting it before stage A
+would mean asking the filesystem about partition names, which is a read path this project does not
+have outside `store.py`; the first curated bars frame is the earliest honest place.
 
 1. `volab.panel.assemble(bars, exogenous)` per symbol → the curated panel. This is exactly what
    `load_curated_panel` returns; the only difference is that the exogenous frames are read once
@@ -358,6 +365,50 @@ would cost 12 looks for 3 distinct frames. The reveal memoises per symbol. This 
 leakage test that could not be shown failing"* one of the three definitions of a failed run — so the
 guard stays armed on the holdout window, printing `N of N origins identical` exactly as the recorded
 dev run's §4 evidence does. It is a leakage guard, not a claim, so it adds nothing to §2's list.
+
+### The key has to be threaded, and it changes HR-4's file set
+
+**Found by reading the signatures rather than the designs, and it is the one thing here that no
+witness as first drafted would have caught.** `load_panel`'s `allow_holdout` defaults to `False`,
+and `_unlock_granted(allow_holdout)` needs the argument **and** the environment variable. Of the 38
+reads above, only stage D's is a direct `load_panel` call. The other 35 go through functions that
+take no such parameter and therefore pass the default:
+
+| function | file | reads |
+|---|---|---|
+| `curate_bars`, `curate_vix`, `curate_fred`, `_distribution_dates` | `src/volab/ingest/curate.py` | 13 |
+| `load_exogenous`, `load_bars` | `src/volab/panel.py` | 10 |
+| `load_targets` | `src/volab/walkforward/__init__.py` | 12 |
+
+So **a `take` written as the span above describes would exit 10 on its first raw read, every time,
+however the operator's shell is set up.** Checked by grep rather than inferred: no module under
+`src/volab/` other than `store.py` names `allow_holdout` at all today.
+
+**Decision: a keyword-only `allow_holdout: bool = False` is threaded through those seven functions
+and forwarded to `load_panel`; nothing else in them changes.** The price, stated:
+
+- **The file set grows.** HR-4 now touches `src/volab/ingest/curate.py`, `src/volab/panel.py` and
+  `src/volab/walkforward/__init__.py`, two of which (`panel.py`, `walkforward/__init__.py`) are in
+  the `SEALED` set. A keyword-only `bool` with a `False` default imports nothing, adds no numeric
+  edge and changes no existing call site, so the numeric ban and the Parquet ban are untouched — but
+  these are the project's most load-bearing modules and the board's one-implementer rule has to
+  cover them. **The coordinator needs this before dispatching HR-4 beside HR-5 or HR-8.**
+- **Seven more places where the key could be passed.** That is what W25 is for: under `src/volab/`,
+  `allow_holdout=True` may be passed **only** from `volab/reveal/`, and `walkforward.load_for` and
+  the three research `__main__`s must never pass it even though `load_targets` now accepts it.
+
+The two alternatives, and what rules each out:
+
+- **Reimplement curation so stage A needs no key-bearing call.** `curate_*` reads and writes in one
+  function, so "just the transform" does not exist as a public shape; building one duplicates the
+  typing, the non-session rejection, the OHLC padding and the distribution flag. R97's rule — call,
+  do not reimplement — exists because two copies drift, and "which rows enter the curated tier" is
+  the worst place in this repository to have a second copy.
+- **A `store` contextvar that grants the key inside a scope, the way `reveal_scope` grants a
+  `reveal_id`.** **Refused, and it must stay refused:** `reveal_scope` labels lines and changes no
+  bound, whereas a key scope *is* a second route to the unlock — the parent design's anti-goal #1
+  verbatim. An argument passed at every call site is visible at every call site; an ambient one is
+  not. §10 item 19.
 
 ### The total, as a formula rather than a magic number
 
@@ -462,6 +513,28 @@ Three consequences worth writing down rather than discovering:
   honest and is precisely why §4 asks for two counts and the delta rather than an equality.
 - **The seal does not lift on a crashed attempt**, because `_completed_reveal_in` needs the ordered
   pair. A half-finished reveal leaves everything sealed, which is the fail-closed direction.
+
+### A retry needs a commit first, and that is a strengthening
+
+**Consequence of §11 finding 4, and it has to be written down or an implementer will "fix" it by
+narrowing the gate.** The first audit line the reveal writes makes
+`data/holdout_access.jsonl` appear, and `_git_state`'s repository-scoped pathspec excludes
+`data/raw`, `data/curated` and `data/features` but **not** the three tracked `data/*.jsonl` files.
+So after any attempt that wrote a line, the tree is dirty and **the next `take` exits 3 until a
+human commits what the previous attempt left behind** — its `reveal_open`, its look lines, and any
+partial trial lines.
+
+That is the right behaviour and it is not friction to be removed:
+
+- every attempt, including every crashed one, becomes a commit — visible, reviewable, attributable,
+  which is the basis the whole seal rests on;
+- committing an unpaired `reveal_open` **lifts nothing**, because `_completed_reveal_in` needs the
+  ordered pair, so the commit is safe;
+- and the k-th attempt's own count is then auditable from git history rather than only from a file.
+
+The procedure is therefore: `take` → if it did not complete, read the log, commit it with the
+partial ledger lines and a message saying what failed → `take` again. §10 item 20 forbids the
+shortcut of excluding those three files from the dirty check, and W11 models the whole sequence.
 
 **Retrying is not resuming.** Stage A and stage B are idempotent (`write_curated` and
 `write_features` overwrite; the write filter keeps them off dev partitions), so a second attempt
@@ -578,12 +651,22 @@ class Champion:
 def champion_from(comparison: Comparison, trials: Sequence[Trial]) -> Champion:
     """§3's rule, applied to the (SPY, h=1, qlike, phase2-shootout) record and its trials.
 
-    Pure, and it is handed the two objects rather than reading a ledger, so the twelve-cell
-    table in W3 needs no store, no git and no key.
+    Pure, and it is handed the two objects rather than reading a ledger, so W3's table needs
+    no store, no git and no key. ``trials`` are the in-memory ``Trial`` objects this run produced,
+    never ledger lines: the champion must come from the same objects the comparison was built from.
+    The *printed ranking* is a different job and uses ``leaderboard.ranked_trials`` (see below).
     """
 ```
 
 - `members` is `comparison.mcs.members[0.10]`; `refusal` is `comparison.mcs.refusals[0.10]`.
+- **The printed ranking and the champion come from two places on purpose, and a witness ties
+  them.** The ranking §2 claims is `leaderboard.ranked_trials`, which takes `TrialLine` ledger
+  lines — so the reveal reads its own lines back with `leaderboard.read_trials(root)`, filters to
+  this run's `at`, and ranks those: the printed ranking is then provably the ledger's, byte for
+  byte, which is the leaderboard's whole reason for computing nothing. `champion_from` works on the
+  in-memory `Trial`s instead, because the champion must come from the same objects the confidence
+  set was built from. W26 asserts the two agree: the champion is rank 1 among the 10% members in
+  `ranked_trials`' order for `(SPY, h=1, qlike)`.
 - "lowest QLIKE" is the lowest `Trial.value` for `loss == "qlike"` among the members. QLIKE here is
   `log(f) + r/f` and the leaderboard's own words are "lower is better", so lowest is best and the
   rule reads the way it is written. No direction has to be inferred.
@@ -624,6 +707,21 @@ All in `src/volab/reveal/__init__.py` unless stated. No numpy import of its own;
 boundary.
 
 ```python
+# ---- the seven signatures HR-4 changes outside its own package, and nothing else in them ------
+#   src/volab/ingest/curate.py
+#     curate_bars(symbol, *, end, settings=None, allow_holdout: bool = False) -> int
+#     curate_vix(series,  *, end, settings=None, allow_holdout: bool = False) -> int
+#     curate_fred(series, *, end, settings=None, allow_holdout: bool = False) -> int
+#     _distribution_dates(symbol, *, end, settings, allow_holdout: bool = False) -> set[dt.date]
+#   src/volab/panel.py
+#     load_bars(settings, symbol, *, end, allow_holdout: bool = False) -> pd.DataFrame
+#     load_exogenous(settings, dataset, series, column, *, end, report=None,
+#                    allow_holdout: bool = False) -> pd.DataFrame | None
+#   src/volab/walkforward/__init__.py
+#     load_targets(settings, symbol, horizon, *, end, allow_holdout: bool = False) -> pd.DataFrame
+# Each forwards the flag unchanged to its one ``load_panel`` call. ``load_for`` is NOT changed and
+# never passes it (W25). ``load_curated_panel`` is NOT changed: the reveal assembles its own panel.
+
 # ---- the registered literals, each pinned to its source by a witness --------------------------
 PREREGISTRATION: Path = Path("docs") / "holdout-preregistration.md"
 REGISTERED_SHA256: str = "c0a095ab3a00711fd435eded709bde4dcdf9f1ab87ab016e92dc7c5cd7323779"
@@ -714,14 +812,19 @@ def audit_tally(settings: Settings) -> AuditTally
 6  with store.reveal_scope(reveal_id):
 7      derive_curated(...)                       # stage A: 13 looks
 8      after = snapshot(settings); compare_snapshots(before, after) -> exit 12
-9      inputs = derive_and_read(...)             # stages B,C,D: 10 + 12 + 3 looks
-10     gate 11 (the window reaches holdout_end)  -> exit 11
-11 scored = score(...)                           # no reads; appends per configuration (R74)
-12 champion = champion_from(the SPY h1 qlike record, scored.trials)
-13 tally = store.audit_tally(settings)
-14 store.record_reveal_completed(settings, reveal_id, details={**fingerprint.record(),
+9      bars = read_bars(...)                     # stage B's first 3 looks
+10     gate `window_not_ingested`                -> exit 11, at look 16 of 38
+11     inputs = derive_and_read(..., bars)       # the rest of B, then C and D: 7 + 12 + 3
+12 scored = score(...)                           # no reads; appends per configuration (R74)
+13 champion = champion_from(the SPY h1 qlike record, scored.trials)
+14 ranking = ranked_trials over read_trials(root) filtered to this run's `at`
+15 tally = store.audit_tally(settings)
+16 store.record_reveal_completed(settings, reveal_id, details={**fingerprint.record(),
                                                               "champion": champion, "tally": ...})
-15 print the write-up block; exit 0, or 13 (ambiguous champion), or 14 (truncation disagreed)
+17 print the write-up block; exit 0, or 13 (ambiguous champion), or 14 (truncation disagreed)
+
+An unhandled exception anywhere in 5-17 exits **1** (Python's own), and the attempt is counted: it
+is a `reveal_open` with no `reveal_complete`, exactly as §6's table says.
 ```
 
 Four orderings in there are decisions:
@@ -742,7 +845,7 @@ Four orderings in there are decisions:
 ## 9. Decision 8 — the witnesses
 
 Instance witnesses first, then the shape witnesses, which are the ones that answer "there is no
-second route" (R134, and HR-2 §7's precedent). Twenty-four witnesses, eight of them shape witnesses.
+second route" (R134, and HR-2 §7's precedent). Twenty-six witnesses, nine of them shape witnesses.
 
 **Every one runs without reading the real holdout, and the mechanism is stated for each.** Three
 techniques do all the work, none of which holds a key against `data/`:
@@ -754,10 +857,20 @@ techniques do all the work, none of which holds a key against `data/`:
   may lean on a default that no longer exists. Every `end` used is at or before 2024-12-31, which is
   **below the repository's own `dev_end`**, so `_police_holdout_read` has nothing to object to and
   the test needs no marker. `monkeypatch.setattr(store, "_unlock_granted", lambda _: True)` opens
-  the carved window; **no `allow_holdout` is passed to a read of `data/`, no environment variable is
-  set, and the test can assert `os.environ.get("VOLAB_HOLDOUT_UNLOCK") is None` as part of its own
-  contract.** This is HR-3's marker-free mechanism, and it is stronger than a marked test: it proves
-  the property against a caller who holds both keys while the test holds neither.
+  the carved window.
+
+  **The stub is `lambda allow_holdout: allow_holdout`, not `lambda _: True`.** HR-3's own witnesses
+  use the discarding form, which is right for them — they test the guard, not a caller. Here it
+  would be a hole wide enough to hide this design's blocker in: a discarding stub grants the key
+  whatever the caller passed, so a stage function that forgot to forward `allow_holdout` would read
+  happily in every witness and refuse in production. The identity stub simulates an exported
+  variable while keeping the argument real, so **an unthreaded read fails the test.** W7, W9, W10,
+  W11 and W24 all depend on this and none of them is meaningful without it.
+
+  **No `allow_holdout` is passed to a read of `data/`, no environment variable is set, and the test
+  can assert `os.environ.get("VOLAB_HOLDOUT_UNLOCK") is None` as part of its own contract.** This is
+  HR-3's marker-free mechanism, and it is stronger than a marked test: it proves the property
+  against a caller who holds both keys while the test holds neither.
 - **(S) a scan** — AST or source, over `src/volab/reveal/` or over the whole package.
 
 New file: `tests/test_reveal.py` for everything in `volab.reveal`; `tests/test_reveal_cli.py` for
@@ -824,9 +937,14 @@ the exit codes; `tests/test_import_discipline.py` for W17's unlock scan if it is
   raise; assert exactly one `reveal_open`, 38 (carved: the formula's) complete look pairs, no
   `reveal_complete`, and `store._completed_reveal_in(log_text, carved_splits) is False`. The last
   assertion is the one that matters: a crashed attempt lifts nothing.
-- **W11 `test_a_second_attempt_is_a_new_id_and_the_first_is_still_counted`** (C) — run the carved
-  attempt twice, the first crashing; `audit_tally().attempts` has two distinct ids, `completed`
-  holds only the second, and `len(attempts) == 2` is the *k* the write-up reports.
+- **W11 `test_a_second_attempt_needs_a_commit_first_and_is_a_new_id`** (C) — the whole retry
+  sequence of §6, in a throwaway git repository on `tmp_path`: attempt 1 crashes; a second `take`
+  exits **3** because the log it wrote dirtied the tree; the log and the partial ledger lines are
+  committed; attempt 2 runs and completes. Then `audit_tally().attempts` holds two distinct ids,
+  `completed` holds only the second, `len(attempts) == 2` is the *k* the write-up reports, and
+  `store._completed_reveal_in(log, carved_splits)` was `False` after the committed crash and `True`
+  only after attempt 2. The middle step is the one that keeps an implementer from "fixing" retries
+  by narrowing gate `dirty_tree`.
 - **W12 `test_a_missing_key_costs_an_attempt_and_no_look`** (C) — with `_unlock_granted` left alone
   (so the carved window is sealed to the test), `take` exits **10**, the log holds one
   `reveal_open`, `tally.looks == 0`, and no `look_open` exists. The witness for §2's stated price.
@@ -842,9 +960,13 @@ the exit codes; `tests/test_import_discipline.py` for W17's unlock scan if it is
   literal (or the module constant that is one), and no name `superior_predictive_ability`, `SpaResult`
   or `BENCHMARKS` imported from `volab.compare` appears anywhere in the package.
 - **W15 `test_the_reveal_computes_no_statistic_of_its_own`** (S) — the package imports no numpy,
-  scipy or arch name directly, defines no function whose body contains an arithmetic mean or a
-  comparison of two losses, and the only names it imports from `volab.compare`,
-  `volab.walkforward` and `volab.leaderboard` are on an explicit allow-list asserted in the test.
+  scipy or arch name directly; **no function in it contains `sum`, `/`, `**`, `mean`, `std` or any
+  numeric-library attribute applied to a loss value**; and the only names it imports from
+  `volab.compare`, `volab.walkforward` and `volab.leaderboard` are on an explicit allow-list
+  asserted in the test. **Ordering stored values is not computing a statistic and is permitted:**
+  `champion_from` must take a minimum over QLIKEs that `run_configuration` already computed, so the
+  scan allows `min`, `max` and `sorted` and bans arithmetic. The distinction is the one that
+  matters — a minimum of stored numbers cannot disagree with the ledger, and a re-derived mean can.
   Patterned on `test_the_leaderboard_imports_no_statistics`, which exists for the same reason:
   a module that recomputes a number can disagree with the thing it reports.
 - **W16 `test_no_refusal_sentence_is_worded_twice`** (S) — no string constant in
@@ -856,8 +978,11 @@ the exit codes; `tests/test_import_discipline.py` for W17's unlock scan if it is
   promises the ban does not trip it): **no assignment whose target is a subscript of `os.environ`
   or `environ`; no call to `os.putenv`, `putenv`, `setenv` or `os.environ.setdefault`/`update`; and
   no string constant containing `VOLAB_HOLDOUT_UNLOCK` outside a docstring.** Passing
-  `allow_holdout=` is permitted here and only here, so the test asserts that too — the package
-  *does* pass it, exactly once, in the stage functions, and the count is pinned. Red arms, each
+  `allow_holdout=` is permitted here and only here, so the test asserts that too — but by **call
+  site set, not by count**: every `allow_holdout` keyword in the package has the constant `True`,
+  and the set of functions containing one is exactly the stage functions, named explicitly in the
+  test. (An earlier draft said "exactly once", which was wrong by seven: the key is threaded through
+  seven call sites, see §5.) Red arms, each
   planted in a source string and watched to fail: `os.environ["VOLAB_HOLDOUT_UNLOCK"] = "1"`,
   `os.environ.setdefault(KEY, "1")`, `os.putenv("VOLAB_HOLDOUT_UNLOCK", "1")`,
   `KEY = "VOLAB_HOLDOUT_UNLOCK"`. Green arms: a docstring and a comment naming the variable.
@@ -878,6 +1003,19 @@ the exit codes; `tests/test_import_discipline.py` for W17's unlock scan if it is
 - **W21 `test_the_import_ratchet_is_untouched`** (S) — `ALLOWED == {"store.py"}`, `SEALED` and
   `SEALED_PACKAGES` unchanged, and `volab.reveal` is in neither. So a reader can see that the new
   package bought no exemption.
+- **W25 `test_only_the_reveal_ever_passes_the_key`** (S) — the witness the threading in §5 cannot go
+  without. Over every module under `src/volab/`: an `allow_holdout=True` keyword appears **only** in
+  files under `src/volab/reveal/`; the seven threaded functions each declare it keyword-only with a
+  `False` default and forward it unchanged to exactly one `load_panel` call; and
+  `walkforward.load_for`, `compare/__main__`, `evaluators/__main__` and `walkforward/__main__`
+  contain no `allow_holdout` at all, which is what keeps the three research entry points research
+  entry points now that `load_targets` accepts a key. Red arm: a planted
+  `load_targets(..., allow_holdout=True)` inside `load_for`'s body fails it.
+- **W26 `test_the_champion_is_rank_one_among_the_members`** (P) — `champion_from`'s answer and
+  `leaderboard.ranked_trials`' order agree: for a hand-built `(SPY, h=1, qlike)` record and its
+  trials, the NAMED champion is the highest-ranked 10% member in `ranked_trials`' order, and in the
+  AMBIGUOUS case both candidates are members and neither is named. Two orderings of one set of
+  numbers cannot be left to agree by coincidence.
 
 ### The CLI
 
@@ -898,7 +1036,8 @@ the exit codes; `tests/test_import_discipline.py` for W17's unlock scan if it is
 
 ## 10. Decision 9 — what the implementer must not do
 
-A refusal list, in HR-2 §8's style. Each is something a reasonable builder might do.
+A refusal list of twenty-two items, in HR-2 §8's style. Each is something a reasonable builder
+might do, and several of them are things an earlier draft of this design did.
 
 1. **Must not read the real holdout.** No `allow_holdout=True` against `data/`, no setting or
    reading of `VOLAB_HOLDOUT_UNLOCK`, no `@pytest.mark.holdout`, no `load_panel` at an `end` past
@@ -963,8 +1102,20 @@ A refusal list, in HR-2 §8's style. Each is something a reasonable builder migh
 18. **Must not weaken `tests/conftest.py`.** `_forbid_holdout_unlock`, `_police_holdout_read`,
     `_clean_volab_environment` and the `_reveal_committed` stub all stay. This story adds nothing to
     them: its witnesses are marker-free by construction.
-19. **Must not mark the story done on assertion.** A commit, green tests and green gates, with the
-    three tripwires in item 3 verified by command, or it is not done.
+19. **Must not make the key ambient.** No contextvar, no module global, no `Settings` field, no
+    environment read inside `volab.reveal`, no default of `True` anywhere. `allow_holdout` is an
+    argument passed explicitly at each of the seven threaded call sites, and `reveal_scope` — or
+    any scope — must never imply it. W25 and W17 are the witnesses; §5 is the reasoning.
+20. **Must not narrow gate `dirty_tree` to make retries easier.** `_git_state`'s
+    repository-scoped pathspec excludes the three derivable tiers and **must keep including**
+    `data/holdout_access.jsonl`, `data/trials.jsonl` and `data/comparisons.jsonl`. A retry commits
+    the previous attempt first (§6); that is the mechanism, not an obstacle to it.
+21. **Must not forward `allow_holdout` anywhere it is not needed.** The seven threaded functions
+    and stage D's direct `load_panel` call, and nothing else. In particular not `load_for`, not
+    `load_curated_panel` (the reveal assembles its own panel and does not call it), and not into
+    `build_features`, `build_targets` or any writer, none of which reads.
+22. **Must not mark the story done on assertion.** A commit, green tests and green gates, with
+    the three tripwires in item 3 verified by command, or it is not done.
 
 ---
 
@@ -1047,6 +1198,28 @@ A refusal list, in HR-2 §8's style. Each is something a reasonable builder migh
    of 209 have an h=66 one; the registration's own table says so. The window is closed and the
    *window* is complete; the *tails* are not, deliberately. The board's sentence should say that.
 
+11. **HR-2 §6's interface list is complete for `store.py` and silent about the one thing the
+    reveal's callers need: the key.** It threaded `reveal_id` through a contextvar and said why a
+    `load_panel` parameter would have to go through "four more signatures" — which is true, and the
+    *key* has to go through seven. Nothing in either design noticed that
+    `curate_*`, `load_bars`, `load_exogenous` and `load_targets` pass `allow_holdout=False` by
+    omission, so a reveal built to either design as written would refuse its own first read. §5
+    settles it by threading and W25 pins it. This is also the clearest case in this sprint of a
+    witness technique hiding a defect: HR-3's `lambda _: True` stub, copied into HR-4 unchanged,
+    would have kept every span witness green.
+12. **Look lines from the reveal will not say `volab.reveal`.** `store._caller_frame` returns the
+    first frame **outside** `src/volab`, and under `python -m volab.reveal` every reveal frame is
+    inside the package, so `caller_module` will be `runpy` (or `unknown`) — not the
+    `"caller_module":"volab.reveal"` HR-2 §3's record sketch shows. Derived from the code, not
+    measured. It is a cosmetic loss of attribution and the `reveal_id` on every line carries the
+    real attribution, so this design does not change `_caller_frame`; it records the discrepancy so
+    nobody reads an audit line as evidence that the reveal was *not* the caller.
+13. **`committed_blob` is a second git call site and must carry the same two fixes.**
+    `--no-optional-locks` and the 5-second timeout, copied from `_git_state`'s comment rather than
+    re-derived, failing closed to `None` — which trips gate `preregistration_blob` rather than
+    raising. The one hour this project lost to a missing lock flag is reason enough not to have a
+    third call site without it.
+
 ### One finding with no owner yet
 
 10. **The reveal at stride 1 is roughly five times the dev run's fitting cost per configuration**
@@ -1075,8 +1248,14 @@ a reason to edit the registration — that would mean a new registration and a s
   contestant R115 withholds cannot carry it, and the champion is the lowest-QLIKE member whose
   significance is not withheld. **The document distinguishes neither.** `champion_from` returns
   `AMBIGUOUS` with both candidates, `take` exits 13, and the user states the reading in the
-  write-up. *Who can settle it:* the user, and it is cleanest settled **before** the read, in a
-  ruling, since it is a decision with no numerical content until the numbers exist.
+  write-up. *Who can settle it:* the user, and it must be settled **before** the read — not
+  merely "cleanest". Exit 13 still writes `reveal_complete`, and once that is committed the seal is
+  lifted and both candidates' QLIKEs are on screen, so a ruling made afterwards is selection on the
+  numbers by construction, which is the one thing this apparatus exists to prevent. Before the read
+  the decision has no numerical content and costs nothing. **This is the design's one request of
+  the user, and it is a blocker on taking the reveal rather than on building it.** Whether a
+  clarifying ruling counts as a new registration is also the user's call; this design does not
+  propose editing the registered document and must not be read as proposing it.
 - **OQ2 — when may the reveal run?** §1 plus the ratified parent decision say "once the window has
   closed"; the closing paragraph and R130 say "`holdout_end` plus each horizon's tail", which is
   about 2027-02-05. Gate 6 implements the former. The choice is **figure-neutral** (finding 2), which
@@ -1099,14 +1278,14 @@ a reason to edit the registration — that would mean a new registration and a s
   the reveal reports. Whether §2 also intended a ranking pooled across symbols is not stated, and no
   such ranking exists in this project. *Not settled;* nothing is computed for it.
 - **OQ6 — if the actual origin counts differ from §1's table, what then?** §5 makes them
-  predictions, so the design reports both and claims nothing about the difference. But §1's `n_eff`
-  column drives §2's refusal table, and a sufficiently different count could in principle move a
-  cell (e.g. h=22's `n_eff` rising above 20 would *unrefuse* DM significance at h=22, which §2
-  refuses by name). The document refuses h=22 *and* gives the rule that implies the refusal, and
-  does not say which governs if they part. The design prints both — the registered cell and the
-  computed one — and claims the **registered** refusal, because §2's table is the commitment and the
-  rule is its derivation; but it flags the disagreement loudly rather than choosing silently.
-  *Who can settle it:* the user, and only if it happens.
+  predictions, so the design reports both (`Scored.origins` beside `REGISTERED_ORIGINS`) and claims
+  nothing about the difference. **And the question that looked dangerous is arithmetically vacuous,
+  which is better than a resolution:** a registered refusal could only be overturned by an origin
+  count larger than the window can hold. DM significance at h=22 needs `n_eff = n/22 ≥ 20`, i.e.
+  `n ≥ 440`; the MCS 25% at h=66 needs `n ≥ 528`; and the window is 209 sessions, so `n ≤ 209` at
+  every horizon once gate `window_not_ingested` has passed. No achievable count can unrefuse a cell
+  §2 refuses. A count *lower* than predicted only refuses more, and is reported. So nothing has to
+  be chosen here, and nothing is.
 
 ---
 
