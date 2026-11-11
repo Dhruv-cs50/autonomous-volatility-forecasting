@@ -49,7 +49,6 @@ from volab.reveal import (
     REGISTERED_COMPARISONS,
     REGISTERED_ORIGINS,
     REGISTERED_TRIALS,
-    SEAL_SENTENCES,
     ChampionStatus,
     Gate,
     canary_disagrees,
@@ -70,7 +69,7 @@ from volab.reveal import (
     raw_bars_frames,
     read_bars,
     score,
-    seal_state,
+    seal_sentence,
     short_window,
     snapshot,
     tail_completion,
@@ -319,8 +318,7 @@ def main(
     except Exception:
         traceback.print_exc()
         code = 1
-    state = seal_state(store.audit_tally(resolved), committed=_committed())
-    print(SEAL_SENTENCES[state])
+    print(seal_sentence(store.audit_tally(resolved), committed=_committed()))
     return code
 
 

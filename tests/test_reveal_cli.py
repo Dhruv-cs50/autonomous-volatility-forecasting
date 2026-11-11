@@ -45,18 +45,27 @@ def last_line(out: str) -> str:
 def expected_sentence(world: World) -> str:
     """The seal line the record calls for, derived here from the log itself and not from
     ``seal_state``, so the CLI's wording is checked against an independent reading."""
-    kinds = [(r["kind"], r["reveal_id"]) for r in records(world) if r["kind"].startswith("reveal_")]
+    log = records(world)
+    kinds = [(r["kind"], r["reveal_id"]) for r in log if r["kind"].startswith("reveal_")]
+    looks = sum(1 for r in log if r["kind"] == "look_open")
     opened = {i for k, i in kinds if k == "reveal_open"}
     completed = {i for k, i in kinds if k == "reveal_complete" and i in opened}
     if cli._committed():
         state = reveal.SealState.LIFTED
     elif completed:
         state = reveal.SealState.READ_UNCOMMITTED
+    elif opened and looks:
+        state = reveal.SealState.COUNTED_WITH_LOOKS
     elif opened:
         state = reveal.SealState.COUNTED
     else:
         state = reveal.SealState.UNTOUCHED
-    return reveal.SEAL_SENTENCES[state]
+    return said(state, looks)
+
+
+def said(state: reveal.SealState, looks: int) -> str:
+    """The sentence for ``state``; only the looks-taken one names a number."""
+    return reveal.SEAL_SENTENCES[state].format(looks=looks)
 
 
 # ---- the completed rehearsal: W7, W9, W24 ------------------------------------------------------
@@ -183,6 +192,7 @@ def test_the_printed_result_states_a_withheld_champions_lead_carries_no_claim(
 
 Setup = Callable[[World, pytest.MonkeyPatch], None]
 UNTOUCHED, COUNTED = reveal.SealState.UNTOUCHED, reveal.SealState.COUNTED
+LOOKED = reveal.SealState.COUNTED_WITH_LOOKS
 READ, LIFTED = reveal.SealState.READ_UNCOMMITTED, reveal.SealState.LIFTED
 
 
@@ -306,11 +316,11 @@ _EXITS: list[tuple[str, bool, Setup | None, str, dt.date, int, reveal.SealState,
         "take",
         dt.date(2024, 4, 22),
         11,
-        COUNTED,
+        LOOKED,
         "do not reach",
     ),
-    ("12 canary", True, _canary_trips, "take", TODAY, 12, COUNTED, "changed across"),
-    ("1 crash in scoring", True, _scoring_crashes, "take", TODAY, 1, COUNTED, "scoring fell over"),
+    ("12 canary", True, _canary_trips, "take", TODAY, 12, LOOKED, "changed across"),
+    ("1 crash in scoring", True, _scoring_crashes, "take", TODAY, 1, LOOKED, "scoring fell over"),
     ("13 ambiguous", True, _ambiguous, "take", TODAY, 13, READ, "names nobody"),
     ("14 truncation", True, _truncation_disagrees, "take", TODAY, 14, READ, "leakage guard"),
     (
@@ -320,7 +330,7 @@ _EXITS: list[tuple[str, bool, Setup | None, str, dt.date, int, reveal.SealState,
         "take",
         TODAY,
         15,
-        COUNTED,
+        LOOKED,
         "the driver refused",
     ),
     ("1 crash in printing", True, _printing_fails, "take", TODAY, 1, READ, "printer fell over"),
@@ -365,10 +375,13 @@ def test_every_exit_says_what_the_record_holds_about_the_seal(
 
     assert got == code
     assert phrase in captured.out + captured.err
-    assert last_line(captured.out) == reveal.SEAL_SENTENCES[state]
+    looks = sum(1 for r in records(world) if r["kind"] == "look_open")
+    if state in (COUNTED, LOOKED):
+        assert (looks > 0) == (state is LOOKED), "the row's state agrees with the looks on disk"
+    assert last_line(captured.out) == said(state, looks)
     assert last_line(captured.out) == expected_sentence(world)
-    # The other three worlds' wording does not appear anywhere in this run's output.
-    others = [s for other, s in reveal.SEAL_SENTENCES.items() if other is not state]
+    # The other four worlds' wording does not appear anywhere in this run's output.
+    others = [said(other, looks) for other in reveal.SEAL_SENTENCES if other is not state]
     assert not [s for s in others if s in captured.out]
     if code in range(3, 10):
         assert not records(world), "a pre-read refusal writes nothing at all"
@@ -376,6 +389,42 @@ def test_every_exit_says_what_the_record_holds_about_the_seal(
         assert "Traceback" in captured.err
     # The unlock variable is never in the environment, before or after.
     assert os.environ.get("VOLAB_HOLDOUT_UNLOCK") is None
+
+
+def test_an_attempt_that_took_looks_says_so_and_names_how_many(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """R220. ``reveal_open`` with look lines and no completion is not "nothing was read". The
+    wording is spelled out here and not read back from ``SEAL_SENTENCES``, so a swap of the two
+    sentences cannot pass, and the number is compared with the log's own count."""
+    world = build_world(tmp_path, monkeypatch, key=True, with_store=True)
+    _canary_trips(world, monkeypatch)
+
+    assert run(world, "take", today=TODAY) == 12
+    line = last_line(capsys.readouterr().out)
+
+    taken = sum(1 for r in records(world) if r["kind"] == "look_open")
+    assert taken > 0
+    assert not [r for r in records(world) if r["kind"] == "reveal_complete"]
+    assert f"the log holds {taken} sealed looks" in line
+    assert "holdout data has been seen" in line
+    assert "not a first look" in line
+    assert "nothing was read" not in line
+
+
+def test_an_attempt_that_took_no_looks_says_nothing_was_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = build_world(tmp_path, monkeypatch, key=False, with_store=True)
+
+    assert run(world, "take", today=TODAY) == 10
+    line = last_line(capsys.readouterr().out)
+
+    assert [r for r in records(world) if r["kind"] == "reveal_open"]
+    assert not [r for r in records(world) if r["kind"] == "look_open"]
+    assert "nothing was read" in line
+    assert "sealed looks" not in line
+    assert "not a first look" not in line
 
 
 def test_usage_errors_are_argparses_own_and_say_the_seal_is_untouched(

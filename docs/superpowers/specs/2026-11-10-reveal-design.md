@@ -846,12 +846,19 @@ Four orderings in there are decisions:
 - **Every exit prints what the record says about the seal, derived from the record and from
   nothing else.** The last line of output is `SEAL_SENTENCES[seal_state(audit_tally, committed)]`
   -- never a function of the exit code, because exit 1 is any unexpected exception and can mean
-  "nothing happened" or "the holdout was read and only the printing failed". There are four
-  states: *untouched* (neither line exists), *counted* (a `reveal_open` without its completion;
-  seal intact), *read, uncommitted* (both lines on disk: the holdout has been read, this run was
-  the reveal, and the seal lifts when `data/holdout_access.jsonl` is committed -- the state every
-  successful `take` ends in) and *lifted* (both lines committed at HEAD). No gate's own message
-  speaks about the seal (witness: `test_the_gate_codes_are_distinct_and_never_reserved`).
+  "nothing happened" or "the holdout was read and only the printing failed". There are five
+  states (R219, widened by R220): *untouched* (neither line exists), *counted* (a `reveal_open`
+  and **no look lines**, no completion: nothing was read; seal intact), *counted, with looks* (a
+  `reveal_open`, look lines, no completion: sealed looks were taken so **holdout data has been
+  seen**; the seal is intact at HEAD, the attempt is counted, and a later run is not a first
+  look; the sentence names the number of looks the log holds), *read, uncommitted* (both lines
+  on disk: the holdout has been read, this run was the reveal, and the seal lifts when
+  `data/holdout_access.jsonl` is committed -- the state every successful `take` ends in) and
+  *lifted* (both lines committed at HEAD). Exits 1, 11, 12 and 15 land in *counted, with looks*
+  and only exit 10 in *counted*, but no exit names either: the split is `tally.looks`. R220
+  rejects writing `reveal_complete` on those paths -- "lifted" is far too strong for 16 of 38
+  looks and no registered figure -- so `record_reveal_completed` stays at step 16. No gate's own
+  message speaks about the seal (witness: `test_the_gate_codes_are_distinct_and_never_reserved`).
 - **Exit 0 means completed and determined.** 13 and 14 both mean "completed, with something the
   reader must be told"; 13 wins if both apply, because an undetermined champion is the larger fact.
 

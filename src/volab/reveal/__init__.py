@@ -315,7 +315,8 @@ def tail_completion(settings: Settings, horizon: int) -> dt.date:
 
 class SealState(StrEnum):
     UNTOUCHED = "untouched"  # neither line exists
-    COUNTED = "counted"  # a reveal_open without its reveal_complete
+    COUNTED = "counted"  # a reveal_open without its reveal_complete, and no look lines (R220)
+    COUNTED_WITH_LOOKS = "counted_with_looks"  # the same, but sealed looks are in the log (R220)
     READ_UNCOMMITTED = "read_uncommitted"  # both lines on disk, not yet committed
     LIFTED = "lifted"  # both lines, committed at HEAD
 
@@ -326,7 +327,13 @@ SEAL_SENTENCES: dict[SealState, str] = {
     ),
     SealState.COUNTED: (
         "seal: INTACT. A reveal attempt is on record without its completion, so it is counted "
-        "and lifts nothing. The next take is a new reveal_id."
+        "and lifts nothing; nothing was read. The next take is a new reveal_id."
+    ),
+    # The one template: ``{looks}`` is filled by ``seal_sentence`` from the tally, never typed.
+    SealState.COUNTED_WITH_LOOKS: (
+        "seal: INTACT at HEAD, and this attempt is counted, but sealed looks were taken and "
+        "holdout data has been seen: the log holds {looks} sealed looks and no completion. "
+        "A later run is not a first look."
     ),
     SealState.READ_UNCOMMITTED: (
         "seal: the holdout HAS BEEN READ and this run was the reveal; the figures are in the "
@@ -348,8 +355,13 @@ def seal_state(tally: AuditTally, *, committed: bool) -> SealState:
     if tally.completed:
         return SealState.READ_UNCOMMITTED
     if tally.attempts:
-        return SealState.COUNTED
+        return SealState.COUNTED_WITH_LOOKS if tally.looks else SealState.COUNTED
     return SealState.UNTOUCHED
+
+
+def seal_sentence(tally: AuditTally, *, committed: bool) -> str:
+    """The line the operator is left with: the state's sentence, with the log's own look count."""
+    return SEAL_SENTENCES[seal_state(tally, committed=committed)].format(looks=tally.looks)
 
 
 # ---- the span, declared before it is taken -----------------------------------------------------

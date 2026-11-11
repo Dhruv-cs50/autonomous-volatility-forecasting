@@ -724,26 +724,46 @@ def test_the_canary_catches_a_changed_dev_frame() -> None:
 
 
 def test_the_seal_state_is_a_function_of_the_tally_and_the_commit() -> None:
-    open_only = store.AuditTally(3, 3, (A,), frozenset())
+    open_only = store.AuditTally(0, 0, (A,), frozenset())
+    looked = store.AuditTally(16, 16, (A,), frozenset())
     both = store.AuditTally(3, 3, (A,), frozenset({A}))
     nothing = store.AuditTally(0, 0, (), frozenset())
 
     assert reveal.seal_state(nothing, committed=False) is reveal.SealState.UNTOUCHED
     assert reveal.seal_state(open_only, committed=False) is reveal.SealState.COUNTED
+    assert reveal.seal_state(looked, committed=False) is reveal.SealState.COUNTED_WITH_LOOKS
     assert reveal.seal_state(both, committed=False) is reveal.SealState.READ_UNCOMMITTED
     assert reveal.seal_state(both, committed=True) is reveal.SealState.LIFTED
     markers = {
         reveal.SealState.UNTOUCHED: "Nothing was written",
-        reveal.SealState.COUNTED: "INTACT",
+        reveal.SealState.COUNTED: "nothing was read",
+        reveal.SealState.COUNTED_WITH_LOOKS: "holdout data has been seen",
         reveal.SealState.READ_UNCOMMITTED: "HAS BEEN READ",
         reveal.SealState.LIFTED: "LIFTED",
     }
     assert set(markers) == set(reveal.SealState) == set(reveal.SEAL_SENTENCES)
     for state, sentence in reveal.SEAL_SENTENCES.items():
-        # The four worlds never borrow each other's wording.
+        # The five worlds never borrow each other's wording.
         assert markers[state] in sentence
         assert not [m for other, m in markers.items() if other is not state and m in sentence]
     assert "committed" in reveal.SEAL_SENTENCES[reveal.SealState.READ_UNCOMMITTED]
+
+
+def test_a_counted_attempt_that_took_looks_says_so_and_names_how_many() -> None:
+    """R220: ``reveal_open`` with look lines and no completion is not "nothing was read"."""
+    looked = store.AuditTally(16, 15, (A,), frozenset())
+    none = store.AuditTally(0, 0, (A,), frozenset())
+
+    said = reveal.seal_sentence(looked, committed=False)
+    assert "16 sealed looks" in said
+    assert "not a first look" in said
+    assert "nothing was read" not in said
+    assert "INTACT" in said  # intact at HEAD, and counted
+    assert "7 sealed looks" in reveal.seal_sentence(
+        store.AuditTally(7, 7, (A,), frozenset()), committed=False
+    )
+    assert "nothing was read" in reveal.seal_sentence(none, committed=False)
+    assert "sealed looks" not in reveal.seal_sentence(none, committed=False)
 
 
 def test_the_fingerprint_is_json_and_taken_before_anything_is_appended() -> None:
