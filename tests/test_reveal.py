@@ -775,10 +775,15 @@ def test_the_fingerprint_is_json_and_taken_before_anything_is_appended() -> None
         blob=reveal.REGISTERED_BLOB,
         trials_at_read=420,
         comparisons_at_read=52,
+        all_ledgers_at_read=431,
     )
     record = json.loads(json.dumps(fp.record()))
 
     assert record["trials_registered"] == 414 and record["trials_delta"] == 6
+    # The superset sits beside the registered pair and never replaces it (HR-9).
+    assert record["all_ledgers_at_read"] == 431 and record["all_ledgers_delta"] == 17
+    assert reveal.SUPERSET_REASON in record["all_ledgers_note"]
+    assert "R139" in record["all_ledgers_note"] and "superset" in record["all_ledgers_note"]
     assert record["comparisons_delta"] == 0
     assert record["planned_looks"] == 38
     assert record["stride"] == 1 and record["benchmarks"] == []
@@ -842,10 +847,10 @@ _IMPORT_ALLOW = {
         "LOSSES",
         "Evaluation",
         "Trial",
-        "count_trials",
         "load_targets",
         "run_configuration",
     },
+    "volab.counts": {"agent_ledgers_line", "count_all"},
     "volab.leaderboard": {"ranked_trials", "read_comparisons", "read_trials"},
 }
 
@@ -1037,3 +1042,66 @@ def test_the_import_ratchet_is_untouched() -> None:
     assert not [p for p in ratchet._sealed_modules() if "reveal" in p.as_posix()]
     assert "reveal" not in ratchet.SEALED_PACKAGES
     assert not [s for s in ratchet.SEALED if "reveal" in s]
+
+
+# ---- HR-9: SEAL_SENTENCES is a template, so only seal_sentence may touch it (R221) -----
+
+
+def _seal_sentences_uses(sources: dict[Path, str]) -> list[str]:
+    """Every ``path:line`` that names ``SEAL_SENTENCES`` in code, except inside ``seal_sentence``.
+
+    One entry holds a ``{looks}`` placeholder, so anything printing the dict emits it literally.
+    The definition itself (a store) and the one function that fills the placeholder are exempt;
+    prose in a docstring or comment is not a use.
+    """
+    found: list[str] = []
+    for path, source in sorted(sources.items()):
+        tree = ast.parse(source)
+        exempt = {
+            id(inner)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "seal_sentence"
+            for inner in ast.walk(node)
+        }
+        for node in ast.walk(tree):
+            if id(node) in exempt:
+                continue
+            named = (
+                (isinstance(node, ast.Name) and node.id == "SEAL_SENTENCES")
+                or (isinstance(node, ast.Attribute) and node.attr == "SEAL_SENTENCES")
+                or (
+                    isinstance(node, ast.ImportFrom)
+                    and any(a.name == "SEAL_SENTENCES" for a in node.names)
+                )
+            )
+            if named and not (isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)):
+                found.append(f"{path.as_posix()}:{node.lineno}")
+    return found
+
+
+def _volab_sources() -> dict[Path, str]:
+    root = Path(volab.__file__).parent
+    return {p.relative_to(root): p.read_text(encoding="utf-8") for p in root.rglob("*.py")}
+
+
+def test_nothing_under_src_references_seal_sentences_outside_seal_sentence() -> None:
+    assert _seal_sentences_uses(_volab_sources()) == []
+
+
+def test_the_seal_sentences_scan_sees_each_spelling_and_exempts_only_its_function() -> None:
+    sources = {
+        Path("definition.py"): "SEAL_SENTENCES = {}\n",
+        Path("annotated.py"): "SEAL_SENTENCES: dict[str, str] = {}\n",
+        Path("filler.py"): "def seal_sentence(t):\n    return SEAL_SENTENCES[t].format(looks=1)\n",
+        Path("prose.py"): '"""Mentions SEAL_SENTENCES in prose only."""\n# SEAL_SENTENCES\n',
+        Path("name.py"): "print(SEAL_SENTENCES)\n",
+        Path("attr.py"): "import volab.reveal as r\nprint(r.SEAL_SENTENCES)\n",
+        Path("imported.py"): "from volab.reveal import SEAL_SENTENCES\n",
+        Path("other.py"): "def seal_sentence_two(t):\n    return SEAL_SENTENCES[t]\n",
+    }
+    assert _seal_sentences_uses(sources) == [
+        "attr.py:2",
+        "imported.py:1",
+        "name.py:1",
+        "other.py:2",
+    ]

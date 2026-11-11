@@ -85,6 +85,8 @@ REGISTERED_BLOB: str = "4b5c04e38280cbff591d353b1ccf8a91cb3d517b"
 REGISTERING_COMMIT: str = "65617eea2e1c95b8cf0b90555810bf64944c9153"
 REGISTERED_TRIALS: int = 414
 REGISTERED_COMPARISONS: int = 52
+# Why a second trial count is printed beside the registered one (HR-9).
+SUPERSET_REASON: str = "agent trials are trials, and R139 keeps them in separate files"
 # Section 1's predictions of the usable origins per horizon. Predictions and not commitments
 # (section 5): a mismatch is reported beside the actual counts, never refused.
 REGISTERED_ORIGINS: dict[int, int] = {1: 208, 5: 204, 22: 187, 66: 143}
@@ -452,6 +454,11 @@ class Fingerprint:
     comparisons_registered: int
     comparisons_at_read: int
     comparisons_delta: int
+    # A labelled superset beside the registered pair, never in place of it (HR-9): every trial
+    # ledger ``volab.counts.count_all`` counts, against the same registered 414.
+    all_ledgers_at_read: int
+    all_ledgers_delta: int
+    all_ledgers_note: str
     planned_looks: int
     # None on the open line; filled on the complete line.
     champion: dict[str, object] | None = None
@@ -472,6 +479,7 @@ def fingerprint(
     blob: str,
     trials_at_read: int,
     comparisons_at_read: int,
+    all_ledgers_at_read: int,
 ) -> Fingerprint:
     return Fingerprint(
         preregistration_path=PREREGISTRATION.as_posix(),
@@ -494,6 +502,9 @@ def fingerprint(
         comparisons_registered=REGISTERED_COMPARISONS,
         comparisons_at_read=comparisons_at_read,
         comparisons_delta=comparisons_at_read - REGISTERED_COMPARISONS,
+        all_ledgers_at_read=all_ledgers_at_read,
+        all_ledgers_delta=all_ledgers_at_read - REGISTERED_TRIALS,
+        all_ledgers_note=f"superset of the registered trials figure: {SUPERSET_REASON}",
         planned_looks=expected_looks(settings),
     )
 
@@ -868,7 +879,11 @@ def score(
                     )
                     for loss in LOSSES
                 ]
-                sink.append_comparisons(batch_of_comparisons, at=at, sha=sha, dirty=dirty)
+                # The trials' own value (``Evaluation.trials``), so the two ledgers agree on it.
+                last_origin = evaluation.results[-1].origin if evaluation.results else None
+                sink.append_comparisons(
+                    batch_of_comparisons, at=at, sha=sha, dirty=dirty, last_origin=last_origin
+                )
                 comparisons.extend(batch_of_comparisons)
                 origins[(symbol, horizon)] = batch_of_comparisons[0].origins
     return Scored(tuple(comparisons), tuple(trials), tuple(refused), tuple(disagreed), origins)

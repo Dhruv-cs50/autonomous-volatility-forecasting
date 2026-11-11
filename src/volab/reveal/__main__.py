@@ -41,6 +41,7 @@ from volab import reveal, store
 from volab.compare import describe
 from volab.compare.sink import JsonlSink
 from volab.config import Settings, load_settings
+from volab.counts import agent_ledgers_line, count_all
 from volab.errors import HoldoutViolation
 from volab.leaderboard import ranked_trials, read_comparisons, read_trials
 from volab.reveal import (
@@ -49,6 +50,7 @@ from volab.reveal import (
     REGISTERED_COMPARISONS,
     REGISTERED_ORIGINS,
     REGISTERED_TRIALS,
+    SUPERSET_REASON,
     ChampionStatus,
     Gate,
     canary_disagrees,
@@ -76,7 +78,6 @@ from volab.reveal import (
     truncation_disagreed,
 )
 from volab.sessions import get_calendar
-from volab.walkforward import count_trials
 
 # The repository root: ``src/volab/reveal/__main__.py`` -> three parents up. The dirtiness question
 # is asked about it and not about the package (R70).
@@ -178,14 +179,18 @@ def _take(settings: Settings, repo_root: Path, today: dt.date, argv: Sequence[st
 
     before = snapshot(settings)
     tally_before = store.audit_tally(settings)
+    counted_at_read = count_all(root)
     fp = fingerprint(
         settings,
         sha=sha,
         dirty=False,
         sha256=str(facts["preregistration_sha256"]),
         blob=str(facts["preregistration_blob"]),
-        trials_at_read=count_trials(root),
+        # ``.trials`` is ``data/trials.jsonl`` alone, the figure section 4 registered; ``.total``
+        # is the labelled superset beside it (HR-9).
+        trials_at_read=counted_at_read.trials,
         comparisons_at_read=len(read_comparisons(root)),
+        all_ledgers_at_read=counted_at_read.total,
     )
     reveal_id = store.record_reveal_opened(settings, details=fp.record())
     with store.reveal_scope(reveal_id):
@@ -214,7 +219,7 @@ def _take(settings: Settings, repo_root: Path, today: dt.date, argv: Sequence[st
         settings, inputs, sink=sink, at=at, sha=sha, dirty=False, calendar=calendar, report=print
     )
     if scored.refused:
-        gate = configuration_refused(scored.refused, count_trials(root) - fp.trials_at_read)
+        gate = configuration_refused(scored.refused, count_all(root).trials - fp.trials_at_read)
         print(gate.message)
         return gate.code
     cohort = reveal.RUNS[0][0]
@@ -257,11 +262,18 @@ def _take(settings: Settings, repo_root: Path, today: dt.date, argv: Sequence[st
         f"reveal attempts k = {len(final.attempts)}; the k-th completed: "
         f"{bool(final.attempts) and final.attempts[-1] in final.completed}"
     )
-    after_trials = count_trials(root)
+    counted_now = count_all(root)
+    after_trials = counted_now.trials
     print(
         f"trials: registered {REGISTERED_TRIALS}, at read {fp.trials_at_read} "
         f"(delta {fp.trials_delta}), now {after_trials}"
     )
+    print(
+        f"trials, superset across all trial ledgers ({SUPERSET_REASON}): "
+        f"at read {fp.all_ledgers_at_read} (delta {fp.all_ledgers_delta} against the "
+        f"registered {REGISTERED_TRIALS}), now {counted_now.total}"
+    )
+    print(agent_ledgers_line(counted_now))
     print(
         f"comparisons: registered {REGISTERED_COMPARISONS}, at read {fp.comparisons_at_read} "
         f"(delta {fp.comparisons_delta}), now {len(read_comparisons(root))}"

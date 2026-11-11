@@ -148,6 +148,9 @@ def test_the_write_up_reports_both_counts_and_names_its_command(
         "reveal attempts k = 1; the k-th completed: True",
         "trials: registered 414, at read 0 (delta -414), now 18",
         "comparisons: registered 52, at read 0 (delta -52), now 6",
+        f"trials, superset across all trial ledgers ({reveal.SUPERSET_REASON}): "
+        "at read 0 (delta -414 against the registered 414), now 18",
+        "agent ledgers: 0 agent trial(s) in data/agent_trials.jsonl",
         "champion: none",
         "rule: The champion is the contestant in the 10% model confidence set",
         "command: python -m volab.reveal take",
@@ -513,6 +516,60 @@ def test_a_second_attempt_needs_a_commit_first_and_is_a_new_id(
     assert store._completed_reveal_in(text, splits) is True
     opens = [r for r in records(world) if r["kind"] == "reveal_open"]
     assert opens[1]["details"]["trials_at_read"] == count_trials(world.root) - 18
+
+
+def test_the_registered_pair_is_read_from_its_two_files_alone_and_the_superset_beside_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """HR-9. Agent trials (under ``tmp_path``) move the superset and never the registered pair."""
+    world = build_world(tmp_path, monkeypatch)
+    agent = world.root / "data" / "agent_trials.jsonl"
+    agent.parent.mkdir(parents=True, exist_ok=True)
+    agent.write_text('{"model": "m"}\n' * 5, encoding="utf-8")
+    # Committed, so the rehearsal's tree is clean and the dirtiness gate stays out of the way.
+    git(world.root, "add", "-f", "data/agent_trials.jsonl")
+    git(world.root, "commit", "-q", "-m", "agent trials")
+    assert run(world, "take") == 0
+    out = capsys.readouterr().out
+
+    assert "trials: registered 414, at read 0 (delta -414), now 18" in out
+    assert (
+        f"trials, superset across all trial ledgers ({reveal.SUPERSET_REASON}): "
+        "at read 5 (delta -409 against the registered 414), now 23"
+    ) in out
+    assert "agent ledgers: 5 agent trial(s) in data/agent_trials.jsonl" in out
+    # The label is spelled out here and not only read back from the constant: an emptied constant
+    # would still match its own f-string.
+    assert "superset" in out and "R139" in out and "agent trials are trials" in out
+    opened = next(r for r in records(world) if r["kind"] == "reveal_open")["details"]
+    assert (opened["trials_at_read"], opened["all_ledgers_at_read"]) == (0, 5)
+    assert (opened["trials_delta"], opened["all_ledgers_delta"]) == (-414, -409)
+    assert reveal.SUPERSET_REASON in opened["all_ledgers_note"]
+    # The reveal wrote nothing to an agent ledger.
+    assert agent.read_text(encoding="utf-8") == '{"model": "m"}\n' * 5
+    assert not world.root.joinpath("data", "agent_comparisons.jsonl").exists()
+
+
+def test_every_comparison_row_carries_the_last_origin_of_its_trials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """HR-9. The agent's R208 filter then discriminates by date rather than excluding the row."""
+    world, code, _ = _completed(tmp_path, monkeypatch, capsys)
+    raw = [
+        json.loads(line)
+        for line in world.root.joinpath("data", "trials.jsonl").read_text("utf-8").splitlines()
+    ]
+    trial_origin = {
+        (t["symbol"], t["horizon"], t["loss"], t["cohort"]): t["last_origin"] for t in raw
+    }
+    rows = read_comparisons(world.root)
+
+    assert code == 0 and len(rows) == 6
+    for row in rows:
+        assert (
+            row["last_origin"]
+            == trial_origin[(row["symbol"], row["horizon"], row["loss"], row["cohort"])]
+        )
 
 
 # ---- W22: check writes nothing ------------------------------------------------------------------
