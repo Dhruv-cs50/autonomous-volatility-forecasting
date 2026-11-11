@@ -701,8 +701,19 @@ for?** The answer depends on which window, and the distinction is the whole poin
   refusal.
 
 **So the precise claim is:** *the agent cannot express a request for, or receive any function of,
-data past `dev_end`; it can search the dev window as hard as it likes, and every step of that search
-is counted.* The PR states it in those words. Stating only the first half would be the overclaim.
+data past `dev_end`; it can search the dev window as hard as it likes, and every evaluation that
+reaches a fit is counted.* The PR states it in those words. Stating only the first half would be
+the overclaim.
+
+**Narrowed after review, because the first wording claimed more than the code does (R214).** It
+originally said "every step of that search is counted". That is false for proposals refused **before**
+a fit: by the gate, by the child's coverage check, or by the audit. Those write **no trial line**,
+consistent with how `run_configuration` has treated a coverage refusal since Phase 2. Yet a coverage
+refusal returns dev-window facts to the Critic through its `reason` ("the first origin that qualifies
+is 2023-05-16"), so a refused proposal is still a search step the agent learns from. It is recorded
+only on `data/agent_sprints.jsonl`, which is gitignored and is not a reported number. **The search is
+therefore counted at the level of evaluations, not of proposals.** That is dev-window information,
+not holdout, so the first half of the claim is untouched.
 
 **Amended: the read surface includes counts, refusals and orderings, and the first draft of this
 record missed one.** The same peer pointed at a clause in this record's own premise: *"the trial
@@ -954,3 +965,65 @@ decision for the guard's owner, not a CI unblock.
 *Cost if wrong:* none in the direction taken — a private helper is renamed. The cost of leaving the
 guard as is: the same false positive returns whenever two non-daily and daily modules share a private
 helper name, and it will look, as this one did, like the agent reaching the ledger.
+
+
+---
+
+## R214 — the review of the agent layer: R208's holdout half holds, and what it found
+
+A review seat read the roughly 3,700 lines of Phase 5 source that had never had one; only the holdout
+scan and the `HarX` contestant had been reviewed. Its first task was to try to break R208.
+
+**R208's holdout half holds.** The reviewer traced every field that reaches a `Prompt`, role by role,
+and found none computed from data past `dev_end`. The Researcher sees kept-line counts taken *after*
+the `excluded` guard, constants, and earlier sprints' model-written hypotheses. The Critic sees
+`reason` text from the child, built from frames loaded with `end = dev_end`. The Reporter sees
+`render_figures`, all dev-only. The agent code never opens `comparisons.jsonl`. The one-bit claim is
+true as stated.
+
+**Assigned to fix round A (behaviour; in progress when this was written, see the board for its commit):**
+
+- **The git dirty flag polluted itself (Important; R70).** `data/agent_trials.jsonl` is tracked, so
+  once the first child of a sprint appends to it, every later child's own `git_state` reports a
+  dirty tree. Their trial lines would then read as non-reproducible although nothing in the code had
+  changed. Verified with `git check-ignore` before acting. The fix is to pass the sprint's
+  start-captured sha and dirty flag through to each child, as R70 requires.
+- **A tampered proposal file could crash the child instead of being refused.** An id of `"foo-00"`,
+  or an index of `"²"` (which passes `isdigit()` and then fails `int()`), exited 1 with no result.
+  Both are to be refused at the boundary.
+- **Exit code 6 was not wired through the runner**, and two tests that claimed to cover every exit
+  code omitted it.
+- **A line past `dev_end` appearing after `research` was silently dropped** by `finish` and by
+  `promote`, while `research` treats the same line as an integrity failure. They are to agree.
+
+**Assigned to fix round B (claims and witnesses; not yet started when this was written):** the prompt-inventory docstrings in `roles.py`, which
+said the only date-shaped text any role sees is the run date (the Critic also sees dev-bounded origin
+dates); a **mechanical** prompt-inventory witness, since R208 had held only by reading the code; the
+rehearsal's missing non-vacuity check on the one `load_panel` call Phase 5 itself authors
+(`volab.candidate._persisted`, `har_daily`); and a snapshot pin on `VOCABULARY`. The
+vocabulary is *derived* from `FEATURE_COLUMNS`, so adding a feature column used to widen the agent's
+vocabulary silently. The docstring called it "a positive allowlist", which was true only about target
+columns.
+
+**Recorded, not fixed:**
+
+- A crash after the `awaiting_approval` events but before `complete` re-runs `finish` on resume and
+  duplicates those events. `promote` then refuses ("2 awaiting_approval events") and the candidate is
+  stuck until an operator intervenes. It belongs to R210's family: the safe failure is a refusal, and
+  the cost is operator attention.
+- `show` prints `total = trials + agent_trials`. That would include holdout lines once Phase 6 writes
+  them to `trials.jsonl`. It is operator-only output, but it is the same shape as R208's count
+  channel and should be revisited when the reveal exists.
+- `agent.ledger.read_trials` is unused inside `volab.agent`: a ready-made, filtered reader of the
+  reported ledger that nothing calls. Harmless today, and it should stay unused or be removed.
+- The canary payloads hardcode `"SPY"`. A universe without SPY would make the horizon canary hit the
+  symbol refusal code instead, and the distinct-code floor would catch that.
+
+**What the reviewer could not determine, kept as stated limits:** whether the stored targets table
+holds values derived from bars past `dev_end` for origins within `h` sessions of it. That is Phase 3's
+filter, outside this phase's audit. Also whether the sprint log, being gitignored, survives a
+multi-machine workflow, which matters for "recorded" in the narrowed R208.
+
+*Cost if wrong:* the narrowing makes the claim weaker and true. Leaving it as "every step is counted"
+would have been the overclaim this project treats as its one unforgivable defect, in the sentence the
+PR leads with.
