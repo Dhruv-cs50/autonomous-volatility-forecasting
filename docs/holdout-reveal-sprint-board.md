@@ -25,7 +25,7 @@ runs cannot touch live data until this lands.** Phase 4 is already built and mer
 | HR-1 | `holdout_end` in `Splits`, with the override direction **reversed** | `src/volab/config.py`, its YAML, `tests/` | `VOLAB_SPLITS_HOLDOUT_END` may move the boundary **later only**; an earlier value is refused. The mirror of `dev_end`, which may move **earlier only** | **already done** `85de6a5` ("P4-05: the live region"), nine days before this board existed. Verified directly: `holdout_end` is 2026-10-30, `Region` is DEV/HOLDOUT/LIVE, `region_of` classifies 2026-11-10 as LIVE, and six witnesses cover both refusal directions and the equal case. The implementer dispatched for it **stopped and reported** rather than rewriting working code |
 | HR-2 | Architect: the seal's lifecycle in `store.py` | `docs/superpowers/specs/` | a design for: live unreachable before the reveal, the seal lifting on a **completed reveal record asked of git** rather than a flag, and log-before-read ordering | **done** `ca027b8`, corrected at `c03e7d7` after its own review round. 21 witnesses, 7 of them shape witnesses, and a 19-item refusal list in §8 |
 | HR-3 | The seal lifecycle, implemented, **marker-free** | `src/volab/store.py`, `tests/` | three regions enforced **by consuming the `Region` classifier P4-05 already shipped, not a second one**; the record written **and flushed before** the read; a second append-only line marks completion; no other route lifts the seal | **done** `b82f138`, with `5322ba0`, `1072968` and `344feb5` on top. Built by one writer while a second was dispatched for it; the second verified rather than rebuilt and found W10 red at `b82f138`. 65 tests in `tests/test_store_seal.py`, W1-W21 plus W22 (a mid-process commit is invisible) and W23 (the cache reset has no production call site) |
-| HR-4 | The reveal itself: fingerprint, the multi-read span, scoring | new module + CLI, `tests/` | refuses on a dirty tree or a missing pre-registration; records the pre-registration's content hash, the champion's config, git sha, dirty flag and a content hash; spans several reads because derived tiers stop at `dev_end`; retries are **counted, not forbidden** | todo, after HR-3 |
+| HR-4 | The reveal itself: fingerprint, the multi-read span, scoring | new module + CLI, `tests/` | refuses on a dirty tree or a missing pre-registration; records the pre-registration's content hash, the champion's config, git sha, dirty flag and a content hash; spans several reads because derived tiers stop at `dev_end`; retries are **counted, not forbidden** | **designed** `866cb14`, reviewed `eeab2f7`: `docs/superpowers/specs/2026-11-10-reveal-design.md`. 7 pre-read gates, 3 that cost an attempt, a 38-look span in four stages, 26 witnesses. Implementation todo |
 | HR-5 | The dress rehearsal | `tools/` and/or `tests/` | the **whole** procedure runs against a pseudo-holdout carved inside dev, on a **separate storage root**, leaving no mark on the real audit log | todo, after HR-4 |
 | HR-1b | `VOLAB_SPLITS_HOLDOUT_END` refused in **both** directions | `src/volab/config.py`, `tests/` | P4-05 permitted a *later* override because it "only withholds data". The seal design makes `holdout_end` the read bound and the two keys reach that region, so a later override turns live dates into holdout dates a key-holder may read pre-reveal. Refused either way; `dev_end` unchanged | **done** `4275e9e`. Found mid-flight with one witness still red (`test_env_overrides_apply_to_every_field` set a later `holdout_end`) and finished rather than reverted: that override is now the file's own literal. 1876 tests green |
 | HR-7 | The daily's **own** seal | `src/volab/daily/`, `tests/` | `daily/__init__.py:200` (`:117` before #18 moved it) holds its own `if as_of > dev_end: refused`, so **after the reveal `daily plan` still refuses every real date** and Phase 4 never gets a live morning. `store.py` lifting its seal does not lift that one. `plan_for` stays pure: a `revealed: bool = False` keyword defaulting to the sealed answer, `__main__` supplying `store.reveal_is_committed()` at the seam `_today()` already enters, and the refusal written `if not revealed and as_of > dev_end` — **no upper bound once revealed**. Also triages `ingest.curate`'s and the features CLI's `end=dev_end` pins into seal pins and research pins; `walkforward.load_for` is a research pin and stays at `dev_end` forever | todo, after HR-3. File set disjoint from HR-4 and HR-5, so it may run beside them | **done** `7b0aa79`. `plan_for` gains a keyword-only `revealed: bool = False` and stays pure; the refusal is `if not revealed and as_of > dev_end`, with no upper bound once revealed; `daily/__main__` is the only caller and passes `reveal_is_committed()`. 18 tests in `tests/test_daily_reveal.py`, five mutants killed by hand, and shape witnesses that no argparse flag, env var or `Settings` field can feed `revealed=` |
@@ -179,3 +179,53 @@ confirmed to reach one module further than the story that added it tested.
 | id | story | files | acceptance | state |
 |---|---|---|---|---|
 | HR-8 | A revealed date past the calendar's last session | `src/volab/daily/`, `tests/` | HR-7 removed the upper bound, correctly. A consequence: with `revealed=True`, an `--as-of` past the XNYS calendar's last session (2027-11-10) now reaches `is_session` and raises `DateOutOfBounds` instead of returning a plan. Before HR-7 it was refused before the calendar was asked. Not a seal hole and not reachable by a daily run on today's date, but a traceback where an outcome belongs. Turn it into a `no_session` or `refused` outcome with the calendar's bound named | todo, found by HR-7 and deliberately left outside it |
+
+
+## What HR-4's design found, three of them verified here before being written down
+
+**The blocker, and it would have shipped green.** Of the reveal's 38 sealed reads, exactly one is a
+direct `load_panel` call; the other 37 go through `panel.load_bars`, `panel.load_exogenous`,
+`walkforward.load_targets` and `ingest.curate_*`, **none of which takes an `allow_holdout`
+parameter** — verified: their signatures are `(settings, symbol, *, end)` and the only mentions of
+the keyword under `src/volab/` outside `store.py` are prose in `config.py` and `daily/__init__.py`.
+So a `take` built to either design as written would be refused on its first raw read, every time.
+HR-4 therefore threads a keyword-only `allow_holdout: bool = False` through those signatures.
+
+**And HR-3's own witness stub would have hidden it.** `tests/test_store_seal.py:88` stubs
+`monkeypatch.setattr(store, "_unlock_granted", lambda _: True)` — verified by reading the line. The
+underscore **discards the argument**, so a witness using it goes green whether the caller passed the
+key or not: every span witness would have passed against production code that never threaded it.
+The stub becomes `lambda allow_holdout: allow_holdout`, and this is the lesson worth keeping from
+the whole sprint: **a permissive stub copied from the story below can hide the defect the story
+above introduces.** Nothing was wrong with HR-3; the stub was adequate for what HR-3 tested and
+inadequate for what HR-4 needs, and only HR-4 could find that out.
+
+**The window is not ingested, so the reveal cannot be taken yet.** Read from partition
+**directory names only**, no value read: `data/raw/nasdaq_bars/SPY` ends at `date=2026-10-20`,
+`cboe_vix/VIX` at `2026-10-20`, `fred/DGS10` at `2026-10-22`. `holdout_end` is **2026-10-30**, so
+roughly seven sessions are missing and `python -m volab.ingest` must run first. The design makes
+this gate `window_not_ingested`, which costs an attempt rather than being free, and that is correct:
+finding out requires a read.
+
+### Two questions for the user, and the first one is ordered
+
+**OQ1 — may a contestant whose significance R115 withholds be the champion?** The registration's §3
+names only "the member of the 10% model confidence set with the lowest QLIKE at h=1 on SPY". Its §1
+and §2 withhold every claim for `egarch11_skewt` at h=1 *and* call it "the contestant currently
+leading h=1 QLIKE". The document does not distinguish the two readings, so `champion_from` returns
+`AMBIGUOUS` and `take` exits 13 rather than choosing. **This must be settled before the reveal is
+taken, not after:** exit 13 still writes `reveal_complete`, and once that is committed the seal is
+lifted and both candidates' numbers are on screen, so any ruling made afterwards is selection on
+the numbers by construction.
+
+**OQ2 — when may it run?** The registration's §1 and the ratified parent design say "once the
+window has closed"; the registration's own closing paragraph and R130 say "`holdout_end` plus each
+horizon's tail", about 2027-02-05. The implemented gate takes the former, and that is safe only
+because the choice is **figure-neutral**: the read is bounded at `holdout_end` and `load_panel`
+filters on `as_of`, so a target stamped in 2027 is invisible whenever the read happens. Waiting
+three months changes no number.
+
+Four further open questions (an unregistered `minimum_training` that provably cannot bind, whether a
+holdout origin may train on earlier holdout sessions, the grouping of "the ranking on each loss",
+and an arithmetically vacuous refusal threshold) are stated in the design and left unresolved there,
+which is the correct outcome rather than a gap.
