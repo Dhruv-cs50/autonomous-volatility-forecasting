@@ -50,7 +50,12 @@ def _count_lines(path: Path) -> int:
 
 
 def count_all(root: Path) -> LedgerCounts:
-    """The non-blank line count of each ledger under ``root``; an absent file is ``0``."""
+    """The non-blank line count of each ledger under ``root``; an absent file is ``0``.
+
+    ``root`` is the **parent** of the storage root, i.e. ``settings.storage_root.parent``, since
+    every ledger path (``data/trials.jsonl``, ``data/agent_trials.jsonl``, ...) already begins with
+    ``data/``. Passing ``settings.storage_root`` itself finds no file and reports zeros (R211).
+    """
     trials = count_trials(root)
     agent_trials = _count_lines(root / AGENT_TRIAL_LEDGER)
     return LedgerCounts(

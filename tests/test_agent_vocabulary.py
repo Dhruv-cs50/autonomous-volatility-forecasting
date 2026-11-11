@@ -106,6 +106,51 @@ def test_the_vocabulary_is_the_feature_columns_minus_the_har_base_and_its_transf
     assert len(VOCABULARY) == len(set(VOCABULARY))
 
 
+# The committed vocabulary (R214). ``VOCABULARY`` is derived from ``FEATURE_COLUMNS``, so a column
+# added to the feature engine would widen what the agent may select with no review at all. This
+# literal is the review: widening the vocabulary means editing it here, in a diff somebody reads.
+_PINNED_VOCABULARY: tuple[str, ...] = (
+    "semivar_neg_proxy_d1",
+    "semivar_pos_proxy_d1",
+    "signed_jump_proxy_d1",
+    "semivar_neg_proxy_d5",
+    "semivar_pos_proxy_d5",
+    "signed_jump_proxy_d5",
+    "bipower_proxy_d5",
+    "semivar_neg_proxy_d22",
+    "semivar_pos_proxy_d22",
+    "signed_jump_proxy_d22",
+    "bipower_proxy_d22",
+    "rv_proxy_d66",
+    "semivar_neg_proxy_d66",
+    "semivar_pos_proxy_d66",
+    "signed_jump_proxy_d66",
+    "bipower_proxy_d66",
+    "iv_h1",
+    "iv_h5",
+    "iv_h22",
+    "iv_var_h1",
+    "iv_var_h5",
+    "iv_var_h22",
+    "vvix",
+    "baa10y",
+    "dgs10",
+    "t10y2y",
+    "has_distribution",
+)
+
+
+def test_the_vocabulary_equals_the_committed_snapshot_so_widening_is_a_reviewed_edit() -> None:
+    """The derivation test above recomputes the derivation, so it cannot fail when the feature
+    engine grows. This one can: a new feature column changes ``VOCABULARY`` and fails here until
+    someone edits ``_PINNED_VOCABULARY`` and a reviewer reads the new name."""
+    assert VOCABULARY == _PINNED_VOCABULARY, (
+        "the agent's vocabulary changed. If that is deliberate, edit _PINNED_VOCABULARY; "
+        f"added={sorted(set(VOCABULARY) - set(_PINNED_VOCABULARY))}, "
+        f"removed={sorted(set(_PINNED_VOCABULARY) - set(VOCABULARY))}"
+    )
+
+
 def test_the_vocabulary_names_no_target_column() -> None:
     """Derived, not typed: the target set is computed from ``volab.features.targets``. A positive
     allowlist rejects ``target_rv_proxy_h5`` and every name nobody anticipated; this is the
@@ -340,31 +385,57 @@ def test_an_empty_reference_is_refused_as_having_nothing_to_order() -> None:
     assert refusal_of(good(reference=[])).code is RefusalCode.NO_REFERENCE
 
 
+@pytest.mark.parametrize("reference", ["har_levels", 5, None, {"har_levels": 1}])
+def test_a_reference_that_is_not_a_list_is_refused_rather_than_iterated(reference: object) -> None:
+    """The non-list branch of ``_names`` for ``reference``: a bare string must not be iterated by
+    character, and the refusal says what was received."""
+    refused = refusal_of(good(reference=reference))
+    assert refused.code is RefusalCode.UNKNOWN_REFERENCE
+    assert "reference must be a list of names" in str(refused)
+    assert type(reference).__name__ in str(refused)
+
+
 def test_a_repeated_reference_is_refused_and_named() -> None:
     refused = refusal_of(good(reference=["har_levels", "har_levels"]))
     assert refused.code is RefusalCode.DUPLICATE_REFERENCE and "har_levels" in str(refused)
 
 
-def test_every_refusal_code_has_a_test_that_raises_it() -> None:
-    """The codes this module's tests exercise, spelled out, against the enum: a code added later
-    without a test makes this fail."""
-    exercised = {
-        RefusalCode.NOT_A_MAPPING,
-        RefusalCode.UNKNOWN_KEY,
-        RefusalCode.MISSING_KEY,
-        RefusalCode.OUT_OF_VOCABULARY,
-        RefusalCode.DUPLICATE_REGRESSOR,
-        RefusalCode.TOO_MANY_REGRESSORS,
-        RefusalCode.NO_REGRESSORS,
-        RefusalCode.SYMBOL_NOT_IN_UNIVERSE,
-        RefusalCode.HORIZON_NOT_CONFIGURED,
-        RefusalCode.UNKNOWN_FAMILY,
-        RefusalCode.UNKNOWN_REFERENCE,
-        RefusalCode.REFERENCE_ORDER,
-        RefusalCode.NO_REFERENCE,
-        RefusalCode.DUPLICATE_REFERENCE,
-    }
-    assert exercised == set(RefusalCode)
+def _payload_without(key: str) -> dict[str, Any]:
+    raw = good()
+    del raw[key]
+    return raw
+
+
+# One payload per code, and the code it must raise. The table is typed by hand; what the test below
+# checks is that every payload really raises its code and that no member of the enum is missing.
+_PAYLOAD_PER_CODE: dict[RefusalCode, object] = {
+    RefusalCode.NOT_A_MAPPING: "not a mapping",
+    RefusalCode.UNKNOWN_KEY: good(end="2026-06-30"),
+    RefusalCode.MISSING_KEY: _payload_without("symbol"),
+    RefusalCode.OUT_OF_VOCABULARY: good(extra_regressors=["no_such_column"]),
+    RefusalCode.DUPLICATE_REGRESSOR: good(extra_regressors=[VOCABULARY[0], VOCABULARY[0]]),
+    RefusalCode.TOO_MANY_REGRESSORS: good(
+        extra_regressors=list(VOCABULARY[: MAX_EXTRA_REGRESSORS + 1])
+    ),
+    RefusalCode.NO_REGRESSORS: good(extra_regressors=[]),
+    RefusalCode.SYMBOL_NOT_IN_UNIVERSE: good(symbol="TSLA"),
+    RefusalCode.HORIZON_NOT_CONFIGURED: good(horizon=10),
+    RefusalCode.UNKNOWN_FAMILY: good(family="garch"),
+    RefusalCode.UNKNOWN_REFERENCE: good(reference=["har_levels", "oracle"]),
+    RefusalCode.REFERENCE_ORDER: good(reference=["random_walk", "har_levels"]),
+    RefusalCode.NO_REFERENCE: good(reference=[]),
+    RefusalCode.DUPLICATE_REFERENCE: good(reference=["har_levels", "har_levels"]),
+}
+
+
+def test_every_refusal_code_is_raised_by_a_payload_in_the_table() -> None:
+    """Each code has a payload in ``_PAYLOAD_PER_CODE`` that ``validate`` refuses with exactly that
+    code, and the table's keys are every member of the enum. It does not check that a separate,
+    detailed test exists for each code: the per-branch tests above are the ones that assert what
+    the refusal says."""
+    assert set(_PAYLOAD_PER_CODE) == set(RefusalCode), "a code was added without a payload"
+    for code, payload in _PAYLOAD_PER_CODE.items():
+        assert refusal_of(payload).code is code, code
 
 
 def test_a_refusal_is_a_volab_error_and_deliberately_not_a_value_error() -> None:

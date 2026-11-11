@@ -12,12 +12,16 @@ no such list anywhere in this file. A denylist is a list that cannot report its 
 which is R151's exact failure mode; refusing by being unknown means a key invented in 2027 is
 refused today by the same branch that refuses ``end``.
 
-**The vocabulary is a positive allowlist, not a subtraction of target columns (R185).**
-``FEATURE_COLUMNS`` holds no forward quantity to begin with, and an allowlist rejects
-``target_rv_proxy_h5`` *and every name nobody anticipated*, where a denylist rejects only what it
-lists. That the allowlist itself admits no target column is witnessed by a derived test
-(``test_the_vocabulary_names_no_target_column``), not asserted here. The agent names no response
-either: there is no field for it.
+**The vocabulary is derived, and pinned so that widening it is a deliberate act (R185, R214).**
+:data:`VOCABULARY` is ``FEATURE_COLUMNS`` minus the HAR base and its exact transforms: a
+subtraction, so a column added to the feature engine would join it silently. A snapshot test
+(``test_the_vocabulary_equals_the_committed_snapshot_so_widening_is_a_reviewed_edit``) compares it
+with a literal tuple, so any widening is an edit to that literal and appears in a reviewed diff.
+What *is* a positive allowlist is the rejection of target columns: ``FEATURE_COLUMNS`` holds no
+forward quantity, so ``target_rv_proxy_h5`` and every name nobody anticipated is refused as not in
+the vocabulary, where a denylist would refuse only what it lists. That the vocabulary admits no
+target column is witnessed by a derived test (``test_the_vocabulary_names_no_target_column``), not
+asserted here. The agent names no response either: there is no field for it.
 
 **Two sets of columns are excluded, for different reasons, and both are witnessed by running
 ``fit_ols`` rather than by trusting these sentences.** ``HAR_COLUMNS`` (``har_d_proxy``,
@@ -153,8 +157,10 @@ def _names(raw: object, what: str) -> tuple[object, ...]:
 def validate(raw: object, *, sprint_id: str, index: int, universe: tuple[str, ...]) -> Proposal:
     """``raw`` (a parsed LLM payload) as a Proposal, or raise ProposalRefused carrying a code.
 
-    Branches run in the order of the :class:`RefusalCode` members' reading: shape, keys, then each
-    field. The first defect found is the one reported, so a payload with two defects names one.
+    Branches run in this order: shape, keys, family, regressors (``NO_REGRESSORS``, then
+    ``OUT_OF_VOCABULARY``, ``TOO_MANY_REGRESSORS``, ``DUPLICATE_REGRESSOR``), symbol, horizon,
+    reference. That is not the order of the :class:`RefusalCode` members. The first defect found is
+    the one reported, so a payload with two defects names one.
     ``proposal_id`` is built here from ``sprint_id`` and ``index``; a payload that supplies one is
     refused as an unknown key like any other. Total over every ``object``: a malformed payload
     raises :class:`~volab.errors.ProposalRefused`, never anything else.

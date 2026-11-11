@@ -12,8 +12,22 @@ the "no role calls another" claim from this file's AST rather than asserting it 
 receives the universe and returns raw payloads, because the typed ``propose_config`` of the
 framework's table is, in this design, the gate that the hub applies to what it returns; the Runner
 receives ``submit``; the Critic receives dev metrics; the Reporter receives harness-rendered
-figures. None receives a storage root, a panel, a shell or a date-typed value. The only
-date-shaped text any of them sees is the run date inside a sprint id, which selects no window.
+figures. None receives a storage root, a panel, a shell or a date-typed value.
+
+**What each prompt carries, which is the inventory R208 rests on (R214).** The Researcher sees the
+sprint id, the kept-line count of the agent ledger, the vocabulary, the horizons and, for earlier
+sprints, their ids, hypotheses and gate verdicts. The Configurator sees the hypothesis, its slot
+number, the vocabulary, the universe, the horizons and the reference names. The Critic sees the
+hypothesis, the ledger count and, per proposal, its id, the child's verdict name and the child's
+``reason``. The Reporter sees the hypothesis and the harness-rendered figures. Date-shaped text
+therefore reaches a prompt by three routes: the run date inside a sprint or proposal id, which
+selects no window; origin dates inside the Critic's ``reason``, which is coverage or audit text
+from the child (``the first origin that qualifies is <date>``, ``max as_of=``) and is bounded by
+``dev_end`` because the child reads with ``end = dev_end``; and whatever the Reporter's figures
+render, which is dev-only. ``exit_code``, ``pid``, ``trials_written``, ``comparisons``,
+``output_tail`` and the child's stamps are in the Runner's output and in no prompt. That last
+sentence is not left to this prose: ``tests/test_agent_sprint.py`` runs a sprint with sentinel
+values in each such field and asserts none reaches a recorded prompt.
 This module imports nothing that reaches ``volab.store`` (R192).
 
 **The Critic gates nothing, and that is a ruling and not an omission.** The framework asks it for
@@ -114,7 +128,8 @@ def researcher(
     and what the gate said of its proposals. ``agent_trials`` is the number of lines the agent
     ledger holds inside the development window. The prompt names the vocabulary and the limits,
     and passes no date-typed value; the only date-shaped text it carries is the run date inside
-    the sprint ids, which selects no window.
+    the sprint ids (this sprint's and earlier ones'), which selects no window. The other roles'
+    inventories are in the module docstring.
     """
     lines = [
         f"Sprint {state['sprint_id']}.",

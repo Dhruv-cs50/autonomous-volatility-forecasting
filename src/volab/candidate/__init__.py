@@ -175,7 +175,12 @@ def append_agent_trials(
 
 
 def count_agent_trials(root: Path) -> int:
-    """Lines in ``data/agent_trials.jsonl``, or ``0`` if the file does not exist."""
+    """Lines in ``data/agent_trials.jsonl``, or ``0`` if the file does not exist.
+
+    ``root`` is the **parent** of the storage root, i.e. ``settings.storage_root.parent``, because
+    ``AGENT_TRIAL_LEDGER`` already begins with ``data/``. Passing ``settings.storage_root`` itself
+    reads ``data/data/agent_trials.jsonl``, an empty file, and returns ``0`` (R211).
+    """
     path = root / AGENT_TRIAL_LEDGER
     if not path.exists():
         return 0

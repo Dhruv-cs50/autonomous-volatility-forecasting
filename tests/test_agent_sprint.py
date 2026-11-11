@@ -899,9 +899,16 @@ def _plant_lines_past_dev_end(root: Path, count: int) -> None:
             handle.write(json.dumps(line) + "\n")
 
 
-def test_a_ledger_line_past_dev_end_fails_the_sprint_and_reaches_no_prompt(
+def test_a_ledger_line_past_dev_end_fails_the_sprint_before_any_model_is_asked(
     tmp_path: Path, settings: Settings
 ) -> None:
+    """What this guarantees: a line past ``dev_end`` halts the sprint at ``research`` and the
+    operator is told the count. The halt comes **before the first model call**, so ``prompts`` is
+    empty and this test says nothing about what a prompt would have carried. It asserts that
+    emptiness rather than checking absences against an empty string, which would pass whatever the
+    roles did. What reaches a prompt is witnessed by
+    ``test_no_field_of_a_childs_outcome_that_must_stay_out_of_a_prompt_reaches_one``.
+    """
     _plant_lines_past_dev_end(tmp_path, 7)
     completer = FakeCompleter(script())
     result = sprint(tmp_path, settings, completer=completer, submit=StubSubmit(tmp_path))
@@ -913,11 +920,7 @@ def test_a_ledger_line_past_dev_end_fails_the_sprint_and_reaches_no_prompt(
     assert len(anomalies) == 1
     assert anomalies[0]["excluded"] == 7  # the operator is told the count
     assert log_of(tmp_path)[-1]["kind"] == "complete"
-
-    seen = "\n".join(f"{p.system}\n{p.user}" for p in completer.prompts)
-    for trace in ("planted", "qzx", "zzq", "2026-03-02", "excluded", "dropped"):
-        assert trace not in seen
-    assert not re.search(r"(?<![\w.])7(?![\w.])", seen)
+    assert completer.prompts == ()
 
 
 class _PlantingSubmit(StubSubmit):
@@ -952,6 +955,101 @@ def test_a_line_past_dev_end_that_appears_after_research_fails_the_sprint_at_fin
     for trace in ("planted", "qzx", "zzq", "2026-03-02", "excluded", "dropped", "integrity"):
         assert trace not in seen
     assert not re.search(r"(?<![\w.])(7|21)(?![\w.])", seen)
+
+
+# Values that cannot occur in a prompt by accident: long, unlike any date, id or count the roles
+# print, and each tied to the field it sits in.
+SENTINEL_PID = 918273645
+SENTINEL_TRIALS_WRITTEN = 7314159
+SENTINEL_EXIT_CODE = 219
+SENTINEL_SHA = "sha-sentinel-c0ffee77"
+SENTINEL_AT = "1999-12-31T23:59:59+00:00"
+SENTINEL_LOSS = "loss-sentinel-q9z"
+SENTINEL_REFUSAL = "refusal-sentinel-k4m"
+SENTINEL_TAIL = "tail-sentinel-w8x"
+MUST_STAY_OUT: tuple[str, ...] = (
+    str(SENTINEL_PID),
+    str(SENTINEL_TRIALS_WRITTEN),
+    str(SENTINEL_EXIT_CODE),
+    SENTINEL_SHA,
+    SENTINEL_AT,
+    SENTINEL_LOSS,
+    SENTINEL_REFUSAL,
+    SENTINEL_TAIL,
+)
+
+
+class _SentinelSubmit(StubSubmit):
+    """A child whose every field that must not reach a prompt carries a sentinel.
+
+    Three proposals reach it: the first is ``evaluated``, the second ``coverage_refused`` (so
+    ``reason`` is populated and *should* reach the Critic), the third dies with an exit code no
+    verdict names and a sentinel output tail (the one case in which the Runner keeps the tail).
+    """
+
+    def __call__(self, proposal: Proposal) -> ChildRun:
+        self.verdict = ("evaluated", "coverage_refused", "crashed")[len(self.calls)]
+        run = super().__call__(proposal)
+        if self.verdict == "crashed":
+            return dataclasses.replace(run, exit_code=SENTINEL_EXIT_CODE, output_tail=SENTINEL_TAIL)
+        assert run.result is not None
+        result = dict(run.result)
+        result.update(
+            pid=SENTINEL_PID,
+            trials_written=SENTINEL_TRIALS_WRITTEN,
+            git_sha=SENTINEL_SHA,
+            at=SENTINEL_AT,
+            comparisons=[
+                {**c, "loss": SENTINEL_LOSS, "refusal": SENTINEL_REFUSAL}
+                for c in result["comparisons"]
+            ],
+        )
+        return dataclasses.replace(run, pid=SENTINEL_PID, result=result, output_tail=SENTINEL_TAIL)
+
+
+def test_no_field_of_a_childs_outcome_that_must_stay_out_of_a_prompt_reaches_one(
+    tmp_path: Path, settings: Settings
+) -> None:
+    """R208's inventory, checked mechanically (R214). It held only because someone read the code.
+
+    A whole sprint runs with sentinels in ``pid``, ``exit_code``, ``trials_written``, the stamps,
+    the comparison records and ``output_tail``. No recorded prompt may contain one. Non-vacuity is
+    asserted first and on purpose: the earlier planted-line test halted before any model call, so
+    every absence it checked was true of an empty string. Here prompts exist for every role, and
+    the fields that *should* reach a model are shown to.
+    """
+    ledger = tmp_path / "data" / "agent_trials.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text(
+        "".join(
+            json.dumps({"cohort": f"agent-2025-06-0{n}-0123abcd-00", "last_origin": "2025-06-30"})
+            + "\n"
+            for n in range(1, 6)
+        ),
+        encoding="utf-8",
+    )
+    completer = FakeCompleter(script())
+    submit = _SentinelSubmit(tmp_path)
+    sprint(tmp_path, settings, completer=completer, submit=submit)
+
+    # Non-vacuity. Every role that calls a model was asked, and the sentinels were really emitted.
+    assert len(completer.prompts) == len(script())
+    assert len(submit.calls) == 3
+    seen = "\n".join(f"{p.system}\n{p.user}" for p in completer.prompts)
+    critic_prompt = completer.prompts[-2].user
+    # What should reach a model does: the hypothesis, the kept-line count, the child's reason and
+    # each proposal's id and verdict name.
+    assert "Extra regressors may help a HAR model." in seen
+    assert "already holds 5 evaluated trial lines" in seen
+    assert "Agent ledger lines before this sprint: 5" in critic_prompt
+    assert "iv_h1 has no coverage" in critic_prompt
+    for proposal, verdict in zip(
+        submit.calls, ("evaluated", "coverage_refused", "unrecognised"), strict=True
+    ):
+        assert f"- {proposal.proposal_id}: {verdict}" in critic_prompt
+
+    for sentinel in MUST_STAY_OUT:
+        assert sentinel not in seen, sentinel
 
 
 def test_a_clean_ledger_gives_the_models_the_kept_count_and_no_mention_of_exclusion(

@@ -69,6 +69,7 @@ from volab.agent._runner import ChildRun
 from volab.agent.memory import FileCheckpointer
 from volab.agent.sprintlog import events
 from volab.agent.vocabulary import Proposal
+from volab.candidate import FEATURE_SET
 from volab.config import Settings, Splits, load_settings
 from volab.features.targets import build_targets, target_column, targets_dataset
 from volab.ingest.curate import BARS_DATASET, FRED_DATASET, VIX_DATASET
@@ -97,8 +98,17 @@ VIX_FAMILY = ("VIX", "VIX9D", "VIX1D", "VVIX")
 FRED_NAMES = ("BAA10Y", "DGS10", "T10Y2Y")
 INGESTED = pd.Timestamp("2023-10-02T00:00:00Z")
 
-# What the evaluation must read: the bars, both exogenous families, and the horizon's targets.
-EXPECTED_DATASETS = {BARS_DATASET, VIX_DATASET, FRED_DATASET, targets_dataset(HORIZON)}
+# What the evaluation must read: the bars, both exogenous families, the horizon's targets, and the
+# persisted feature table. The last is the one read Phase 5 itself authors (``_persisted`` in
+# ``volab.candidate``, with ``end`` chosen there, R214); every other dataset is read by Phase 2-4
+# code that was reviewed before this layer existed.
+EXPECTED_DATASETS = {
+    BARS_DATASET,
+    VIX_DATASET,
+    FRED_DATASET,
+    targets_dataset(HORIZON),
+    FEATURE_SET,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +418,10 @@ def _check_a_full_weekly_sprint_runs_end_to_end_without_reading_past_dev_end(
     # The names the read path actually calls through, not just the store's own.
     assert {"volab.store.load_panel", "volab.panel.load_panel"} <= set(installs[0]["names"])
     assert any(name.startswith("volab.walkforward.") for name in installs[0]["names"])
+    # ``volab.candidate._persisted`` is the only ``load_panel`` call whose ``end`` Phase 5 chooses.
+    # If the sweep did not rebind its module's name, that read would be invisible to the recorder
+    # and the sealed-reads check below would be true without having looked at it (R214).
+    assert "volab.candidate.load_panel" in installs[0]["names"]
     assert len(calls) >= 1, "the recorder logged no load_panel call; the witness would be vacuous"
     assert {call["dataset"] for call in calls} >= EXPECTED_DATASETS, (
         "the real read path did not run against the synthetic store"
