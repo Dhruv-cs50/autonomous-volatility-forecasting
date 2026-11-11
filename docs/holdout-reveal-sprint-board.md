@@ -22,9 +22,9 @@ runs cannot touch live data until this lands.** Phase 4 is already built and mer
 
 | id | story | files | acceptance | state |
 |---|---|---|---|---|
-| HR-1 | `holdout_end` in `Splits`, with the override direction **reversed** | `src/volab/config.py`, its YAML, `tests/` | `VOLAB_SPLITS_HOLDOUT_END` may move the boundary **later only**; an earlier value is refused. The mirror of `dev_end`, which may move **earlier only** | in progress |
+| HR-1 | `holdout_end` in `Splits`, with the override direction **reversed** | `src/volab/config.py`, its YAML, `tests/` | `VOLAB_SPLITS_HOLDOUT_END` may move the boundary **later only**; an earlier value is refused. The mirror of `dev_end`, which may move **earlier only** | **already done** `85de6a5` ("P4-05: the live region"), nine days before this board existed. Verified directly: `holdout_end` is 2026-10-30, `Region` is DEV/HOLDOUT/LIVE, `region_of` classifies 2026-11-10 as LIVE, and six witnesses cover both refusal directions and the equal case. The implementer dispatched for it **stopped and reported** rather than rewriting working code |
 | HR-2 | Architect: the seal's lifecycle in `store.py` | `docs/superpowers/specs/` | a design for: live unreachable before the reveal, the seal lifting on a **completed reveal record asked of git** rather than a flag, and log-before-read ordering | in progress |
-| HR-3 | The seal lifecycle, implemented | `src/volab/store.py`, `tests/` | three regions enforced; the record written **and flushed before** the read; a second append-only line marks completion; no other route lifts the seal | todo, after HR-1 and HR-2 |
+| HR-3 | The seal lifecycle, implemented | `src/volab/store.py`, `tests/` | three regions enforced **by consuming the `Region` classifier P4-05 already shipped, not a second one**; the record written **and flushed before** the read; a second append-only line marks completion; no other route lifts the seal | todo, after HR-1 and HR-2 |
 | HR-4 | The reveal itself: fingerprint, the multi-read span, scoring | new module + CLI, `tests/` | refuses on a dirty tree or a missing pre-registration; records the pre-registration's content hash, the champion's config, git sha, dirty flag and a content hash; spans several reads because derived tiers stop at `dev_end`; retries are **counted, not forbidden** | todo, after HR-3 |
 | HR-5 | The dress rehearsal | `tools/` and/or `tests/` | the **whole** procedure runs against a pseudo-holdout carved inside dev, on a **separate storage root**, leaving no mark on the real audit log | todo, after HR-4 |
 | HR-6 | `delivery-auditor` at sprint close | — | the board and the repository agree | todo, last |
@@ -60,3 +60,21 @@ to touch Parquet, and where the seal lives. **One implementer at a time in it, n
 R94's refusal rule **should fire on the holdout's own h=66 figure**. The window yields 143 usable
 origins there against 208 at h=1, so `n_eff` is thinner than the dev window's. The write-up reports
 that refusal; it does not quietly omit the row.
+
+
+## What HR-1's surprise changes about this board
+
+HR-1 was **already built** before this sprint was boarded, by Phase 4's own P4-05 story. I wrote
+the board from the parent design's description of work still to do, and nine days of other
+sessions' merges had moved past it. Two lessons, both cheap here and expensive later:
+
+- **Board against the repository, not against a design.** The design is a record of what was
+  intended on 2026-10-27; `main` is what is true on 2026-11-10. I had checked that no *reveal*
+  machinery existed and inferred that none of its groundwork did either.
+- **The parent design's "validation direction" section now describes landed work**, so a reader
+  meeting it cold would think it outstanding. HR-2's design should say so rather than leave the
+  two documents disagreeing.
+
+The implementer's behaviour is the part worth keeping: told to check first and stop if the work
+existed, it checked, stopped, and brought evidence — the commit, an empty diff, the file contents
+and the test names. The cost of the wrong board line was one dispatch and no damage.
