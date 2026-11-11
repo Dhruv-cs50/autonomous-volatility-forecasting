@@ -434,7 +434,11 @@ def test_the_open_line_survives_a_sigkill_inside_the_read(tmp_path: Path) -> Non
         pq.write_table(pa.table({"symbol": ["SPY"]}), path)
         settings = Settings(
             universe=("SPY",), exogenous=(), calendar="XNYS",
-            splits=Splits(dev_end=dt.date(2023, 12, 31), holdout_start=dt.date(2024, 1, 2)),
+            splits=Splits(
+                dev_end=dt.date(2023, 12, 31),
+                holdout_start=dt.date(2024, 1, 2),
+                holdout_end=dt.date(2024, 12, 31),
+            ),
             storage_root=root,
         )
         # No conftest here, so both halves of the suite's policing are stubbed by hand.
