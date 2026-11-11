@@ -598,7 +598,16 @@ class _Sprint:
                     fingerprint=fingerprint_of(entry["proposal"], evidence),
                 )
             )
+        # Idempotent on resume (R214): a process that died after these events and before the
+        # ``complete`` one re-runs this step, and ``volab.promote`` refuses an id with two of them.
+        written = {
+            e.get("proposal_id")
+            for e in events(self.log_path, self.sprint_id)
+            if e.get("kind") == "awaiting_approval"
+        }
         for approval in candidates:
+            if approval.proposal_id in written:
+                continue
             record_event(
                 self.log_path,
                 sprint_id=self.sprint_id,

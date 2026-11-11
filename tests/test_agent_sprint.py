@@ -64,6 +64,7 @@ from volab.agent.vocabulary import (
 )
 from volab.config import Settings, Splits
 from volab.errors import ProposalRefused
+from volab.promote import main as promote_main
 
 SPRINT = "2026-11-10-weekly"
 AT = dt.datetime(2026, 11, 10, 6, 0, tzinfo=dt.UTC)
@@ -656,6 +657,39 @@ def test_a_sprint_that_dies_mid_run_resumes_at_the_unrun_proposal_without_asking
         [already, *[p.proposal_id for p in resumed.calls]]
     )
     assert kinds.count("canary") == 1
+
+
+def test_a_sprint_that_dies_between_the_approvals_and_the_completion_resumes_to_one_approval_each(
+    tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R214: a resumed ``finish`` must not write a second ``awaiting_approval`` for one id.
+
+    ``volab.promote`` refuses an id with two such events, so a duplicate would strand the candidate
+    until an operator edited the log. The crash is placed after the approvals and before the
+    ``complete`` event by making the completion writer raise once.
+    """
+    memory = FileCheckpointer(tmp_path / "memory")
+    completer = FakeCompleter(script())
+    submit = StubSubmit(tmp_path)
+    real_completion = agent.record_completion
+
+    def die(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("the process died before the complete event")
+
+    monkeypatch.setattr(agent, "record_completion", die)
+    with pytest.raises(RuntimeError, match="died before the complete"):
+        sprint(tmp_path, settings, completer=completer, submit=submit, checkpointer=memory)
+    assert log_of(tmp_path, "complete") == []
+    assert log_of(tmp_path, "awaiting_approval")  # the window is open: approvals, no completion
+
+    monkeypatch.setattr(agent, "record_completion", real_completion)
+    result = sprint(tmp_path, settings, completer=completer, submit=submit, checkpointer=memory)
+
+    assert result.outcome == "awaiting_approval"
+    assert len(log_of(tmp_path, "complete")) == 1
+    ids = [e["proposal_id"] for e in log_of(tmp_path, "awaiting_approval")]
+    assert len(ids) == len(set(ids)) > 0
+    assert promote_main(["--proposal-id", ids[0], "--root", str(tmp_path)], now=AT) == 0
 
 
 def test_a_sprint_resumes_at_the_step_after_the_last_one_recorded(
