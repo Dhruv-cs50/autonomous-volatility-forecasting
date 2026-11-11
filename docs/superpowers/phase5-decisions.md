@@ -981,20 +981,25 @@ the `excluded` guard, constants, and earlier sprints' model-written hypotheses. 
 `render_figures`, all dev-only. The agent code never opens `comparisons.jsonl`. The one-bit claim is
 true as stated.
 
-**Assigned to fix round A (behaviour; in progress when this was written, see the board for its commit):**
+**Fixed in fix round A (`f3e14c3`), each test written and run red before its fix:**
 
 - **The git dirty flag polluted itself (Important; R70).** `data/agent_trials.jsonl` is tracked, so
   once the first child of a sprint appends to it, every later child's own `git_state` reports a
   dirty tree. Their trial lines would then read as non-reproducible although nothing in the code had
-  changed. Verified with `git check-ignore` before acting. The fix is to pass the sprint's
-  start-captured sha and dirty flag through to each child, as R70 requires.
+  changed. Verified with `git check-ignore` before acting, then reproduced in a real git repository
+  inside the test: child 1 stamps `git_dirty=false` and child 2 stamps `true`. The child now takes
+  `--git-sha` and `--git-dirty {true,false,unknown}` (both or neither, so it never mixes a caller's
+  sha with its own dirty read; `unknown` maps to `None`, never to clean), and the sprint passes its
+  start-captured pair, as R70 requires. Nothing goes into the proposal file, whose unknown-key
+  refusal stays load-bearing.
 - **A tampered proposal file could crash the child instead of being refused.** An id of `"foo-00"`,
   or an index of `"²"` (which passes `isdigit()` and then fails `int()`), exited 1 with no result.
-  Both are to be refused at the boundary.
+  Both are now refused at the boundary, exit 4, with a result file.
 - **Exit code 6 was not wired through the runner**, and two tests that claimed to cover every exit
   code omitted it.
 - **A line past `dev_end` appearing after `research` was silently dropped** by `finish` and by
-  `promote`, while `research` treats the same line as an integrity failure. They are to agree.
+  `promote`, while `research` treats the same line as an integrity failure. Both now fail it the same
+  way, through one shared helper.
 
 **Assigned to fix round B (claims and witnesses; not yet started when this was written):** the prompt-inventory docstrings in `roles.py`, which
 said the only date-shaped text any role sees is the run date (the Critic also sees dev-bounded origin
