@@ -16,9 +16,9 @@ states the sha it was verified at, and a line number is treated as perishable (R
 | 0 | scaffold: ignores, boards, package stubs | done (`ee16c3d` + scaffold commit) |
 | A | the fences, before any code of the phase | **done** (`ec80441`, `185a021`) |
 | B | the vocabulary and the `HarX` contestant | **done** (`60796ca`, `e4d6e59` + a fix round) |
-| C | the child, the sprint log, the counts | C1 and C2 done (`3e15fd7`, `6da1eaa`); **C3 not started** |
-| D | the ports and the roles | D1+D2 done (`91de85b`); **D3, D4, D5 not started** |
-| E | the human gate, the CLI, the exit criterion | not started |
+| C | the child, the sprint log, the counts | **done** — C1 `3e15fd7`, C2 `6da1eaa`, C3 `35c5424` |
+| D | the ports and the roles | **done** — D1+D2 `91de85b`, D3 `2618462`, D4 `a029ac5`, D5 closed within D4 |
+| E | the human gate, the CLI, the exit criterion | **done** — E1 `d709148`, E2 `cb9803f`, E3 `ce8ee90` |
 | F | close out: audit, README, PR | not started |
 
 ## Stories
@@ -37,9 +37,9 @@ states the sha it was verified at, and a line number is treated as perishable (R
 | P5-D3 | Subprocess-per-evaluation | implementer | 45m | C1 | done (`2618462`) |
 | P5-D4 | The six roles, the seven-step machine, the sprint | implementer | 1h | C2, D1, D2, D3 | done (`a029ac5`) |
 | P5-D5 | The canary bites, and an accepted canary voids the sprint | implementer | 45m | D4 | **closed, delivered within D4** — `tests/test_agent_sprint.py` asserts `voided_by_canary`, one `canary_accepted` event and no further gating; no separate dispatch, which saved one subagent on an 8 GB machine |
-| P5-E1 | `python -m volab.promote` and its three refusals | implementer | 1h | C2, D4 | todo |
-| P5-E2 | `python -m volab.agent`: `sprint` and `show` | implementer | 45m | D4 | todo |
-| P5-E3 | The exit criterion: a full sprint end to end, witnessed | implementer | 1h | E1, E2 | todo |
+| P5-E1 | `python -m volab.promote` and its three refusals | implementer | 1h | C2, D4 | done (`d709148`) |
+| P5-E2 | `python -m volab.agent`: `sprint` and `show` | implementer | 45m | D4 | done (`cb9803f`, hardened `f4b01fa`) |
+| P5-E3 | The exit criterion: a full sprint end to end, witnessed | implementer | 1h | E1, E2 | done (`ce8ee90`) |
 | P5-F1 | Delivery audit: the board against git | delivery-auditor | 30m | E3 | todo |
 | P5-F2 | README status, the board's close, the PR | orchestrator | 30m | F1 | todo |
 
