@@ -90,14 +90,14 @@ not acted on as an authorisation to merge.
 
 ## Follow-ups with no owner yet
 
-Recorded in the decisions log and owned by nobody until someone picks them up. **Three were blocked
-on PR #18 and #19, which have both merged, so they are now unblocked.**
+Recorded in the decisions log. **The three that PRs #18 and #19 had blocked are now done** (R215);
+the rest are owned by nobody until someone picks them up.
 
 | follow-up | source | now |
 |---|---|---|
-| Migrate the three writer CLIs onto `LedgerCounts` and assert the import ban | R186 | **unblocked** (#18, #19 merged) |
-| Extract the holdout scan into one shared helper | R187 | **unblocked** |
-| Extract the subprocess bounded tail into `src/volab/_subprocess.py` | R195 | **unblocked** |
+| Migrate the writer CLIs onto `LedgerCounts` and assert the import ban | R186 | **done** (`d62a3c2`): four callers, one the grep had missed; ban asserted, derived |
+| Share the holdout-key derivation | R187 | **done** (`ae66985`): derivation shared, the two matchers deliberately kept apart |
+| The subprocess bounded tail | R195 | **done, not extracted** (`5d3c9df`): the loops diverged after #18 and the Phase 4 probe plants into one; coupled by behaviour instead (R215) |
 | Make `volab.counts` store-free so the CLI drops its two pinned copies | R212 | open |
 | Match Phase 4's writer guard on `(module, name)`, not bare name | R213 | Phase 4's to decide |
 | Audit the suite for `is`-based assertions over bound methods | R202 | not Phase 5's |

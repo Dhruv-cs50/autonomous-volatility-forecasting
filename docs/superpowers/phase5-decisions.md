@@ -158,6 +158,8 @@ not survive a rewording.
 CLIs, each of which prints its own ledger's before-and-after delta. The migration is mechanical once
 PR #18 and PR #19 land.
 
+
+**Resolved later (R215):** the three writer CLIs and the leaderboard were migrated onto `LedgerCounts` and the import ban is now asserted (`d62a3c2`). The narrowing in this record no longer applies.
 ---
 
 ## R187 — `tests/holdout_scan.py` is written fresh, not extracted from `tests/test_daily.py`
@@ -177,6 +179,8 @@ packages — which imports `LIVE_STAGES` read-only and edits nothing.
 *Cost if wrong:* two copies of one derivation, which can drift. Extraction is recorded as a
 follow-up for when `daily/` is quiet.
 
+
+**Resolved later (R215):** the derivation is now shared and the two matchers are kept separate on purpose (`ae66985`).
 ---
 
 ## R188 — promotion is a separate package that writes an event and moves no champion
@@ -354,6 +358,8 @@ test asserting equality, and each file names the other in a comment.
 *Cost if wrong, stated plainly:* two copies of a 25-line loop. Only the bound is test-coupled, not
 the logic, so a bug fixed in one must be fixed in the other by hand. Extraction is a follow-up.
 
+
+**Resolved later (R215):** **not** extracted, deliberately. The two loops are coupled by behaviour instead (`5d3c9df`); see R215 for why extraction became the wrong move.
 ---
 
 ## R196 — `harx+iv_h5+vvix`, not `harx[iv_h5+vvix]`
@@ -1062,3 +1068,72 @@ yet true either: it said "every evaluation that reaches a fit is counted", which
 refusal falsifies, and it was corrected a second time in R208 after the delivery audit. Leaving it as "every step is counted"
 would have been the overclaim this project treats as its one unforgivable defect, in the sentence the
 PR leads with.
+
+
+---
+
+## R215 — the three follow-ups that PRs #18 and #19 had blocked, picked up once both merged
+
+R186, R187 and R195 were each held back because #18 or #19 was editing the files they needed. Both
+PRs have merged. Each follow-up was done as its own story, one agent at a time, and **two of the
+three turned out not to be the job their records described.** The original plans were written while
+the files were still moving.
+
+**R187 — one derivation of the holdout unlock keys (`ae66985`).** `tests/test_daily.py` now imports
+the key-name derivation from `tests/holdout_scan.py` instead of computing its own. **The two
+*matchers* stay separate on purpose.** `test_daily.py`'s matcher flags any name containing `holdout`
+or `unlock`. The shared scan deliberately does not, because that rule would flag a Phase 5 module that
+legitimately catches `HoldoutViolation`. Merging the matchers would have weakened one guard or the
+other, so only the derivation is shared, which is the part R151 says must exist once. Red cases show
+neither matcher weakened: `my_holdout_flag` is still flagged by the loose matcher, and
+`except HoldoutViolation:` is still not flagged by the strict one.
+
+*One behaviour change to the Phase 4 guard, recorded because it is a change.* The two derivations
+gave the same names today but under different rules. The old copy accepted any argument kind, with
+no default check and no uniqueness check. The shared one requires a keyword-only parameter, a `False`
+default and exactly one match. So if `load_panel`'s signature ever changes, `test_daily.py` now
+**fails loudly** instead of quietly tracking the change. That is the direction R151 wants.
+
+**R195 — the subprocess output tail: deliberately *not* extracted (`5d3c9df`).** The plan was to
+extract both copies of the bounded-tail loop into `src/volab/_subprocess.py`. The orchestrator checked
+before dispatching, and two facts had changed since R195 was written:
+
+- **The loops had diverged after #18.** The daily `_run_one(stage, timeout_seconds)` reads a raw
+  descriptor with `os.read` under a timeout, beside a process-group sweep. The agent's `_run_one`
+  does a blocking `stdout.read`. Only a roughly six-line trimming core is still shared.
+- **Phase 4's mutation probe plants defects into that core.** `tools/mutate_daily_guards.py` targets
+  `src/volab/daily/runner.py`, including the tail logic. Extracting the core would leave the plants
+  patching code that is no longer there, which would blind or break the probe that verifies Phase 4's
+  guards.
+
+So the copies stay, and R195's stated cost ("a bug fixed in one must be fixed in the other by hand")
+is closed a different way. A behavioural equivalence test now drives **both** loops with the same
+child output and requires them to keep a byte-identical tail. Its seven cases include a cut inside
+a 2-byte and inside a 4-byte UTF-8 character, which also forces the U+FFFD replacement character to
+appear. Two deliberate breaks to the agent copy each failed 5 of the 7 cases. `daily/runner.py`, the
+probe and `agent/_runner.py` are byte-identical to before. One **equivalent mutant** is stated rather
+than hidden: changing the trim loop's `>=` to `>` is not observable in the output, because that
+condition bounds only memory, and the existing tracemalloc tests cover memory.
+
+**R186 — the writer CLIs onto `LedgerCounts`, and the import ban (`d62a3c2`).** Every direct call to
+`count_trials` in `src/volab/` now goes through `count_all(root).trials`. That is the same number
+read from the same root, so every existing printed line, including the pinned `HEADLINE: N
+trial(s)`, is unchanged. Each surface also gained an *added* line giving the agent ledgers' counts.
+**The import ban is now asserted.** Walking the tree finds no module other than `walkforward/__init__`
+(where it is defined) and `counts.py` that uses `count_trials`. The ban's set is derived from the
+source, not listed: before the migration it failed naming 11 sites. A planted import and a planted
+attribute use are both caught.
+
+*The AST walk found a caller the orchestrator's grep had missed:* `walkforward/__main__.py`. Its
+brief said to trust the walk over the list, and the ban would have failed without that module. This
+is R211's lesson about hand-picked subsets, applied this time to a list of callers.
+
+**So the narrowed claim R186 recorded is superseded.** It is now true that no surface in `src/volab/`
+can print the reported trial count without holding the agent counts beside it. The ban guarantees
+that each surface holds the combined object, and the added lines print it. `volab.agent.__main__`
+keeps its own pinned copy, because the R192 fence forbids it importing `volab.counts` (R212).
+
+*Cost if wrong:* R187 makes the Phase 4 guard stricter about `load_panel`'s signature. R195 leaves two
+copies in place, coupled by behaviour rather than by sharing code. R186 adds one line of output to
+four CLIs. Each was verified with the guards that sit closest to it, including
+`tests/test_daily_rehearsal.py` (51 passed), the guard that a name collision tripped in R213.
