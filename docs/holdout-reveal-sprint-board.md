@@ -226,6 +226,12 @@ after this commit is gates 10, 11 and 12, none of which can be settled without a
 
 ### Two questions for the user, and the first one is ordered
 
+**Both are now answered** — R216 and R217 below, taken 2026-11-11, before any holdout number
+existed. They are left stated here as asked, because the ordering is the substance: a ruling taken
+after the seal lifted would be selection on the numbers. In code, `ChampionStatus.AMBIGUOUS` and
+gate 13 now mean only an **exact tie in QLIKE**, which §3 gives no way to break; the eligibility
+reading that OQ1 describes is settled and no longer reaches that gate.
+
 **OQ1 — may a contestant whose significance R115 withholds be the champion?** The registration's §3
 names only "the member of the 10% model confidence set with the lowest QLIKE at h=1 on SPY". Its §1
 and §2 withhold every claim for `egarch11_skewt` at h=1 *and* call it "the contestant currently
