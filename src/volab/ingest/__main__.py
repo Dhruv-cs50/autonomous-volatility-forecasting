@@ -140,6 +140,11 @@ CURATED_WITH: dict[str, str] = {"nasdaq_dividends": "nasdaq_bars"}
 
 
 def _curate(settings: Settings, only: str | None) -> int:
+    # HR-7 triage: a SEAL pin. Curating is the step that turns raw into the panel every later
+    # read sees, so this pin is what would keep post-``dev_end`` bars out of the curated tier
+    # for good once the reveal is committed; it should lift with the reveal, as ``load_panel``
+    # already does for the reads below it. Left at ``dev_end`` for now (no behaviour change in
+    # HR-7): lifting it is a separate story, and until the reveal it is correct.
     end = settings.splits.dev_end
     total = 0
     jobs: list[tuple[str, str, object]] = []

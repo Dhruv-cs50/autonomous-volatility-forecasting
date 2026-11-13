@@ -1503,6 +1503,33 @@ def test_a_value_that_escapes_the_record_cleaning_fails_loudly_rather_than_writi
     assert not ledger.exists() or "NaN" not in ledger.read_text(encoding="utf-8")
 
 
+def test_a_comparison_row_carries_last_origin_only_when_the_caller_supplies_one(tmp_path) -> None:
+    """HR-9. Additive: no argument writes exactly the row every other writer has always written."""
+    comparison = _comparison()
+    sink = JsonlSink(tmp_path)
+    sink.append_comparisons([comparison], at=AT, sha="abc", dirty=False)
+    sink.append_comparisons(
+        [comparison], at=AT, sha="abc", dirty=False, last_origin=dt.date(2026, 10, 20)
+    )
+    plain, stamped = _lines(tmp_path / COMPARISON_LEDGER)
+    assert "last_origin" not in plain
+    assert stamped["last_origin"] == "2026-10-20"
+    assert {k: v for k, v in stamped.items() if k != "last_origin"} == plain
+
+
+def test_the_leaderboards_reader_parses_a_row_with_and_without_last_origin(tmp_path) -> None:
+    from volab.leaderboard import read_comparisons
+
+    comparison = _comparison()
+    sink = JsonlSink(tmp_path)
+    sink.append_comparisons([comparison], at=AT, sha="abc", dirty=False)
+    sink.append_comparisons(
+        [comparison], at=AT, sha="abc", dirty=False, last_origin=dt.date(2026, 10, 20)
+    )
+    plain, stamped = read_comparisons(tmp_path)
+    assert "last_origin" not in plain and stamped["last_origin"] == "2026-10-20"
+
+
 def test_the_comparison_ledger_appends_and_never_rewrites(tmp_path) -> None:
     sink = JsonlSink(tmp_path)
     comparison = _comparison()

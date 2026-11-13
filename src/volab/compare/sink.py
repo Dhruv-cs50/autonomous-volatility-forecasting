@@ -280,7 +280,13 @@ class Sink(Protocol):
     ) -> int: ...
 
     def append_comparisons(
-        self, records: Sequence[Comparison], *, at: dt.datetime, sha: str, dirty: bool | None
+        self,
+        records: Sequence[Comparison],
+        *,
+        at: dt.datetime,
+        sha: str,
+        dirty: bool | None,
+        last_origin: dt.date | None = None,
     ) -> int: ...
 
 
@@ -297,12 +303,21 @@ class JsonlSink:
         return append_trials(trials, root=self.root, at=at, sha=sha, dirty=dirty)
 
     def append_comparisons(
-        self, records: Sequence[Comparison], *, at: dt.datetime, sha: str, dirty: bool | None
+        self,
+        records: Sequence[Comparison],
+        *,
+        at: dt.datetime,
+        sha: str,
+        dirty: bool | None,
+        last_origin: dt.date | None = None,
     ) -> int:
         """Append one line per comparison and return how many were written. Append-only.
 
         ``at``, ``sha`` and ``dirty`` are the caller's, captured at the start of its run, for the
         reason ``append_trials`` gives (R70): they are what makes this file joinable to the ledger.
+
+        ``last_origin`` is additive (HR-9): given, every line carries it as an ISO date, the field
+        the agent's ledger reader filters on; omitted, the line is exactly what it always was.
         """
         path = self.root / COMPARISON_LEDGER
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -314,6 +329,8 @@ class JsonlSink:
                     "git_dirty": dirty,
                     **comparison.record(),
                 }
+                if last_origin is not None:
+                    line["last_origin"] = last_origin.isoformat()
                 # ``allow_nan=False`` so a NaN that escaped ``record`` fails here, loudly, rather
                 # than writing a line no strict parser can read.
                 handle.write(json.dumps(line, allow_nan=False) + "\n")

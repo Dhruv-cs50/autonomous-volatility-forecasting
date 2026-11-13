@@ -19,6 +19,16 @@ files, 5. the read, 6. absent columns, 7. a naive ``ts``, 8. a null ``as_of``, 9
 consistency, 10. the point-in-time filter, the irreducible-duplicate check and deduplication,
 11. an empty result, 12. the post-filter ``as_of`` assertion, 13. the audit line.
 
+Past ``dev_end`` the refusal is a function of this checkout's HEAD as well as of the arguments and
+the store: step 3 asks git whether a completed reveal record is committed, so the same call can be
+answered differently before and after the reveal commit (held fixed within a process by a memo).
+Reads at or below ``dev_end`` are unaffected, because ``past_dev_end and _reveal_committed(...)``
+short-circuits before git is asked. Every read the purity assertions take -- truncation
+equivalence, the walk-forward's fresh-interpreter origins, Phase 1's extent test -- is at
+``end <= dev_end`` (``walkforward.load_for`` reads at ``end == dev_end`` and nothing else), so they
+ask the predicate zero times and are exactly what they were. The dependency is real only for
+reads past ``dev_end``, which are otherwise refused or keyed.
+
 Step 0 exists because every rule below it reads ``dev_end`` from the settings it was handed. A
 caller who hands over a later boundary is not unlocking the holdout, it is moving it, and the
 two keys are never asked for -- so nothing downstream would ever see it.
@@ -39,14 +49,18 @@ is the last thing standing if either is ever broken.
 from __future__ import annotations
 
 import contextlib
+import contextvars
+import dataclasses
 import datetime as dt
 import glob
 import inspect
 import json
 import os
+import re
+import secrets
 import subprocess
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -56,7 +70,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 import volab
-from volab.config import HOLDOUT_UNLOCK_ENV, Settings, load_settings
+from volab.config import (
+    DEFAULT_CONFIG_PATH,
+    HOLDOUT_UNLOCK_ENV,
+    Region,
+    Settings,
+    Splits,
+    load_settings,
+)
 from volab.errors import (
     DatasetNotFound,
     HoldoutViolation,
@@ -74,6 +95,21 @@ from volab.paths import (
 )
 
 AUDIT_FILENAME: str = "holdout_access.jsonl"
+# Written on every line of the log. The guard parses only the schemas it knows, so a future format
+# re-seals rather than half-opens.
+AUDIT_SCHEMA: int = 1
+_KNOWN_AUDIT_SCHEMAS: frozenset[int] = frozenset({1})
+# Root-relative and deliberately NOT ``storage_root``: the writer appends under the configured
+# storage root and the predicate asks git for this path, and the two coincide only under the
+# committed ``storage.root``. That asymmetry is what stops a ``VOLAB_STORAGE_ROOT`` or a rehearsal's
+# ``tmp_path`` from forging a reveal.
+REVEAL_RECORD_GIT_PATH: str = "data/holdout_access.jsonl"
+_REPO_ROOT: Path = DEFAULT_CONFIG_PATH.parent.parent
+_ID_PATTERN = re.compile(r"\A[0-9a-f]{32}\Z")
+_REVEAL_CACHE: dict[tuple[dt.date, dt.date, dt.date], bool] = {}
+_REVEAL_SCOPE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "volab_store_reveal_scope", default=None
+)
 
 # Re-bound under the private name this module has always used; ``config`` owns the string,
 # because its own refusal has to point at the same unlock.
@@ -224,7 +260,213 @@ def git_state(scope: Path | None = None) -> tuple[str, bool | None]:
     return _git_state(scope)
 
 
-def _append_audit(
+def _read_limit(splits: Splits, *, revealed: bool, unlocked: bool) -> dt.date:
+    """The latest ``as_of`` this call may see. The whole seal, as one date.
+
+    Three regions, three values, and the order is the precedence: a committed reveal makes the
+    holdout ordinary history and the live region readable; the two keys open the sealed window and
+    **stop at its end**; neither leaves ``dev_end``. Pure and total, so the twelve cells of
+    (region x state) are a table a test can assert rather than a shape a reader must trust.
+    """
+    if revealed:
+        return dt.date.max
+    if unlocked:
+        return splits.holdout_end
+    return splits.dev_end
+
+
+def _is_iso_date(value: object, expected: dt.date) -> bool:
+    # Compared as strings: ``date.fromisoformat`` accepts ``20251231``, which is not what a
+    # record that pins a date is allowed to say.
+    return isinstance(value, str) and value == expected.isoformat()
+
+
+def _completed_reveal_in(text: str, splits: Splits) -> bool:
+    """Pure. Does ``text`` hold an ordered, well-formed reveal pair scoped to ``splits``?
+
+    True iff some ``reveal_open`` line pinning exactly ``splits``' three dates is followed, strictly
+    later, by a ``reveal_complete`` line with the same 32-hex ``reveal_id``. Anything it cannot
+    fully validate is skipped, and it never raises: a corrupt log must become "not revealed", not
+    an exception on a read path.
+    """
+    opened: set[str] = set()
+    for line in text.split("\n"):
+        try:
+            record = json.loads(line)
+            if not isinstance(record, dict):
+                continue
+            schema = record.get("schema")
+            # ``type`` rather than ``isinstance``: ``True`` and ``1.0`` both equal 1.
+            if type(schema) is not int or schema not in _KNOWN_AUDIT_SCHEMAS:
+                continue
+            reveal_id = record.get("reveal_id")
+            if not isinstance(reveal_id, str) or _ID_PATTERN.match(reveal_id) is None:
+                continue
+            kind = record.get("kind")
+            if (
+                kind == "reveal_open"
+                and _is_iso_date(record.get("dev_end"), splits.dev_end)
+                and _is_iso_date(record.get("holdout_start"), splits.holdout_start)
+                and _is_iso_date(record.get("holdout_end"), splits.holdout_end)
+            ):
+                opened.add(reveal_id)
+            elif kind == "reveal_complete" and reveal_id in opened:
+                return True
+        except Exception:  # ValueError, RecursionError, anything: this must not raise
+            continue
+    return False
+
+
+def _reveal_committed_in(repo_root: Path, splits: Splits) -> bool:
+    """One ``git cat-file`` against ``repo_root``'s HEAD, then ``_completed_reveal_in``.
+
+    Every failure mode is False -- non-zero exit, ``OSError``, ``SubprocessError``, the timeout,
+    a directory that is not a repository, a blob that is not text. Takes a root for testability;
+    ``load_panel`` never calls it. HEAD and one subprocess, deliberately: asking all of history
+    would let a record that was committed and then reverted keep the seal open forever.
+    """
+    try:
+        completed = subprocess.run(
+            # ``--no-optional-locks`` copied from ``_git_state``: see the comment there.
+            [
+                "git",
+                "--no-optional-locks",
+                "-C",
+                str(repo_root),
+                "cat-file",
+                "blob",
+                f"HEAD:{REVEAL_RECORD_GIT_PATH}",
+            ],
+            capture_output=True,
+            check=False,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+        if completed.returncode != 0:
+            return False
+        # Bytes, decoded here: ``text=True`` would raise ``UnicodeDecodeError`` on a binary blob.
+        return _completed_reveal_in(completed.stdout.decode("utf-8", errors="replace"), splits)
+    except Exception:  # this predicate must never raise; every failure means sealed
+        return False
+
+
+def _reveal_committed(splits: Splits) -> bool:
+    """Memoised ``_reveal_committed_in(_REPO_ROOT, splits)``, keyed on the three dates.
+
+    Asked about the **caller's** effective splits, so only a record scoped to them lifts anything.
+    A cached False is fail-closed (restart the process after the reveal); a cached True matches the
+    one-way lifecycle. There is no way, public or private, to set the answer to True.
+
+    A plain module-level function, called by name and never bound or aliased anywhere, for the
+    reason ``_unlock_granted`` is: the suite's policing fixture replaces it and must be sure
+    every question about the seal's state goes through its replacement.
+    """
+    key = (splits.dev_end, splits.holdout_start, splits.holdout_end)
+    if key not in _REVEAL_CACHE:
+        _REVEAL_CACHE[key] = _reveal_committed_in(_REPO_ROOT, splits)
+    return _REVEAL_CACHE[key]
+
+
+def _reset_reveal_cache() -> None:
+    """Forget the memo, forcing the next question back to git. It can only cause a re-derivation.
+
+    Exists for the tests. Calling it from production code would make a reveal commit landing
+    mid-process visible and break the per-process consistency the memo provides; the witness
+    ``test_the_cache_reset_is_reachable_only_from_the_tests`` (W23) fails if any call site or
+    mention appears under ``src/volab``, so that cannot happen quietly.
+    """
+    _REVEAL_CACHE.clear()
+
+
+def reveal_is_committed() -> bool:
+    """Whether this checkout's HEAD holds a completed reveal record for the repository's splits.
+
+    Public on ``git_state``'s precedent: it runs ``git`` and reads no Parquet, so the import
+    ratchet's reasoning does not reach it. Read-only; it lifts nothing.
+    """
+    return _reveal_committed(load_settings().splits)
+
+
+def _append_audit(settings: Settings, record: dict[str, Any]) -> None:
+    """Append one JSON object and flush it to the kernel, then fsync.
+
+    The ONLY function in this package that appends to the log (``audit_tally`` only reads it), so
+    a second writer with a different ordering cannot grow. ``flush`` buys durability across
+    process death and ``fsync`` across power loss; measured, 0.070 ms against 0.053 ms for flush
+    alone.
+    """
+    path = settings.storage_root / AUDIT_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"schema": AUDIT_SCHEMA, **record}) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+@dataclasses.dataclass(frozen=True)
+class AuditTally:
+    """What the audit log holds. Read-only; nothing here lifts anything."""
+
+    looks: int
+    looks_closed: int
+    attempts: tuple[str, ...]
+    completed: frozenset[str]
+
+
+def audit_tally(settings: Settings) -> AuditTally:
+    """Count the sealed looks and the reveal attempts in ``settings``' audit log.
+
+    Reads the log under ``storage_root``, which is where the writer appends -- not the committed
+    blob the predicate asks git about. It therefore sees the attempt in progress, whose lines are
+    not yet committed, which is the whole reason the write-up can report its own figures. Skips
+    anything it cannot parse, exactly as ``_completed_reveal_in`` does, and never raises.
+
+    Two numbers and not one: ``looks`` is the number of sealed reads, ``attempts`` the number of
+    reveals begun. With one attempt spanning many reads they differ, and only the second is the
+    "k" in "the k-th completed". Opens the log for reading, so it is the second function that
+    names ``AUDIT_FILENAME``; it writes nothing and cannot touch the record the predicate reads.
+    """
+    path = settings.storage_root / AUDIT_FILENAME
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    looks = looks_closed = 0
+    attempts: list[str] = []
+    opened: set[str] = set()
+    completed: set[str] = set()
+    for line in text.split("\n"):
+        try:
+            record = json.loads(line)
+            if not isinstance(record, dict):
+                continue
+            schema = record.get("schema")
+            if type(schema) is not int or schema not in _KNOWN_AUDIT_SCHEMAS:
+                continue
+            kind = record.get("kind")
+            if kind == "look_open":
+                looks += 1
+            elif kind == "look_close":
+                looks_closed += 1
+            elif kind in ("reveal_open", "reveal_complete"):
+                reveal_id = record.get("reveal_id")
+                if not isinstance(reveal_id, str) or _ID_PATTERN.match(reveal_id) is None:
+                    continue
+                if kind == "reveal_open":
+                    if reveal_id not in opened:
+                        attempts.append(reveal_id)
+                    opened.add(reveal_id)
+                elif reveal_id in opened:
+                    completed.add(reveal_id)
+        except Exception:  # anything: a tally of a corrupt log must not raise
+            continue
+    return AuditTally(looks, looks_closed, tuple(attempts), frozenset(completed))
+
+
+def _now() -> str:
+    return dt.datetime.now(dt.UTC).isoformat()
+
+
+def _open_look(
     settings: Settings,
     *,
     dataset: str,
@@ -232,34 +474,105 @@ def _append_audit(
     end: dt.date,
     start: dt.date | None,
     symbols: Sequence[str] | None,
-    outcome: str,
-) -> None:
-    """Append one JSON object describing an unlocked read. Append-only, one line per attempt.
-
-    ``outcome`` is ``"success"`` or the class name of the exception that refused the read. A
-    refusal is still an attempt on the sealed window: recording only successes would let a
-    key-holder probe the existence, emptiness and schema of post-``dev_end`` data without end
-    while the log's line count stayed clean.
-    """
+) -> str:
+    """Write and flush the ``look_open`` line and return its ``look_id``. Runs ``_git_state``."""
     caller_module, caller_lineno = _caller_frame()
     git_sha, git_dirty = _git_state()
-    record: dict[str, Any] = {
-        "ts": dt.datetime.now(dt.UTC).isoformat(),
-        "outcome": outcome,
-        "dataset": dataset,
-        "tier": tier.value,
-        "end": end.isoformat(),
-        "start": None if start is None else start.isoformat(),
-        "symbols": None if symbols is None else list(symbols),
-        "caller_module": caller_module,
-        "caller_lineno": caller_lineno,
-        "git_sha": git_sha,
-        "git_dirty": git_dirty,
-    }
-    path = settings.storage_root / AUDIT_FILENAME
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record) + "\n")
+    look_id = secrets.token_hex(16)
+    _append_audit(
+        settings,
+        {
+            "kind": "look_open",
+            "look_id": look_id,
+            "reveal_id": _REVEAL_SCOPE.get(),
+            "ts": _now(),
+            "dataset": dataset,
+            "tier": tier.value,
+            "end": end.isoformat(),
+            "start": None if start is None else start.isoformat(),
+            "symbols": None if symbols is None else list(symbols),
+            "caller_module": caller_module,
+            "caller_lineno": caller_lineno,
+            "git_sha": git_sha,
+            "git_dirty": git_dirty,
+        },
+    )
+    return look_id
+
+
+def _close_look(settings: Settings, *, look_id: str, outcome: str) -> None:
+    """Write and flush the ``look_close`` line. Runs no git: the sha is on the open line."""
+    _append_audit(
+        settings,
+        {
+            "kind": "look_close",
+            "look_id": look_id,
+            "reveal_id": _REVEAL_SCOPE.get(),
+            "ts": _now(),
+            "outcome": outcome,
+        },
+    )
+
+
+def record_reveal_opened(settings: Settings, *, details: Mapping[str, Any]) -> str:
+    """Write and flush the ``reveal_open`` line, pinning ``settings.splits``; return its id.
+
+    ``details`` is the reveal's evidence and is opaque to the guard.
+    """
+    reveal_id = secrets.token_hex(16)
+    git_sha, git_dirty = _git_state()
+    _append_audit(
+        settings,
+        {
+            "kind": "reveal_open",
+            "reveal_id": reveal_id,
+            "ts": _now(),
+            "dev_end": settings.splits.dev_end.isoformat(),
+            "holdout_start": settings.splits.holdout_start.isoformat(),
+            "holdout_end": settings.splits.holdout_end.isoformat(),
+            "git_sha": git_sha,
+            "git_dirty": git_dirty,
+            "details": dict(details),
+        },
+    )
+    return reveal_id
+
+
+def record_reveal_completed(
+    settings: Settings, reveal_id: str, *, details: Mapping[str, Any] | None = None
+) -> None:
+    """Write and flush the ``reveal_complete`` line for ``reveal_id``."""
+    git_sha, git_dirty = _git_state()
+    _append_audit(
+        settings,
+        {
+            "kind": "reveal_complete",
+            "reveal_id": reveal_id,
+            "ts": _now(),
+            "git_sha": git_sha,
+            "git_dirty": git_dirty,
+            "details": {} if details is None else dict(details),
+        },
+    )
+
+
+@contextlib.contextmanager
+def reveal_scope(reveal_id: str) -> Iterator[None]:
+    """Attribute every look taken inside to ``reveal_id``.
+
+    A context manager rather than a ``load_panel`` parameter: the reveal's reads go through
+    ``volab.panel`` and ``volab.walkforward``, so a parameter would be threaded through four more
+    signatures, and the guarded function's signature stays as it is. It labels lines and changes
+    no bound. Re-entry with a different id raises ``RuntimeError``: one reveal event is one scope.
+    """
+    current = _REVEAL_SCOPE.get()
+    if current is not None and current != reveal_id:
+        raise RuntimeError(f"already inside reveal scope {current}; refusing to enter {reveal_id}")
+    token = _REVEAL_SCOPE.set(reveal_id)
+    try:
+        yield
+    finally:
+        _REVEAL_SCOPE.reset(token)
 
 
 def load_panel(
@@ -293,17 +606,37 @@ def load_panel(
     #    so no path can reach the boundary test with a boundary the caller chose. An earlier
     #    ``dev_end`` is more conservative, and allowed.
     if settings is None:
-        resolved = load_settings()
+        resolved = configured = load_settings()
     else:
         resolved = settings
-        configured = load_settings().splits.dev_end
-        if resolved.splits.dev_end > configured:
+        configured = load_settings()
+        if resolved.splits.dev_end > configured.splits.dev_end:
             raise HoldoutViolation(
                 f"the settings passed to load_panel carry splits.dev_end "
                 f"{resolved.splits.dev_end}, later than the repository's configured dev_end "
-                f"{configured}: moving the holdout boundary is not a way to read past it. "
-                f"Unlock the window with allow_holdout=True and {_UNLOCK_ENV}=1 instead."
+                f"{configured.splits.dev_end}: moving the holdout boundary is not a way to read "
+                f"past it. Unlock the window with allow_holdout=True and {_UNLOCK_ENV}=1 instead."
             )
+
+    # 0b. ``holdout_end`` is load-bearing for read permission: it is where the two keys stop. A
+    #     caller whose Settings carry a *later* one would widen what the keys reach into the live
+    #     region, before the reveal, without adding a key. So it is clamped to the repository's,
+    #     never later -- the direction is the opposite of ``config``'s refusal of an *earlier*
+    #     one, which protects "a date the file seals must not silently become live"; this protects
+    #     "the window the keys open must not extend past the sealed window". Clamped rather than
+    #     refused, unlike step 0: the bound is computed in exactly one place, so the ``min`` is a
+    #     complete fix with a conservative reading, and a refusal would also turn away a hand-built
+    #     Splits whose ``holdout_end`` is later than the repository's even for a dev read, which
+    #     asks for no permission at all. (``Splits.holdout_end`` is a required field since
+    #     567616c; it once defaulted to ``dt.date.max``, which was the original reason.) It clips
+    #     the caller's *permission*, in the safe direction only; the request itself is still
+    #     refused loudly below. ``effective`` is used for all four things that
+    #     follow -- the dev test, the predicate, the bound and the refusal's wording -- so none of
+    #     them can disagree about where the regions are.
+    effective = dataclasses.replace(
+        resolved.splits,
+        holdout_end=min(resolved.splits.holdout_end, configured.splits.holdout_end),
+    )
 
     # 1. Symbols must name the configured universe or the exogenous series. A bare string would
     #    otherwise be iterated into single characters here instead of reaching dataset_glob's own
@@ -330,17 +663,39 @@ def load_panel(
     if start is not None and end < start:
         raise ValueError(f"end {end} precedes start {start}")
 
-    # 3. The holdout boundary, before any filesystem access whatsoever.
-    past_dev_end = end > resolved.splits.dev_end
-    if past_dev_end and not _unlock_granted(allow_holdout):
+    # 3. The seal, before any filesystem access whatsoever. One bound, one comparison: the three
+    #    regions are the three values the bound can take, not three branches. Short-circuits are
+    #    load-bearing: ``and`` keeps git and the keys off the dev path, and ``not revealed and``
+    #    means the keys are not asked at all once a reveal is committed. The predicate is asked
+    #    about ``effective`` -- the caller's own clamped splits -- never the repository's, which is
+    #    the whole of the lift's scoping: a record pinning other dates says nothing about these.
+    past_dev_end = end > effective.dev_end
+    revealed = past_dev_end and _reveal_committed(effective)
+    unlocked = past_dev_end and not revealed and _unlock_granted(allow_holdout)
+    limit = _read_limit(effective, revealed=revealed, unlocked=unlocked)
+    if end > limit:
+        if effective.region_of(end) is Region.HOLDOUT:
+            raise HoldoutViolation(
+                f"end {end} is past dev_end {effective.dev_end}; reading the holdout window "
+                f"needs both allow_holdout=True and {_UNLOCK_ENV}=1"
+            )
         raise HoldoutViolation(
-            f"end {end} is past dev_end {resolved.splits.dev_end}; reading the holdout window "
-            f"needs both allow_holdout=True and {_UNLOCK_ENV}=1"
+            f"end {end} is past dev_end {effective.dev_end}, in the live region (after "
+            f"holdout_end {effective.holdout_end}): it is unreachable until a completed reveal "
+            "record is committed, and no argument and no environment variable opens it"
         )
+    audited = past_dev_end and not revealed
+    # A look that cannot be logged does not happen: no ``suppress`` here, so an unwritable log
+    # stops the read before step 4 touches the filesystem.
+    look_id = (
+        _open_look(resolved, dataset=dataset, tier=tier, end=end, start=start, symbols=symbols)
+        if audited
+        else ""
+    )
 
-    # Steps 4 to 12 run inside the audit's scope: once the two keys have opened the sealed
-    # window, the attempt is recorded whether it succeeds or fails. The exception is re-raised
-    # untouched; nothing here swallows or rewrites a refusal.
+    # Steps 4 to 12 run inside the audit's scope: once the seal has been opened for a look, the
+    # attempt is closed out whether it succeeds or fails. The exception is re-raised untouched;
+    # nothing here swallows or rewrites a refusal.
     try:
         # 4. Nothing to read is a missing dataset, not an empty answer. ``symbols=None`` means
         #    the configured universe, not every directory on disk: a typo'd or decommissioned
@@ -453,30 +808,14 @@ def load_panel(
         # An unwritable audit log must not displace the refusal it was recording: the caller
         # has to see why the read was refused. On the success path below there is no exception
         # to protect, so a failure to record surfaces there instead of being swallowed.
-        if past_dev_end:
+        if audited:
             with contextlib.suppress(Exception):
-                _append_audit(
-                    resolved,
-                    dataset=dataset,
-                    tier=tier,
-                    end=end,
-                    start=start,
-                    symbols=symbols,
-                    outcome=type(exc).__name__,
-                )
+                _close_look(resolved, look_id=look_id, outcome=type(exc).__name__)
         raise
 
-    # 13. An unlocked read is recorded before the rows leave this function.
-    if past_dev_end:
-        _append_audit(
-            resolved,
-            dataset=dataset,
-            tier=tier,
-            end=end,
-            start=start,
-            symbols=symbols,
-            outcome="success",
-        )
+    # 13. An unlocked read is closed out before the rows leave this function.
+    if audited:
+        _close_look(resolved, look_id=look_id, outcome="success")
 
     # Timestamps come back in UTC whatever the host's timezone is. DuckDB renders a TIMESTAMP
     # WITH TIME ZONE in its session timezone, which defaults to the system's, so the same read on
