@@ -1328,3 +1328,11 @@ one. Adding one is possible, not needed for the floor.
 **Not fixed, a follow-up:** the sprint log keeps the candidate's refusal *count* but not its
 *reason*, so "no usable MCS" hid a 250-of-250 refusal. Keeping the first reason in the proposal
 event would have shown the cause at once.
+
+**Offline check, and an unrecorded look it cost.** To show the pipeline scores a fittable
+proposal, `harx+semivar_neg_proxy_d5` on SPY at h5 was run in-process through
+`run_configuration` on the dev window with the ledger write stubbed: 250 of 250 origins scored, 0
+refused, all four ledgers byte-identical after. That run computed dev-period qlike and MSE for
+this configuration against `har_levels`, and **no ledger records them**. It is disclosed here so it
+counts: if the agent later proposes this configuration, its result is not independent of this
+look, and the losses seen here are not to be quoted as a finding.
