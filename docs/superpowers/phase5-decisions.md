@@ -1322,8 +1322,13 @@ four. Each column stays in the vocabulary on its own.
 the same `_IDENTITY_GROUPS`. Every slot's body is still identical (the canary's cover). Without
 that line, a model that keeps sending the same combination would have every slot refused.
 
-**Canaries unchanged.** The six canary payloads still cover six distinct codes; none uses the new
-one. Adding one is possible, not needed for the floor.
+**Canaries must stay single-defect, and two of them were not.** The duplicate canary
+(`[VOCABULARY[0]] * 2`) and the too-many canary (`VOCABULARY[:9]`) named `semivar_neg_proxy_d1`
+and the rest of the d1 group, so each now broke an identity group as well. The gate stops at the
+first defect, so they were still refused by their own branch, but if that branch broke they would
+still be refused, as collinear, and the six-code floor would not notice. Canaries now name only
+`_UNGROUPED`, the 14 vocabulary names in no group, and a test counts each canary's names per
+group, repeats included. No canary uses the new code; the floor does not need one.
 
 **Not fixed, a follow-up:** the sprint log keeps the candidate's refusal *count* but not its
 *reason*, so "no usable MCS" hid a 250-of-250 refusal. Keeping the first reason in the proposal

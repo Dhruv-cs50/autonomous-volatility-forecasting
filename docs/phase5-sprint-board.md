@@ -127,6 +127,17 @@ open deliberately, as noted in the table.
 - [x] CI green on the merged head — `84bf0c3`, 2,730 passed
 - [x] PR #20 rewritten to say what is now true, and merged (`0fd5096`)
 
+## After the merge: the live sprints
+
+Branch `agent/first-real-sprint`, cut from `main` at `60da98f` (PR #25's merge, R224).
+
+| ID | Story | Owner | Depends on | Acceptance check | State |
+|---|---|---|---|---|---|
+| P5-L1 | First live sprint on the real store | orchestrator | the user's go, R224 | sprint completes; `trials.jsonl` and `comparisons.jsonl` byte-identical; agent ledgers committed | done (`61d2da0`): `no_candidate`, every origin singular |
+| P5-L2 | Root cause of the 250-of-250 refusal | orchestrator | L1 | reproduced in-process, cause stated with evidence | done: identities in `features/realized.py` (R225) |
+| P5-L3 | The gate refuses identity-group combinations; canaries stay single-defect | orchestrator | L2 | observed payload refused as `collinear_regressors`; fit_ols and rank witnesses on engine-built columns; agent tests, ruff, mypy green | done (`f7ef947`, `b18ea29`, + canary commit) |
+| P5-L4 | Keep the first refusal reason in the proposal event | — | — | "no usable MCS" can no longer hide why | todo (follow-up, R225) |
+
 ## What the fences actually caught, recorded because a guard with no demonstrated bite is not evidence
 
 - **The store-reach fence caught the realistic two-hop plant**, `from volab.features.targets import

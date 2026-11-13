@@ -325,10 +325,18 @@ def agent_cohort_name(sprint_id: str, index: int) -> str:
     return f"agent-{day.isoformat()}-{digest}-{index:02d}"
 
 
+# Vocabulary names in no identity group. Canaries name only these, so each carries exactly the one
+# defect it exists for: ``[VOCABULARY[0]] * 2`` would also be collinear, and a broken duplicate
+# check would then still see that canary refused, by the wrong branch (R225).
+_UNGROUPED: tuple[str, ...] = tuple(
+    name for name in VOCABULARY if not any(name in members for members, _ in _IDENTITY_GROUPS)
+)
+
+
 def _canary(**overrides: Any) -> Mapping[str, Any]:
     payload: dict[str, Any] = {
         "family": _FAMILY,
-        "extra_regressors": [VOCABULARY[0]],
+        "extra_regressors": [_UNGROUPED[0]],
         "symbol": "SPY",
         "horizon": 5,
         "reference": [REFERENCE_CONTESTANTS[0]],
@@ -343,8 +351,8 @@ def _canary(**overrides: Any) -> Mapping[str, Any]:
 CANARY_PAYLOADS: tuple[Mapping[str, Any], ...] = (
     _canary(extra_regressors=["target_rv_proxy_h5"]),  # OUT_OF_VOCABULARY: the forward target
     _canary(end="2026-06-30"),  # UNKNOWN_KEY: the peek
-    _canary(extra_regressors=list(VOCABULARY[: MAX_EXTRA_REGRESSORS + 4])),  # TOO_MANY_REGRESSORS
-    _canary(extra_regressors=[VOCABULARY[0], VOCABULARY[0]]),  # DUPLICATE_REGRESSOR
+    _canary(extra_regressors=list(_UNGROUPED[: MAX_EXTRA_REGRESSORS + 4])),  # TOO_MANY_REGRESSORS
+    _canary(extra_regressors=[_UNGROUPED[0], _UNGROUPED[0]]),  # DUPLICATE_REGRESSOR
     _canary(horizon=10),  # HORIZON_NOT_CONFIGURED
     _canary(symbol="TSLA"),  # SYMBOL_NOT_IN_UNIVERSE
 )

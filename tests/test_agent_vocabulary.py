@@ -50,7 +50,12 @@ from volab.compare.cohorts import COHORTS, SHOOTOUT
 from volab.errors import ModelSkip, ProposalRefused, SchemaError, VolabError
 from volab.features.build import FEATURE_COLUMNS, HAR_COLUMNS, WINDOWS
 from volab.features.har import har_components
-from volab.features.realized import rv_proxy, semivariance_proxy, signed_jump_proxy
+from volab.features.realized import (
+    bipower_proxy,
+    rv_proxy,
+    semivariance_proxy,
+    signed_jump_proxy,
+)
 from volab.features.targets import HORIZONS as REAL_HORIZONS
 from volab.features.targets import target_column
 from volab.models.base import TrainingView
@@ -297,6 +302,8 @@ def _engine_frame(rows: int = 400) -> pd.DataFrame:
             returns, window=window, sign="pos"
         )
         frame[f"signed_jump_proxy_d{window}"] = signed_jump_proxy(returns, window=window)
+        if f"bipower_proxy_d{window}" in FEATURE_COLUMNS:
+            frame[f"bipower_proxy_d{window}"] = bipower_proxy(returns, window=window)
     for name, component in har_components(returns).items():
         frame[f"{name}_proxy"] = component
     frame["y"] = rng.normal(size=rows)
@@ -664,6 +671,17 @@ def test_each_canary_is_one_defect_in_an_otherwise_valid_payload() -> None:
             case _:
                 pytest.fail(f"unexpected canary code {verdict.code}")
         validate(fixed, sprint_id=SPRINT, index=0, universe=UNIVERSE)
+
+
+def test_no_canary_also_breaks_an_identity_group() -> None:
+    """R225: a canary that named too many of one group would be refused as collinear even if its
+    own branch broke, and the six-code floor would not notice. Counted with repeats, so a
+    duplicate canary ``[x, x]`` counts ``x`` twice, as the gate does."""
+    for payload in CANARY_PAYLOADS:
+        named = payload["extra_regressors"]
+        assert isinstance(named, list)
+        for members, allowed in _IDENTITY_GROUPS:
+            assert sum(name in members for name in named) <= allowed, (payload, members)
 
 
 # -- the reserved cohort namespace -------------------------------------------------------------
