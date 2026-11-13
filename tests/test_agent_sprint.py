@@ -478,6 +478,27 @@ def test_an_unparseable_critic_reply_is_recorded_as_unparsed_and_changes_nothing
     assert result.outcome == "awaiting_approval"
 
 
+@pytest.mark.parametrize(
+    ("reply", "verdict"),
+    [
+        # The first live sprint (R224): Haiku opened with a bolded verdict, logged as unparsed.
+        ("**REJECT** (as written; the spec is close)", "reject"),
+        ("## APPROVE\nThey follow.", "approve"),
+        ("*Approve*: they follow.", "approve"),
+        ("`REJECT`", "reject"),
+        ("**Hmm**, hard to say.", "unparsed"),
+    ],
+)
+def test_a_critic_verdict_wrapped_in_markdown_is_still_read(
+    tmp_path: Path, settings: Settings, reply: str, verdict: str
+) -> None:
+    result, _ = run_with_critic(tmp_path, settings, reply)
+    (critique,) = [e for e in log_of(tmp_path, "report") if e["role"] == "critic"]
+    assert critique["verdict"] == verdict
+    assert critique["text"] == reply
+    assert result.outcome == "awaiting_approval"
+
+
 # --- the pause, not a promotion ----------------------------------------------------------------
 
 
@@ -864,6 +885,34 @@ def test_a_configurator_reply_that_is_not_json_reaches_the_gate_as_the_text_it_w
     assert parse_payload('{"a": 1}') == {"a": 1}
     assert parse_payload('```json\n{"a": 1}\n```') == {"a": 1}
     assert parse_payload("sure, here you go") == "sure, here you go"
+
+
+def test_the_configurator_prompt_asks_for_json_arrays_and_its_example_passes_the_gate() -> None:
+    """The first live sprint (R224): Haiku sent ``reference`` as a string, and the gate refused all
+    three proposals. The prompt now names the JSON type of each list field and shows the reference
+    shape, and that shown example is itself gate-valid, so the prompt cannot drift from the gate.
+    """
+    completer = FakeCompleter(["{}"] * PROPOSALS_PER_SPRINT)
+    roles_module.configurator(
+        {"hypothesis": "h"}, completer=completer, slots=PROPOSALS_PER_SPRINT, universe=("SPY",)
+    )
+    users = [p.user.split("\n", 2)[2] for p in completer.prompts]
+    assert len(set(users)) == 1  # every slot's prompt has the same body (the canary's cover)
+    lines = {line.split(":", 1)[0]: line for line in completer.prompts[0].user.splitlines()}
+    assert "a JSON array" in lines["extra_regressors"]
+    assert "a JSON array" in lines["reference"]
+    assert "an integer" in lines["horizon"]
+    example = json.loads(lines["reference"].split("e.g. ", 1)[1])
+    assert isinstance(example, list)
+    raw = {
+        "family": MODEL_FAMILIES[0],
+        "extra_regressors": [VOCABULARY[0]],
+        "symbol": "SPY",
+        "horizon": 1,
+        "reference": example,
+    }
+    proposal = validate(raw, sprint_id=SPRINT, index=0, universe=("SPY",))
+    assert list(proposal.reference) == example
 
 
 # --- the report's one possible validation ------------------------------------------------------

@@ -200,12 +200,14 @@ def configurator(
                     f"Hypothesis: {state['hypothesis']}\n"
                     f"Proposal {slot} of {slots}.\n"
                     f"family: one of {', '.join(MODEL_FAMILIES)}.\n"
-                    f"extra_regressors: 1 to {MAX_EXTRA_REGRESSORS} distinct names from "
-                    f"{', '.join(VOCABULARY)}.\n"
+                    f"extra_regressors: a JSON array of 1 to {MAX_EXTRA_REGRESSORS} distinct "
+                    f"names from {', '.join(VOCABULARY)}.\n"
                     f"symbol: one of {', '.join(universe)}.\n"
-                    f"horizon: one of {', '.join(str(h) for h in HORIZONS)}.\n"
-                    f"reference: names from {', '.join(REFERENCE_CONTESTANTS)}, "
-                    f"{REFERENCE_CONTESTANTS[0]} first."
+                    f"horizon: an integer, one of {', '.join(str(h) for h in HORIZONS)}.\n"
+                    # A list even for one name: the first live sprint sent a string (R224).
+                    f"reference: a JSON array of names from {', '.join(REFERENCE_CONTESTANTS)}, "
+                    f"{REFERENCE_CONTESTANTS[0]} first, e.g. "
+                    f"{json.dumps([REFERENCE_CONTESTANTS[0]])}"
                 ),
             )
         )
@@ -252,6 +254,9 @@ def runner(proposal: Proposal, *, submit: Callable[[Proposal], ChildRun]) -> dic
     }
 
 
+_MARKDOWN = "*_`#>"
+
+
 def critic(
     state: Mapping[str, Any], *, completer: Completer, dev_metrics: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
@@ -279,7 +284,9 @@ def critic(
         )
     )
     text = completion.text.strip()
-    first = text.split(maxsplit=1)[0].strip(":.,;-").lower() if text else ""
+    # Markdown around the first word (``**REJECT**``, ``## APPROVE``) is not part of it (R224).
+    bare = text.lstrip(_MARKDOWN + " \t\r\n")
+    first = bare.split(maxsplit=1)[0].strip(":.,;-" + _MARKDOWN).lower() if bare else ""
     return {
         "critique": {
             "text": text,
