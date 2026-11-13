@@ -67,6 +67,7 @@ from typing import Any
 from volab.agent._llm import Completer, Prompt
 from volab.agent._runner import ChildRun
 from volab.agent.vocabulary import (
+    _IDENTITY_GROUPS,
     HORIZONS,
     MAX_EXTRA_REGRESSORS,
     REFERENCE_CONTESTANTS,
@@ -202,6 +203,14 @@ def configurator(
                     f"family: one of {', '.join(MODEL_FAMILIES)}.\n"
                     f"extra_regressors: a JSON array of 1 to {MAX_EXTRA_REGRESSORS} distinct "
                     f"names from {', '.join(VOCABULARY)}.\n"
+                    # The first real-store sprint named three of one group in every slot (R225).
+                    "Some of those are linear combinations of each other and of the HAR base, so "
+                    "naming more is a singular regression; name "
+                    + "; ".join(
+                        f"at most {allowed} of {', '.join(members)}"
+                        for members, allowed in _IDENTITY_GROUPS
+                    )
+                    + ".\n"
                     f"symbol: one of {', '.join(universe)}.\n"
                     f"horizon: an integer, one of {', '.join(str(h) for h in HORIZONS)}.\n"
                     # A list even for one name: the first live sprint sent a string (R224).
