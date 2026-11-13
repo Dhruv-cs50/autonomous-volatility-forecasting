@@ -200,12 +200,29 @@ the whole sprint: **a permissive stub copied from the story below can hide the d
 above introduces.** Nothing was wrong with HR-3; the stub was adequate for what HR-3 tested and
 inadequate for what HR-4 needs, and only HR-4 could find that out.
 
-**The window is not ingested, so the reveal cannot be taken yet.** Read from partition
-**directory names only**, no value read: `data/raw/nasdaq_bars/SPY` ends at `date=2026-10-20`,
-`cboe_vix/VIX` at `2026-10-20`, `fred/DGS10` at `2026-10-22`. `holdout_end` is **2026-10-30**, so
-roughly seven sessions are missing and `python -m volab.ingest` must run first. The design makes
-this gate `window_not_ingested`, which costs an attempt rather than being free, and that is correct:
-finding out requires a read.
+**The window is ingested (2026-11-12).** It was not, when the paragraph this replaces was
+written: `data/raw/nasdaq_bars/SPY` ended at `date=2026-10-20`, `cboe_vix/VIX` at `2026-10-20`,
+`fred/DGS10` at `2026-10-22`, against a `holdout_end` of **2026-10-30**. `python -m volab.ingest
+fetch` then `build-raw` filled it. `curate` was deliberately **not** run: `_curate` is pinned at
+`dev_end` so it can write nothing for the window, and the only thing it could do is re-curate dev
+rows from a newer vintage — the one way that step could move a recorded dev figure. The take's
+stage A derives the window's curated rows from raw itself.
+
+Read from partition **directory names only**, no value read: the eight window sessions
+(2026-10-21, 22, 23, 26, 27, 28, 29, 30) are each present for all three bar symbols, all four
+VIX-family series and all three FRED series; the latest raw bars session is `2026-11-11`. No
+partition dated on or before `dev_end` was written and `data/curated` and `data/features` were
+not touched at all — `build_raw` skips any partition that already exists, so a newer vendor
+vintage cannot revise dev history. `window_not_ingested` (11) therefore forecasts clear, computed
+through the gate's own comparison (`raw_bars_frames` → `short_window`): `expected_last_session`
+2026-10-30. The design still makes that gate cost an attempt rather than being free, and that is
+correct: *confirming* it requires a read, and a forecast from directory names is not a read.
+
+`data/vendor_payloads/**` is tracked, so the fetch dirtied the tree and `check` exited 3 on 22
+untracked payload and sidecar files; this commit is those files, which also puts the fetch time —
+after the window closed — on the record. Gates 4 through 9 were each evaluated and each passed at
+`107c9b0` (`gates()` collects every refusal rather than returning at the first), so what remains
+after this commit is gates 10, 11 and 12, none of which can be settled without a read.
 
 ### Two questions for the user, and the first one is ordered
 
