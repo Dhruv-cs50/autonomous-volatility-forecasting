@@ -28,8 +28,8 @@ _INIT_PATH = _SOURCE_ROOT / "daily" / "__init__.py"
 
 # One session in each region of the fixture's splits, plus a live session well past
 # ``holdout_end``, which is what an upper bound on the revealed branch would refuse. (Not further
-# out than the XNYS calendar reaches: past its last session ``is_session`` raises, which is a
-# separate fact, reported with the story rather than pinned here.)
+# out than the XNYS calendar reaches: past its last session the plan is refused instead, HR-8's
+# fact, pinned in ``tests/test_daily_calendar_bound.py``.)
 _DEV = dt.date(2025, 12, 30)
 _HOLDOUT = dt.date(2026, 3, 3)
 _LIVE = dt.date(2026, 11, 4)
