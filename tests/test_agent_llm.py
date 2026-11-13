@@ -28,6 +28,7 @@ def _body(**overrides: object) -> bytes:
     payload: dict[str, object] = {
         "model": "claude-haiku-5-5",
         "content": [{"type": "text", "text": "hello"}],
+        "stop_reason": "end_turn",
         "usage": {"input_tokens": 12, "output_tokens": 3},
     }
     payload.update(overrides)
@@ -77,18 +78,14 @@ def test_text_blocks_are_concatenated_and_other_block_types_are_skipped() -> Non
         b"[1, 2]",
         b'"a string"',
         b"{}",
-        json.dumps({"model": "m", "content": []}).encode(),
-        json.dumps({"model": "m", "content": "not a list"}).encode(),
-        json.dumps({"model": "m", "content": [{"type": "tool_use"}]}).encode(),
-        json.dumps({"content": [{"type": "text", "text": "x"}]}).encode(),
-        json.dumps({"model": "m", "content": [{"type": "text", "text": 5}]}).encode(),
+        _body(content=[]),
+        _body(content="not a list"),
+        _body(content=[{"type": "tool_use"}]),
         json.dumps(
-            {
-                "model": "m",
-                "content": [{"type": "text", "text": "x"}],
-                "usage": {"input_tokens": "9"},
-            }
+            {"content": [{"type": "text", "text": "x"}], "stop_reason": "end_turn"}
         ).encode(),
+        _body(content=[{"type": "text", "text": 5}]),
+        _body(usage={"input_tokens": "9"}),
     ],
 )
 def test_a_body_that_is_not_json_or_has_the_wrong_shape_is_refused_as_parse_refused(
@@ -98,6 +95,47 @@ def test_a_body_that_is_not_json_or_has_the_wrong_shape_is_refused_as_parse_refu
         completion_from_response(body)
     assert isinstance(caught.value, VolabError)
     assert not isinstance(caught.value, ValueError)  # R30
+
+
+@pytest.mark.parametrize("stop_reason", ["end_turn", "stop_sequence"])
+def test_a_reply_that_ended_on_its_own_is_accepted(stop_reason: str) -> None:
+    assert completion_from_response(_body(stop_reason=stop_reason)).text == "hello"
+
+
+def test_a_reply_cut_off_at_the_cap_is_refused_even_though_it_holds_text() -> None:
+    # The first real-store sprint stored a hypothesis, critique and report that each stopped
+    # mid-sentence, because this reply was accepted (R226).
+    content = [
+        {"type": "thinking", "thinking": "", "signature": "s"},
+        {"type": "text", "text": "a"},
+    ]
+    with pytest.raises(ParseRefused, match="max_tokens") as caught:
+        completion_from_response(_body(content=content, stop_reason="max_tokens"))
+    assert "thinking" in str(caught.value) and "text" in str(caught.value)
+
+
+def test_a_reply_cut_off_inside_thinking_names_the_stop_reason_not_only_the_missing_text() -> None:
+    # The second real-store sprint died on "holds no text block", which said nothing of why.
+    content = [{"type": "thinking", "thinking": "", "signature": "s"}]
+    with pytest.raises(ParseRefused, match="max_tokens"):
+        completion_from_response(_body(content=content, stop_reason="max_tokens"))
+
+
+def test_a_safety_refusal_is_refused_and_names_its_category() -> None:
+    body = _body(content=[], stop_reason="refusal", stop_details={"category": "general_harms"})
+    with pytest.raises(ParseRefused, match="refusal.*general_harms"):
+        completion_from_response(body)
+
+
+@pytest.mark.parametrize("stop_reason", [None, "pause_turn", "tool_use", 5])
+def test_a_reply_with_no_or_another_stop_reason_is_refused(stop_reason: object) -> None:
+    payload = json.loads(_body())
+    if stop_reason is None:
+        del payload["stop_reason"]
+    else:
+        payload["stop_reason"] = stop_reason
+    with pytest.raises(ParseRefused, match="stop_reason"):
+        completion_from_response(json.dumps(payload).encode())
 
 
 def test_a_boolean_token_count_is_refused_rather_than_read_as_one() -> None:
@@ -174,8 +212,10 @@ def test_the_fake_completer_refuses_a_call_beyond_its_script_and_records_nothing
     assert len(fake.prompts) == 1
 
 
-def test_a_prompt_defaults_to_1024_max_tokens_and_is_frozen() -> None:
+def test_a_prompt_defaults_to_8192_max_tokens_and_is_frozen() -> None:
+    # Haiku 5.5 thinks by default and thinking counts toward the cap. At 1024, every role but the
+    # Configurator stopped mid-reply; the largest whole reply measured was 2057 tokens (R226).
     prompt = Prompt("s", "u")
-    assert prompt.max_tokens == 1024
+    assert prompt.max_tokens == 8192
     with pytest.raises(AttributeError):
         prompt.user = "other"  # type: ignore[misc]

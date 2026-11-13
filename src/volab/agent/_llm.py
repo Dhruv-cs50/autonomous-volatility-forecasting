@@ -19,11 +19,18 @@ this repository refuses. ``FakeCompleter`` therefore reports ``None`` too: it me
 
 **What this module does not cover.** The wire format below (Anthropic's Messages API: a
 ``POST {base_url}/v1/messages`` with ``x-api-key`` and ``anthropic-version`` headers, answered by
-a ``content`` list of typed blocks and a ``usage`` object) is written from the published shape
-and has *never been executed against a provider*. ``completion_from_response`` is tested against
-bodies shaped like that documentation; a real response is the only thing that can show the shape
-is right. There is no retry: unlike a public data endpoint, a model call that fails is raised so
-the sprint records it, rather than quietly spending budget a second time.
+a ``content`` list of typed blocks, a ``stop_reason`` and a ``usage`` object) was written from
+the published shape; the first two real-store sprints are the only runs against a provider.
+``completion_from_response`` is tested against bodies shaped like that documentation. There is no
+retry: unlike a public data endpoint, a model call that fails is raised so the sprint records it,
+rather than quietly spending budget a second time.
+
+**A reply counts only if it ended on its own** (R226). The default model thinks before it
+answers, and thinking counts toward ``max_tokens``. A reply that hit the cap still carries text,
+cut mid-sentence, and the first real-store sprint stored three such replies as if they were
+whole. So ``stop_reason`` must be ``end_turn`` or ``stop_sequence``; anything else, including a
+safety ``refusal`` and an absent stop reason, is ``ParseRefused`` with the stop reason and the
+content block types in the message. The cap is sized from measured whole replies.
 
 The module imports nothing first-party except ``volab.errors``, so it sits inside the R192 import
 fence, and it reads no environment variable at import time.
@@ -51,6 +58,13 @@ MODEL_VARIABLE = "VOLAB_LLM_MODEL"
 _API_VERSION = "2023-06-01"
 _TIMEOUT_SECONDS = 60.0
 
+# Four times the largest whole reply measured (2057 output tokens, the Critic's, thinking
+# included); the first real-store sprint's 1024 cut every role but the Configurator short (R226).
+# A cap is a ceiling, not a charge: only the tokens a reply uses are billed.
+DEFAULT_MAX_TOKENS = 8192
+# The stop reasons of a reply the model finished; any other leaves the text incomplete or absent.
+_FINISHED = ("end_turn", "stop_sequence")
+
 
 @dataclass(frozen=True)
 class Prompt:
@@ -58,7 +72,7 @@ class Prompt:
 
     system: str
     user: str
-    max_tokens: int = 1024
+    max_tokens: int = DEFAULT_MAX_TOKENS
 
 
 @dataclass(frozen=True)
@@ -96,8 +110,10 @@ def completion_from_response(body: bytes) -> Completion:
     The wire-touching function is a thin shell around this one so that everything which can be
     wrong about a *response* is testable from bytes. Text blocks are concatenated and other block
     types are skipped; a reply with no text block at all is refused, since an empty string would
-    be indistinguishable from a model that chose to say nothing. A missing ``usage`` object, or a
-    missing field inside it, gives ``None`` for that count.
+    be indistinguishable from a model that chose to say nothing. Before that, a reply whose
+    ``stop_reason`` is not ``end_turn`` or ``stop_sequence`` is refused, text or not, since its
+    text is cut short or absent (R226). A missing ``usage`` object, or a missing field inside it,
+    gives ``None`` for that count.
     """
     try:
         payload = json.loads(body)
@@ -111,6 +127,16 @@ def completion_from_response(body: bytes) -> Completion:
     content = payload.get("content")
     if not isinstance(content, list):
         raise _refuse("provider response has no 'content' list")
+    blocks = [block.get("type") if isinstance(block, dict) else None for block in content]
+    stop_reason = payload.get("stop_reason")
+    if stop_reason not in _FINISHED:
+        details = payload.get("stop_details")
+        category = details.get("category") if isinstance(details, dict) else None
+        raise _refuse(
+            f"provider reply did not finish: stop_reason {stop_reason!r}"
+            + (f" (category {category!r})" if category is not None else "")
+            + f", content blocks {blocks!r}"
+        )
     texts: list[str] = []
     for block in content:
         if isinstance(block, dict) and block.get("type") == "text":
@@ -119,7 +145,7 @@ def completion_from_response(body: bytes) -> Completion:
                 raise _refuse("a text block's 'text' is not a string")
             texts.append(text)
     if not texts:
-        raise _refuse("provider response holds no text block")
+        raise _refuse(f"provider response holds no text block: content blocks {blocks!r}")
     usage = payload.get("usage")
     if usage is None:
         return Completion("".join(texts), model, None, None)
@@ -141,7 +167,7 @@ def default_completer(
     Returns a ``Completer`` bound to one model and key. A transport failure (timeout, connection
     error, non-2xx status) is raised as ``RuntimeError`` in the manner of ``default_transport``;
     a response that arrives and cannot be read is ``ParseRefused`` from
-    ``completion_from_response``. Never executed against a real provider.
+    ``completion_from_response``. Executed only by the live real-store sprints.
     """
 
     def complete(prompt: Prompt) -> Completion:
