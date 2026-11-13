@@ -1341,3 +1341,56 @@ refused, all four ledgers byte-identical after. That run computed dev-period qli
 this configuration against `har_levels`, and **no ledger records them**. It is disclosed here so it
 counts: if the agent later proposes this configuration, its result is not independent of this
 look, and the losses seen here are not to be quoted as a finding.
+
+## R226 — a model reply counts only if it finished, and the cap is sized from measured replies
+
+**What ran.** The second real-store sprint, `2026-11-13T110611Z`, on `67e28c6` (main after
+PR #27), exited 1 in the Researcher step: `ParseRefused: provider response holds no text block`.
+It reached no proposal. `trials.jsonl` and `comparisons.jsonl` are byte-identical (sha256 before
+and after), the agent ledgers gained nothing, and the sprint log holds its `start` event with no
+`complete`. It is **not resumed**: its start event records `67e28c6`, and resuming on fixed code
+would put two code versions under one sprint id. The next sprint takes a fresh id.
+
+**Root cause.** `claude-haiku-5-5` thinks by default when a request does not set `thinking`, and
+thinking counts toward `max_tokens`. Every role used `Prompt`'s default cap of 1024. Here the
+thinking took all of it and the reply carried a `thinking` block and no `text`. Evidence: the
+same Researcher request (same memory, same ledger count) replayed four times at 1024 stopped with
+`stop_reason: "max_tokens"` four times, each with a thinking block and then text cut mid-sentence.
+
+**The first sprint was cut off too, silently.** `completion_from_response` read text blocks and
+ignored `stop_reason`, so a reply that hit the cap with *some* text was accepted. Sprint
+`2026-11-13T054207Z` stored a hypothesis ending at `- **Evaluation:**`, a critique and a report
+each ending mid-sentence. What stands:
+* The Critic's `reject` is genuine: the reply opens `**REJECT.**` and the verdict is read from the
+  first word. Only the reasoning after it was lost.
+* The Configurator's JSON was short enough to arrive whole, so R225's diagnosis (the payload was
+  singular by construction) is unaffected.
+* Later sprints' memory carries sprint 1's hypothesis as stored, i.e. truncated. That is what was
+  recorded and it is left as is.
+
+**Ruling.**
+* A reply counts only if `stop_reason` is `end_turn` or `stop_sequence`. `max_tokens`, a safety
+  `refusal` (Haiku 5.5 runs classifiers that decline with HTTP 200 and a `stop_details.category`),
+  any other value, and an absent stop reason are `ParseRefused`. The message names the stop
+  reason, the category when there is one, and the content block types, so a failure says why.
+  Both halves are needed: refusing cut-off replies at 1024 would fail every sprint, and raising
+  the cap without the check leaves the next cut-off silent.
+* `DEFAULT_MAX_TOKENS = 8192`. Each role was replayed once at a 16000 cap on sprint 1's
+  checkpointed state, and every reply finished (`end_turn`). Output tokens, thinking included:
+  Researcher 1311, Configurator 343, Critic 2057, Reporter 1805. 8192 is four times the largest.
+  A cap is a ceiling, not a charge: only the tokens a reply uses are billed.
+* *Why not lower `effort` or turn thinking off.* Either adds a request field that this module has
+  never sent under `anthropic-version: 2023-06-01`; raising the cap needs no new field. Whether
+  the roles are better with less thinking is a separate question this change does not answer.
+* *Residual risk:* `_TIMEOUT_SECONDS` stays 60. A reply that runs to the full 8192 could take
+  longer than that and would fail as a transport error, loudly, not silently.
+
+**Disclosure: eight calls outside any sprint.** Diagnosis made four Researcher calls at 1024 and
+sizing made one call per role at 16000, all from scratch scripts that wrote only to a scratch
+directory: about 9.6k output tokens in all. Their inputs were sprint 1's checkpointed state and
+the harness-rendered figures, which hold verdicts and counts and no dev-period loss. Nothing
+reached a ledger, the sprint log or a checkpoint, and the real ledgers were hashed after each.
+
+**Found, not fixed:** the Reporter's `invented_numbers` flagged `1`, `22` and `66`, the window
+digits inside names like `semivar_neg_proxy_d1` and `rv_proxy_d66`. Those are not invented
+figures, so `validated: false` on sprint 1's report is a false alarm. A board follow-up.

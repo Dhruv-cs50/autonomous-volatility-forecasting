@@ -137,6 +137,10 @@ Branch `agent/first-real-sprint`, cut from `main` at `60da98f` (PR #25's merge, 
 | P5-L2 | Root cause of the 250-of-250 refusal | orchestrator | L1 | reproduced in-process, cause stated with evidence | done: identities in `features/realized.py` (R225) |
 | P5-L3 | The gate refuses identity-group combinations; canaries stay single-defect | orchestrator | L2 | observed payload refused as `collinear_regressors`; fit_ols and rank witnesses on engine-built columns; agent tests, ruff, mypy green | done (`f7ef947`, `b18ea29`, `e531638`) |
 | P5-L4 | Keep the first refusal reason in the proposal event | — | — | "no usable MCS" can no longer hide why | todo (follow-up, R225) |
+| P5-L5 | Second live sprint on the real store | orchestrator | L3 merged, the user's go | sprint completes; real ledgers byte-identical | failed in the Researcher step, exit 1, nothing written; real ledgers byte-identical (R226) |
+| P5-L6 | Refuse a reply that did not finish; size the cap from measured replies | orchestrator | L5 | cut-off, refusal and absent stop reasons refused with the reason named; each role finishes under the cap; agent tests, ruff, mypy green | done (`6c5be53`) |
+| P5-L7 | `invented_numbers` stops flagging window digits inside feature names | — | — | sprint 1's report would validate | todo (follow-up, R226) |
+| P5-L8 | Rerun the second sprint on L6, fresh id | orchestrator | L6, the user's go, main free of the PR #22 hold | as L5 | blocked (on the user's go) |
 
 ## What the fences actually caught, recorded because a guard with no demonstrated bite is not evidence
 
