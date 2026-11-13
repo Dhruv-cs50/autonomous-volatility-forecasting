@@ -1385,6 +1385,16 @@ each ending mid-sentence. What stands:
 * *Residual risk:* `_TIMEOUT_SECONDS` stays 60. A reply that runs to the full 8192 could take
   longer than that and would fail as a transport error, loudly, not silently.
 
+**What changes when a reply does not finish.** Before, a cut-off reply was stored as if whole,
+or, at the Configurator, reached the gate as unparseable text and was refused there. Now the
+`ParseRefused` stops the sprint at whichever step made the call:
+* At *configure*, one slot's cut-off reply stops the sprint; it is no longer one refused slot.
+* At *critique* or *report*, the candidates have already run and their agent trials are written
+  and count. The sprint is left with no `complete` line. The recovery is to **resume with the same
+  id**: the code is unchanged, and `run_sprint` restarts after the last checkpointed step, so a
+  checkpoint after `run` resumes at `critique` and submits no candidate again. That differs from
+  L5, which takes a fresh id only because the code changed under it.
+
 **Disclosure: eight calls outside any sprint.** Diagnosis made four Researcher calls at 1024 and
 sizing made one call per role at 16000, all from scratch scripts that wrote only to a scratch
 directory: about 9.6k output tokens in all. Their inputs were sprint 1's checkpointed state and
