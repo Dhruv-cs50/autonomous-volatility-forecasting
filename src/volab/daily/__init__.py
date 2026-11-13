@@ -110,7 +110,8 @@ class Plan:
 
     - ``work`` -- there is work to do, and ``stages`` is it.
     - ``refused`` -- the reveal is not committed and the date is past ``dev_end``, in the holdout
-      or the live region; the reason says which. ``stages`` is empty.
+      or the live region; or the date is outside the exchange calendar's range, so the calendar
+      cannot say whether it is a session (HR-8). The reason says which. ``stages`` is empty.
     - ``no_session`` -- the exchange was closed. ``stages`` is empty.
     - ``already_done`` -- a completed run for this date exists. ``stages`` is empty.
     """
@@ -181,7 +182,7 @@ def plan_for(
 ) -> Plan:
     """The plan for ``as_of``, computed without running or reading anything but the calendar.
 
-    The order of the three refusals is load-bearing and is pinned by its own test. **The
+    The order of the refusals is load-bearing and is pinned by its own test. **The
     ``dev_end`` refusal comes first**, before the calendar is even asked, because a date past the
     boundary must be refused for that reason and not incidentally for being a Saturday: an
     operator who reads "the exchange was closed" where the truth is "this date is sealed" has been
@@ -215,7 +216,22 @@ def plan_for(
             reason=_refusal_reason(settings.splits, as_of),
             stages=(),
         )
-    if not is_session(get_calendar(settings), as_of):
+    calendar = get_calendar(settings)
+    # HR-8: outside the calendar's range ``is_session`` raises rather than answering. Both bounds
+    # roll forward with the clock, so they are read here, never written down. ``refused`` and not
+    # ``no_session``: whether the exchange was open on such a date is unknown, not "closed".
+    first, last = calendar.first_session.date(), calendar.last_session.date()
+    if not first <= as_of <= last:
+        return Plan(
+            as_of=as_of,
+            outcome="refused",
+            reason=(
+                f"{as_of} is outside the {settings.calendar} calendar's range {first}..{last}, "
+                "so whether it is a session cannot be known"
+            ),
+            stages=(),
+        )
+    if not is_session(calendar, as_of):
         return Plan(
             as_of=as_of,
             outcome="no_session",
