@@ -1270,3 +1270,61 @@ this run is not a substitute for a real-data sprint, which stays the user's deci
 **Noted, not fixed:** two of the three slots returned the identical proposal. The slots share one
 prompt body by design (the canary's cover), so a model can collapse them. Whether that costs a
 sprint its breadth is for the first real-data sprint to show.
+
+---
+
+## R225 — the first real-data sprint: a proposal can be singular by construction, so the gate refuses it
+
+**What ran.** On the user's instruction, one live sprint (`python -m volab.agent sprint`) against
+the real store, from `60da98f` on a clean tree, sprint `2026-11-13T054207Z`. The gate accepted all
+three proposals and refused the canary. `data/trials.jsonl` and `data/comparisons.jsonl` were hashed
+before and after and did not move. The 12 agent trials and 6 agent comparisons it wrote are
+committed (`61d2da0`), because agent evaluations are trials (R183) even when they compare nothing.
+
+**What it found.** The outcome was `no_candidate`, and not because the candidate lost. All three
+slots proposed the same configuration, `harx` with `semivar_neg_proxy_d5`, `semivar_pos_proxy_d5`
+and `signed_jump_proxy_d5` on SPY at h5. The candidate refused all 250 requested origins
+(`refused = 250`), so the reference was dropped at all 250 too, and every comparison had zero
+origins: "no origin is comparable on this loss". The hub reported only "no usable qlike MCS at 10%".
+
+**Root cause.** Reproduced in-process with the trial and comparison writes stubbed out. Every
+origin's reason was the same: "the normal equations are singular at column 5". The definitions in
+`features/realized.py` make, for every window, `semivar_neg + semivar_pos = rv_proxy` and
+`signed_jump = semivar_pos - semivar_neg`, and `har_w_proxy * 5 = rv_proxy_d5`. So column 5,
+`semivar_pos_proxy_d5`, is `5 * har_w_proxy - semivar_neg_proxy_d5`. `harx.py` already noted that
+keeping such combinations out was "another story's job"; that story did not exist.
+
+**Measured on the real dev panel (2026-11-13).** An SVD of [intercept, HAR base, every realized
+vocabulary column] over 2016–2024 shows exactly **8** exact dependencies for QQQ, next singular
+value about 1e-2: two per window, which is what the definitions predict (d1, d5, d22 each tie to a
+HAR column; at d66 `rv_proxy_d66` is itself in the vocabulary). SPY and IWM show a ninth,
+`has_distribution` constant over the 657 rows where every column is present: R199's case, a
+property of the window, not touched here.
+
+**Ruling: the gate refuses the combination, as `COLLINEAR_REGRESSORS`.**
+`vocabulary._IDENTITY_GROUPS` is derived from the window list and the vocabulary. At d1, d5 and d22
+at most one of the window's semivariance and jump columns may be named; at d66 at most two of its
+four. Each column stays in the vocabulary on its own.
+
+* *Why the gate and not the fit.* `HarX.fit` already refuses each origin cleanly (a `ModelSkip`),
+  and that is correct. But a refusal at the gate writes no trial, while an evaluated singular
+  proposal writes trials the project counts against itself, every one of them empty.
+* *Why not prune the vocabulary.* Dropping `semivar_pos` alone does not help: `semivar_neg` and
+  `signed_jump` still reproduce the HAR column. Pruning would remove two of three columns per
+  window, which is research space the agent can use one at a time.
+* *Why a static rule does not contradict R199.* R199 refuses to list columns that are constant in
+  *a window*, because the window moves. These identities hold in every window because they are
+  definitions. The tests build the columns with the engine's own functions: if a definition
+  changes so an identity stops holding, they fail rather than leave a stale rule. A rank test
+  checks that the groups account for every exact dependency among the realized columns.
+
+**The prompt states the limits too.** The configurator now lists each group's limit, built from
+the same `_IDENTITY_GROUPS`. Every slot's body is still identical (the canary's cover). Without
+that line, a model that keeps sending the same combination would have every slot refused.
+
+**Canaries unchanged.** The six canary payloads still cover six distinct codes; none uses the new
+one. Adding one is possible, not needed for the floor.
+
+**Not fixed, a follow-up:** the sprint log keeps the candidate's refusal *count* but not its
+*reason*, so "no usable MCS" hid a 250-of-250 refusal. Keeping the first reason in the proposal
+event would have shown the cause at once.

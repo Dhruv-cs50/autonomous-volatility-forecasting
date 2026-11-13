@@ -32,6 +32,7 @@ import real_panel
 
 from volab.agent.vocabulary import (
     _EXACT_HAR_TRANSFORMS,
+    _IDENTITY_GROUPS,
     AGENT_COHORT_PATTERN,
     CANARY_PAYLOADS,
     HORIZONS,
@@ -47,7 +48,9 @@ from volab.agent.vocabulary import (
 )
 from volab.compare.cohorts import COHORTS, SHOOTOUT
 from volab.errors import ModelSkip, ProposalRefused, SchemaError, VolabError
-from volab.features.build import FEATURE_COLUMNS, HAR_COLUMNS
+from volab.features.build import FEATURE_COLUMNS, HAR_COLUMNS, WINDOWS
+from volab.features.har import har_components
+from volab.features.realized import rv_proxy, semivariance_proxy, signed_jump_proxy
 from volab.features.targets import HORIZONS as REAL_HORIZONS
 from volab.features.targets import target_column
 from volab.models.base import TrainingView
@@ -260,19 +263,149 @@ def test_a_column_constant_in_the_window_is_refused_as_a_model_skip_naming_it() 
             harx((column,)).fit(view)
 
 
+# -- the derived witness for _IDENTITY_GROUPS (R225) --------------------------------------------
+#
+# The first live sprint on the real store proposed semivar_neg, semivar_pos and signed_jump at d5
+# three times; every one of 250 origins was refused as singular and nothing was compared. The
+# identities below are definitions in ``features/realized.py``, not properties of a window, so the
+# gate may refuse them statically (contrast R199). These tests build the columns with the feature
+# engine's own functions, so a change to a definition breaks them rather than leaving a stale rule.
+
+# The payload the configurator sent in sprint 2026-11-13T054207Z, verbatim in its regressors.
+_FIRST_REAL_SPRINT_PAYLOAD: dict[str, Any] = {
+    "family": "harx",
+    "extra_regressors": ["semivar_neg_proxy_d5", "semivar_pos_proxy_d5", "signed_jump_proxy_d5"],
+    "symbol": "SPY",
+    "horizon": 5,
+    "reference": ["har_levels"],
+}
+
+
+def _engine_frame(rows: int = 400) -> pd.DataFrame:
+    """The realized columns and the HAR base, built from noise returns by the engine's functions."""
+    import numpy as np
+
+    rng = np.random.default_rng(11)
+    returns = pd.Series(rng.normal(scale=0.01, size=rows))
+    frame = pd.DataFrame(index=returns.index)
+    for window in WINDOWS:
+        frame[f"rv_proxy_d{window}"] = rv_proxy(returns, window=window)
+        frame[f"semivar_neg_proxy_d{window}"] = semivariance_proxy(
+            returns, window=window, sign="neg"
+        )
+        frame[f"semivar_pos_proxy_d{window}"] = semivariance_proxy(
+            returns, window=window, sign="pos"
+        )
+        frame[f"signed_jump_proxy_d{window}"] = signed_jump_proxy(returns, window=window)
+    for name, component in har_components(returns).items():
+        frame[f"{name}_proxy"] = component
+    frame["y"] = rng.normal(size=rows)
+    return frame.dropna().reset_index(drop=True)
+
+
+def test_the_identity_groups_are_the_four_windows_written_out() -> None:
+    """A literal beside the derivation, so a change to either is a reviewed edit."""
+    assert _IDENTITY_GROUPS == (
+        (("semivar_neg_proxy_d1", "semivar_pos_proxy_d1", "signed_jump_proxy_d1"), 1),
+        (("semivar_neg_proxy_d5", "semivar_pos_proxy_d5", "signed_jump_proxy_d5"), 1),
+        (("semivar_neg_proxy_d22", "semivar_pos_proxy_d22", "signed_jump_proxy_d22"), 1),
+        (
+            (
+                "rv_proxy_d66",
+                "semivar_neg_proxy_d66",
+                "semivar_pos_proxy_d66",
+                "signed_jump_proxy_d66",
+            ),
+            2,
+        ),
+    )
+    for members, _ in _IDENTITY_GROUPS:
+        assert set(members) <= set(VOCABULARY)
+
+
+def test_one_more_than_allowed_from_a_group_is_singular_and_the_allowed_number_fits() -> None:
+    """The rule against ``fit_ols`` on engine-built columns: every subset one larger than the
+    group allows makes the design singular beside the HAR base, and every subset of the allowed
+    size fits. If a feature definition changes so an identity no longer holds, this fails."""
+    import itertools
+
+    frame = _engine_frame()
+    for members, allowed in _IDENTITY_GROUPS:
+        for subset in itertools.combinations(members, allowed + 1):
+            with pytest.raises(SchemaError):
+                fit_ols(frame, [*HAR_COLUMNS, *subset], "y")
+        for subset in itertools.combinations(members, allowed):
+            fit_ols(frame, [*HAR_COLUMNS, *subset], "y")  # must not raise SchemaError
+
+
+def test_the_groups_account_for_every_exact_dependency_among_the_realized_columns() -> None:
+    """Completeness: the rank deficiency of [intercept, HAR base, every realized vocabulary
+    column] is exactly what the groups predict, so no identity among these columns is unnamed."""
+    import numpy as np
+
+    frame = _engine_frame()
+    realized = [c for c in VOCABULARY if c in frame.columns]
+    columns = frame[[*HAR_COLUMNS, *realized]].to_numpy()
+    scaled = (columns - columns.mean(axis=0)) / columns.std(axis=0)
+    design = np.column_stack([np.ones(len(frame)), scaled])
+    expected_deficiency = sum(len(members) - allowed for members, allowed in _IDENTITY_GROUPS)
+    assert design.shape[1] - np.linalg.matrix_rank(design) == expected_deficiency
+
+
+def test_the_first_real_sprints_payload_is_refused_as_collinear() -> None:
+    refused = refusal_of(_FIRST_REAL_SPRINT_PAYLOAD)
+    assert refused.code is RefusalCode.COLLINEAR_REGRESSORS
+    assert "semivar_pos_proxy_d5" in str(refused) and "at most 1" in str(refused)
+
+
+@pytest.mark.parametrize(("members", "allowed"), _IDENTITY_GROUPS)
+def test_the_gate_refuses_exactly_the_subsets_that_are_singular(
+    members: tuple[str, ...], allowed: int
+) -> None:
+    import itertools
+
+    for size in range(1, len(members) + 1):
+        for subset in itertools.combinations(members, size):
+            payload = good(extra_regressors=list(subset))
+            if size > allowed:
+                assert refusal_of(payload).code is RefusalCode.COLLINEAR_REGRESSORS, subset
+            else:
+                validate(payload, sprint_id=SPRINT, index=0, universe=UNIVERSE)
+
+
+def test_one_column_from_every_group_together_is_accepted() -> None:
+    """The rule is per group: one from each window is four extras and no identity."""
+    picks = [members[-1] for members, _ in _IDENTITY_GROUPS]
+    validate(good(extra_regressors=picks), sprint_id=SPRINT, index=0, universe=UNIVERSE)
+
+
 # -- validate: the accepted shape, then one test per RefusalCode -------------------------------
 
 
+def _admissible(count: int) -> list[str]:
+    """The first ``count`` vocabulary names in order, skipping any that would name more of an
+    identity group than R225 allows: ``VOCABULARY[:5]`` itself holds the whole d1 group."""
+    taken: list[str] = []
+    for name in VOCABULARY:
+        group = next(((m, a) for m, a in _IDENTITY_GROUPS if name in m), None)
+        if group is None or sum(t in group[0] for t in taken) < group[1]:
+            taken.append(name)
+        if len(taken) == count:
+            return taken
+    raise AssertionError(f"the vocabulary has fewer than {count} admissible names")
+
+
 def test_a_good_payload_becomes_a_frozen_proposal_with_a_harness_assigned_id() -> None:
+    first, second = _admissible(2)
     proposal = validate(
-        good(extra_regressors=[VOCABULARY[1], VOCABULARY[0]]),
+        good(extra_regressors=[second, first]),
         sprint_id=SPRINT,
         index=3,
         universe=UNIVERSE,
     )
     assert isinstance(proposal, Proposal)
     assert proposal.proposal_id == f"{SPRINT}-03"
-    assert proposal.extra_regressors == (VOCABULARY[1], VOCABULARY[0])
+    assert proposal.extra_regressors == (second, first)
     assert proposal.reference == ("har_levels", "random_walk")
     assert (proposal.family, proposal.symbol, proposal.horizon) == ("harx", "SPY", 5)
     with pytest.raises(AttributeError):
@@ -345,7 +478,7 @@ def test_more_than_the_cap_of_regressors_is_refused_and_the_count_named() -> Non
 
 
 def test_exactly_the_cap_of_regressors_is_accepted() -> None:
-    names = list(VOCABULARY[:MAX_EXTRA_REGRESSORS])
+    names = _admissible(MAX_EXTRA_REGRESSORS)
     proposal = validate(good(extra_regressors=names), sprint_id=SPRINT, index=0, universe=UNIVERSE)
     assert proposal.extra_regressors == tuple(names)
 
@@ -418,6 +551,9 @@ _PAYLOAD_PER_CODE: dict[RefusalCode, object] = {
         extra_regressors=list(VOCABULARY[: MAX_EXTRA_REGRESSORS + 1])
     ),
     RefusalCode.NO_REGRESSORS: good(extra_regressors=[]),
+    RefusalCode.COLLINEAR_REGRESSORS: good(
+        extra_regressors=["semivar_neg_proxy_d5", "semivar_pos_proxy_d5"]
+    ),
     RefusalCode.SYMBOL_NOT_IN_UNIVERSE: good(symbol="TSLA"),
     RefusalCode.HORIZON_NOT_CONFIGURED: good(horizon=10),
     RefusalCode.UNKNOWN_FAMILY: good(family="garch"),

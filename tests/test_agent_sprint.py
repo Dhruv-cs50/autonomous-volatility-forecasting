@@ -915,6 +915,22 @@ def test_the_configurator_prompt_asks_for_json_arrays_and_its_example_passes_the
     assert list(proposal.reference) == example
 
 
+def test_the_configurator_prompt_states_every_identity_groups_limit() -> None:
+    """The first real-store sprint (R225) named three of one identity group in every slot. The
+    prompt now states each group's limit, derived from the gate's own groups, in a body that is
+    still the same for every slot."""
+    from volab.agent.vocabulary import _IDENTITY_GROUPS
+
+    completer = FakeCompleter(["{}"] * PROPOSALS_PER_SPRINT)
+    roles_module.configurator(
+        {"hypothesis": "h"}, completer=completer, slots=PROPOSALS_PER_SPRINT, universe=("SPY",)
+    )
+    assert len({p.user.split("\n", 2)[2] for p in completer.prompts}) == 1
+    user = completer.prompts[0].user
+    for members, allowed in _IDENTITY_GROUPS:
+        assert f"at most {allowed} of {', '.join(members)}" in user
+
+
 # --- the report's one possible validation ------------------------------------------------------
 
 
