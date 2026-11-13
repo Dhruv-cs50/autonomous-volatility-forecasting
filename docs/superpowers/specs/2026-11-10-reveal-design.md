@@ -1254,7 +1254,8 @@ might do, and several of them are things an earlier draft of this design did.
 
 ---
 
-> **Status after the rulings (2026-11-11).** OQ1 was settled by the user as R216 and OQ2 as R217
+> **Status after the rulings (2026-11-11).** OQ1 was settled by the user as R223 — recorded as
+> R216 and renumbered on 2026-11-12, Phase 5 having taken R216 the same day — and OQ2 as R217
 > (`docs/superpowers/holdout-reveal-decisions.md`): a contestant whose significance R115 withholds
 > *is* eligible to be champion (`champion_from` returns `NAMED` with the withholding stated in the
 > same breath; `AMBIGUOUS` and exit 13 remain for an exact QLIKE tie), and the window closing is

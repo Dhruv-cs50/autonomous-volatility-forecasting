@@ -29,9 +29,9 @@ runs cannot touch live data until this lands.** Phase 4 is already built and mer
 | HR-5 | The dress rehearsal | `tools/` and/or `tests/` | the **whole** procedure runs against a pseudo-holdout carved inside dev, on a **separate storage root**, leaving no mark on the real audit log | **done** as witnesses rather than a script, per **R222**: `tests/carved.py` plus `tests/test_reveal_cli.py`. That file holds **18 CLI witnesses, nine of which run a real `take`** -- and one of those nine is a 16-row parametrised exit table, so about two dozen real `take` runs in all; the other nine witnesses cover usage, `check` and the constants. HR-6 corrected this row, which said "18 real `take`s". The carved window (`dev_end` 2024-03-28, holdout 2024-04-01..2024-04-12) sits **entirely below** the repository's own `dev_end`, so the rehearsal needs no real unlock: `tests/rehearsal.py` stubs `_unlock_granted` with the identity form and asserts `VOLAB_HOLDOUT_UNLOCK` is unset. A `tools/` rehearsal would have needed the `allow_holdout` ratchet widened, which is why this shape is stronger rather than merely cheaper |
 | HR-1b | `VOLAB_SPLITS_HOLDOUT_END` refused in **both** directions | `src/volab/config.py`, `tests/` | P4-05 permitted a *later* override because it "only withholds data". The seal design makes `holdout_end` the read bound and the two keys reach that region, so a later override turns live dates into holdout dates a key-holder may read pre-reveal. Refused either way; `dev_end` unchanged | **done** `4275e9e`. Found mid-flight with one witness still red (`test_env_overrides_apply_to_every_field` set a later `holdout_end`) and finished rather than reverted: that override is now the file's own literal. 1876 tests green |
 | HR-7 | The daily's **own** seal | `src/volab/daily/`, `tests/` | `daily/__init__.py` held its own `if as_of > dev_end: refused` -- at `:200` when this row was written, `:117` before #18 moved it, and `:211` at HEAD now that the fix is in, so **after the reveal `daily plan` still refuses every real date** and Phase 4 never gets a live morning. `store.py` lifting its seal does not lift that one. `plan_for` stays pure: a `revealed: bool = False` keyword defaulting to the sealed answer, `__main__` supplying `store.reveal_is_committed()` at the seam `_today()` already enters, and the refusal written `if not revealed and as_of > dev_end` — **no upper bound once revealed**. Also triages `ingest.curate`'s and the features CLI's `end=dev_end` pins into seal pins and research pins; `walkforward.load_for` is a research pin and stays at `dev_end` forever | todo, after HR-3. File set disjoint from HR-4 and HR-5, so it may run beside them | **done** `7b0aa79`. `plan_for` gains a keyword-only `revealed: bool = False` and stays pure; the refusal is `if not revealed and as_of > dev_end`, with no upper bound once revealed; `daily/__main__` is the only caller and passes `reveal_is_committed()`. 18 tests in `tests/test_daily_reveal.py`, five mutants killed by hand, and shape witnesses that no argparse flag, env var or `Settings` field can feed `revealed=` |
-| HR-6 | `delivery-auditor` at sprint close | — | the board and the repository agree | **done** 2026-11-12 at `c536b59`. Read-only, no suite run, holdout untouched (tripwires identical at the first and last action). No story was claimed-but-unevidenced. Six disagreements found; five are reconciled in the rows above and in the `JsonlSink` citation, each marked "HR-6 corrected". **The sixth is open and is the user's to settle: the R216 number collides** -- see below |
+| HR-6 | `delivery-auditor` at sprint close | — | the board and the repository agree | **done** 2026-11-12 at `c536b59`. Read-only, no suite run, holdout untouched (tripwires identical at the first and last action). No story was claimed-but-unevidenced. Six disagreements found; five are reconciled in the rows above and in the `JsonlSink` citation, each marked "HR-6 corrected". The sixth was the user's to settle -- the R216 number collided -- and they settled it: this sprint's R216 is now **R223**. See below |
 
-## The one finding HR-6 could not fix: R216 is two different rulings
+## The finding HR-6 could not fix itself: R216 was two different rulings
 
 **R156 says a ruling number is checked against every ref before it is claimed. It was, and it
 still collided**, because two sessions numbered in parallel on the same day:
@@ -40,22 +40,30 @@ still collided**, because two sessions numbered in parallel on the same day:
   `docs/superpowers/phase5-decisions.md:528`, `:833`, `:940`, `:1000`, `:1082` and
   `docs/phase5-sprint-board.md:93`. Merged to `main` in #20.
 - **This sprint's R216** — the user's own ruling that a contestant whose significance R115
-  withholds is still eligible to be champion. Cited at
-  `docs/superpowers/holdout-reveal-decisions.md:20`, this board, `src/volab/reveal/__init__.py:18`,
-  `:110` and `:550`, `tests/test_reveal.py:554`, `tests/test_reveal_cli.py:168`,
-  `docs/superpowers/specs/2026-11-10-reveal-design.md:1257`, and commit `504a563`'s message.
+  withholds is still eligible to be champion.
 
-`holdout-reveal-decisions.md:4` records that the highest number found when this sprint started was
-R215, so neither session was careless: they looked at the same moment and both took the next
-number. R217 through R222 are unique; only R216 doubles.
+`holdout-reveal-decisions.md` records that the highest number found when this sprint started was
+R215, so neither session was careless: they ran the same scan at different moments and both read
+the same maximum. **The procedure cannot see what another session is about to write, and that is
+the lesson worth keeping** — R156 catches a careless number, not a concurrent one.
 
-**Not renumbered here, deliberately.** One of the two must move, and the choice is the user's
-twice over: his is the ruling that would move (he took R216 and R217 himself), and whichever way
-it goes the edit crosses from documentation into test function names and source comments. The
-mechanical argument favours moving this sprint's to **R223** (the current maximum is R222, and
-Phase 5's R216 is already on `main` while this branch is unmerged); the argument against is that
-it puts the user's earliest ruling after his latest. Nothing is wrong in the repository until the
-two documents are read together, which is exactly when a reader would be misled.
+**Resolved on the user's instruction, 2026-11-12: this sprint's R216 is renumbered R223.** Phase
+5's keeps the number because it reached `main` first while this branch is unmerged, so moving it
+would invalidate citations already merged. R217 through R222 are untouched, so the holdout
+decisions log now runs R223, R217, R218 … out of numerical sequence deliberately: the ordering
+that carries weight here is chronological (R223 and R217 were taken before any holdout number
+existed), and renumbering the user's other rulings to tidy the sequence would churn every citation
+of each to buy nothing.
+
+The citations that moved: `docs/superpowers/holdout-reveal-decisions.md` (header and the ruling's
+own heading), this board, `src/volab/reveal/__init__.py:18`, `:110` (the printed
+`WITHHELD_SENTENCE`) and `:550`, `tests/test_reveal.py` (the witness is now
+`test_a_contestant_whose_significance_is_withheld_can_be_champion_r223`),
+`tests/test_reveal_cli.py:168`, and
+`docs/superpowers/specs/2026-11-10-reveal-design.md:1257`. **Five references cannot move**, because
+a commit message is history: `504a563`, `b7398b3`, `b8427cd`, `c536b59` and `707f138` all say R216
+and all mean R223. `git log --grep=R216` therefore returns both rulings' commits for good, and the
+decisions log's header is the one place that explains it.
 
 ## Serialisation, stated rather than wished away
 
@@ -252,7 +260,7 @@ after this commit is gates 10, 11 and 12, none of which can be settled without a
 
 ### Two questions for the user, and the first one is ordered
 
-**Both are now answered** — R216 and R217 below, taken 2026-11-11, before any holdout number
+**Both are now answered** — R223 (recorded as R216) and R217 below, taken 2026-11-11, before any holdout number
 existed. They are left stated here as asked, because the ordering is the substance: a ruling taken
 after the seal lifted would be selection on the numbers. In code, `ChampionStatus.AMBIGUOUS` and
 gate 13 now mean only an **exact tie in QLIKE**, which §3 gives no way to break; the eligibility
@@ -284,7 +292,7 @@ which is the correct outcome rather than a gap.
 
 `docs/superpowers/holdout-reveal-decisions.md` holds all four with their reasoning. In brief:
 
-- **R216** (the user's, 2026-11-11, **before any holdout number existed**): a contestant whose
+- **R223**, recorded as R216 and renumbered 2026-11-12 (the user's, 2026-11-11, **before any holdout number existed**): a contestant whose
   significance R115 withholds **is** eligible to be champion. §3 is read literally, and the
   withheld significance restricts what may be *claimed about* a contestant rather than whether it
   can be *named*. The ordering is the substance, not the ceremony: `take` exits 13 on an ambiguous

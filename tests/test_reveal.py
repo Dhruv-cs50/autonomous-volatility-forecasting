@@ -550,8 +550,9 @@ def test_the_champion_rule_is_the_sentence_in_section_3() -> None:
     assert all(c.rule == reveal.THE_RULE for c in (one, several, thin, tie))
 
 
-def test_a_contestant_whose_significance_is_withheld_can_be_champion_r216() -> None:
-    """R216, pinned from both sides: the withholding does not unseat the lowest QLIKE, and the
+def test_a_contestant_whose_significance_is_withheld_can_be_champion_r223() -> None:
+    """R223 (recorded as R216, renumbered 2026-11-12), pinned from both sides: the withholding
+    does not unseat the lowest QLIKE, and the
     sentence that says so travels with the name."""
     withheld = reveal.champion_from(
         _comparison(("egarch11_skewt", "har_levels"), unclaimed=("egarch11_skewt",)),

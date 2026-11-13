@@ -15,8 +15,10 @@ number comes from code that already computes it (``run_configuration``, ``analys
 ``loss_series``, ``ranked_trials``); the only operation this package applies to a loss is
 ordering stored values (W15).
 
-**R216 and R217** (``docs/superpowers/holdout-reveal-decisions.md``), both the user's, both taken
-before any holdout number existed. R216: a contestant whose significance R115 withholds is still
+**R223 and R217** (``docs/superpowers/holdout-reveal-decisions.md``), both the user's, both taken
+before any holdout number existed. R223 was recorded as R216 and renumbered on 2026-11-12, because
+Phase 5 had taken R216 the same day; the decisions log's header says why it moved rather than Phase
+5's. R223: a contestant whose significance R115 withholds is still
 eligible to be champion -- section 3 is read literally, and the withholding restricts what may be
 *claimed about* the champion, not whether it can be *named*. R217: the reveal may be taken once
 the window has closed (gate ``window_open``).
@@ -107,7 +109,7 @@ THE_RULE = (
     "thinness, there is no champion and that is the result."
 )
 WITHHELD_SENTENCE = (
-    "R115 withholds every significance claim about this champion (R216: it is still eligible to "
+    "R115 withholds every significance claim about this champion (R223: it is still eligible to "
     "be named), so its lead is a ranking and carries no claim of significance."
 )
 
@@ -547,7 +549,7 @@ class Champion:
 
 
 def champion_from(comparison: Comparison, trials: Sequence[Trial]) -> Champion:
-    """Section 3's rule, as read by R216, applied to the (SPY, h=1, qlike) record and its trials.
+    """Section 3's rule, as read by R223, applied to the (SPY, h=1, qlike) record and its trials.
 
     Pure, and handed the two objects rather than reading a ledger. ``trials`` are the in-memory
     ``Trial`` objects this run produced, so the champion comes from the same objects the

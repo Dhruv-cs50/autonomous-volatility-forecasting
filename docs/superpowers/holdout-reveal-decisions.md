@@ -1,8 +1,23 @@
 # The holdout reveal — decisions
 
-Every ruling with the reasoning that produced it and what it costs if it is wrong. Numbering starts
+Every ruling with the reasoning that produced it and what it costs if it is wrong. Numbering began
 at **R216**, established the way R156 requires: `git show <ref>:<decisions file>` over **every** ref,
 local and remote, for every `docs/**/*decisions*.md` in each, highest number found **R215**.
+
+**It collided anyway, and that is worth recording as a limit of R156's procedure.** Phase 5 took
+R216 for its own follow-up bundle (`84bf0c3`, merged in #20) on the same day, 2026-11-11. Both
+sessions ran the scan honestly, at different moments, and both read R215 as the maximum: the
+procedure checks what is written down, and nothing it can read tells it what another session is
+about to write. HR-6's audit found the duplicate.
+
+**The resolution, on the user's instruction, 2026-11-12: this sprint's first ruling is renumbered
+R216 → R223.** Phase 5's R216 keeps the number because it reached `main` first while this branch is
+still unmerged, so moving it would invalidate citations already merged. R217 through R222 are
+untouched and unique, so this log now runs **R223, then R217 … R222** — out of sequence on purpose.
+Renumbering the user's other rulings to restore the order would churn every citation of each of
+them to buy nothing but tidiness, and the ordering claim that matters here is chronological, not
+numerical: R223 and R217 were taken first, before any holdout number existed, and the table below
+is the evidence of that.
 
 The two rulings below are **the user's**, not a builder's defaults, and both were taken **before any
 holdout number existed**. The evidence for that, read at the moment they were recorded
@@ -17,7 +32,10 @@ holdout number existed**. The evidence for that, read at the moment they were re
 
 ---
 
-## R216 — A contestant whose significance R115 withholds is still **eligible to be champion**
+## R223 — A contestant whose significance R115 withholds is still **eligible to be champion**
+
+*Recorded as R216 when it was taken on 2026-11-11, and renumbered on 2026-11-12 after HR-6 found
+Phase 5 holding the same number. The ruling itself is unchanged; only its label moved.*
 
 **The question.** The pre-registration's §3 fixes the champion as "the contestant in the 10% model
 confidence set with the lowest QLIKE, at h=1 on SPY". Its §1 and §2 separately withhold **every**
