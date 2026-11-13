@@ -1234,3 +1234,39 @@ probe passes, and `test_daily_rehearsal.py` is at 53 (51 plus 2 new).
 still fails CI, but now names its cause. R202 relies on an audit, not a ratchet, so a future identity
 assertion over a bound method would be caught by review rather than by a test. The other three are
 plain fixes, each with its failing-first evidence recorded above.
+
+## R224 — the first live-model sprint: the gate refused every proposal over one field's type
+
+Numbered R224 and not R217: the holdout-reveal log has used R217 to R223 on its own branch, and
+the numbers are shared across logs.
+
+**What ran.** On the user's instruction, once they had set `VOLAB_LLM_API_KEY` themselves, one sprint
+on the rehearsal's synthetic one-symbol store (`tests/test_agent_rehearsal.py`'s builder and child
+shim), with the live `claude-haiku-5-5` completer in place of the scripted fake. Everything was
+written under a temporary directory. The four reported ledgers in the repository's `data/` were
+hashed before and after and did not move. Seven model calls, about $0.003.
+
+**What it found.** Two defects that the scripted rehearsal could not find, because its replies were
+written to be well formed:
+
+1. **The configurator prompt did not say `reference` is a list.** Haiku sent it as a string in all
+   three real slots, and the gate refused all three (`unknown_reference: reference must be a list of
+   names, got str`). The prompt now says "a JSON array" for both list fields and "an integer" for the
+   horizon, and shows the reference shape (`["har_levels"]`). A test pins that the shown example is
+   itself gate-valid, so the prompt cannot drift from the gate. **The gate is unchanged**: coercing a
+   string into a list there would widen what it accepts, so the fix belongs in the prompt. Every
+   slot's prompt still has an identical body apart from its slot number, the canary's cover.
+2. **The critic's verdict was logged as `unparsed`** because the reply opened with `**REJECT**`.
+   Leading markdown (`*`, `_`, `` ` ``, `#`, `>`) is now stripped before the first word is read. The
+   hub still never consults the verdict, so this changes what the log says and nothing else.
+
+**After the fix, the same run:** all three proposals passed the gate (canary still refused), the
+critic's verdict was read as `reject`, and 27 `load_panel` calls in the children all carried
+`end = dev_end` with no read past it. The three evaluations then crashed with `DatasetNotFound` on
+`features/targets_rv_h5`: the synthetic store builds horizon-1 targets only, and the model chose 5
+and 22. That is the fixture's limit, not a defect; the real store has every horizon. It is also why
+this run is not a substitute for a real-data sprint, which stays the user's decision (R194).
+
+**Noted, not fixed:** two of the three slots returned the identical proposal. The slots share one
+prompt body by design (the canary's cover), so a model can collapse them. Whether that costs a
+sprint its breadth is for the first real-data sprint to show.
