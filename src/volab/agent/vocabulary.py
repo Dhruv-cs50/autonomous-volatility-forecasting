@@ -32,6 +32,15 @@ carries: naming one repeats a design column. ``rv_proxy_d1``, ``rv_proxy_d5`` an
 equal the other two to within float epsilon, which ``features/har.py`` makes true by
 construction), so naming one gives an exactly singular design.
 
+**Some *combinations* of vocabulary columns are refused too, for the same reason (R225).** Per
+window, ``semivar_neg + semivar_pos = rv_proxy`` and ``signed_jump = semivar_pos - semivar_neg``
+by definition (``features/realized.py``). So at d1, d5 and d22, where ``rv_proxy`` is in the HAR
+base, at most one of the window's semivariance and jump columns may be named; at d66 at most two
+of its four. :data:`_IDENTITY_GROUPS` is derived from those definitions, and the gate refuses
+more than allowed as ``COLLINEAR_REGRESSORS``. The first live sprint on the real store named
+three of the d5 group in every slot, and all 250 origins of each were refused as singular. Each
+column is still in the vocabulary on its own; only naming too many from one group is refused.
+
 **What is deliberately *not* excluded: a column that is constant in some window.** Constancy is a
 property of a window, not of a column, so a static list would be wrong the day the window moves.
 ``has_distribution`` is the live instance today: measured on 2026-11-10 over the real SPY table
@@ -62,7 +71,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from volab.errors import ProposalRefused
-from volab.features.build import FEATURE_COLUMNS, HAR_COLUMNS
+from volab.features.build import FEATURE_COLUMNS, HAR_COLUMNS, WINDOWS
 
 # Exact linear transforms of the HAR base, so a proposal naming one is ALWAYS singular.
 # MEASURED: har_d_proxy IS rv_proxy_d1 (max abs diff 0.0); har_w_proxy*5 == rv_proxy_d5 (3.5e-18);
@@ -72,6 +81,32 @@ _EXACT_HAR_TRANSFORMS: frozenset[str] = frozenset({"rv_proxy_d1", "rv_proxy_d5",
 VOCABULARY: tuple[str, ...] = tuple(
     c for c in FEATURE_COLUMNS if c not in _EXACT_HAR_TRANSFORMS and c not in HAR_COLUMNS
 )
+
+
+def _identity_groups() -> tuple[tuple[tuple[str, ...], int], ...]:
+    """Per window, the vocabulary columns tied by an identity, and how many of them may be named.
+
+    ``features/realized.py`` defines ``semivar_neg + semivar_pos = rv_proxy`` and
+    ``signed_jump = semivar_pos - semivar_neg`` for every window, so the four columns of a window
+    span two dimensions. Where ``rv_proxy`` is an exact HAR transform (and so out of the
+    vocabulary), one of those two is already in every design and only one more may be named.
+    """
+    groups = []
+    for window in WINDOWS:
+        family = tuple(
+            f"{stem}_proxy_d{window}"
+            for stem in ("rv", "semivar_neg", "semivar_pos", "signed_jump")
+        )
+        members = tuple(name for name in family if name in VOCABULARY)
+        groups.append((members, 2 - (len(family) - len(members))))
+    return tuple(groups)
+
+
+# R225. Naming more than ``allowed`` of one group gives a design that is singular at EVERY origin,
+# by construction rather than by the data (contrast ``has_distribution``, R199). MEASURED on the
+# real dev panel (2026-11-13): these are exactly the 8 exact dependencies among the HAR base and
+# the realized vocabulary columns, for each of SPY, QQQ and IWM.
+_IDENTITY_GROUPS: tuple[tuple[tuple[str, ...], int], ...] = _identity_groups()
 
 # A literal, because ``volab.features.targets`` reaches ``volab.store``. Pinned by
 # ``test_the_horizons_literal_equals_the_real_horizons``.
@@ -104,6 +139,7 @@ class RefusalCode(enum.Enum):
     MISSING_KEY = "missing_key"
     OUT_OF_VOCABULARY = "out_of_vocabulary"
     DUPLICATE_REGRESSOR = "duplicate_regressor"
+    COLLINEAR_REGRESSORS = "collinear_regressors"
     TOO_MANY_REGRESSORS = "too_many_regressors"
     NO_REGRESSORS = "no_regressors"
     SYMBOL_NOT_IN_UNIVERSE = "symbol_not_in_universe"
@@ -158,7 +194,8 @@ def validate(raw: object, *, sprint_id: str, index: int, universe: tuple[str, ..
     """``raw`` (a parsed LLM payload) as a Proposal, or raise ProposalRefused carrying a code.
 
     Branches run in this order: shape, keys, family, regressors (``NO_REGRESSORS``, then
-    ``OUT_OF_VOCABULARY``, ``TOO_MANY_REGRESSORS``, ``DUPLICATE_REGRESSOR``), symbol, horizon,
+    ``OUT_OF_VOCABULARY``, ``TOO_MANY_REGRESSORS``, ``DUPLICATE_REGRESSOR``,
+    ``COLLINEAR_REGRESSORS``), symbol, horizon,
     reference. That is not the order of the :class:`RefusalCode` members. The first defect found is
     the one reported, so a payload with two defects names one.
     ``proposal_id`` is built here from ``sprint_id`` and ``index``; a payload that supplies one is
@@ -199,6 +236,15 @@ def validate(raw: object, *, sprint_id: str, index: int, universe: tuple[str, ..
     repeated = sorted({str(n) for n in regressors if regressors.count(n) > 1})
     if repeated:
         raise _refuse(RefusalCode.DUPLICATE_REGRESSOR, f"{repeated!r} named more than once")
+    for members, allowed in _IDENTITY_GROUPS:
+        named = [str(n) for n in regressors if n in members]
+        if len(named) > allowed:
+            raise _refuse(
+                RefusalCode.COLLINEAR_REGRESSORS,
+                f"{named!r}: at most {allowed} of {list(members)!r} may be named, because "
+                "semivar_neg + semivar_pos = rv_proxy and signed_jump = semivar_pos - semivar_neg "
+                "by construction, so more would make the regression singular at every origin",
+            )
 
     symbol = raw["symbol"]
     if not (isinstance(symbol, str) and symbol in universe):
@@ -279,10 +325,18 @@ def agent_cohort_name(sprint_id: str, index: int) -> str:
     return f"agent-{day.isoformat()}-{digest}-{index:02d}"
 
 
+# Vocabulary names in no identity group. Canaries name only these, so each carries exactly the one
+# defect it exists for: ``[VOCABULARY[0]] * 2`` would also be collinear, and a broken duplicate
+# check would then still see that canary refused, by the wrong branch (R225).
+_UNGROUPED: tuple[str, ...] = tuple(
+    name for name in VOCABULARY if not any(name in members for members, _ in _IDENTITY_GROUPS)
+)
+
+
 def _canary(**overrides: Any) -> Mapping[str, Any]:
     payload: dict[str, Any] = {
         "family": _FAMILY,
-        "extra_regressors": [VOCABULARY[0]],
+        "extra_regressors": [_UNGROUPED[0]],
         "symbol": "SPY",
         "horizon": 5,
         "reference": [REFERENCE_CONTESTANTS[0]],
@@ -297,8 +351,8 @@ def _canary(**overrides: Any) -> Mapping[str, Any]:
 CANARY_PAYLOADS: tuple[Mapping[str, Any], ...] = (
     _canary(extra_regressors=["target_rv_proxy_h5"]),  # OUT_OF_VOCABULARY: the forward target
     _canary(end="2026-06-30"),  # UNKNOWN_KEY: the peek
-    _canary(extra_regressors=list(VOCABULARY[: MAX_EXTRA_REGRESSORS + 4])),  # TOO_MANY_REGRESSORS
-    _canary(extra_regressors=[VOCABULARY[0], VOCABULARY[0]]),  # DUPLICATE_REGRESSOR
+    _canary(extra_regressors=list(_UNGROUPED[: MAX_EXTRA_REGRESSORS + 4])),  # TOO_MANY_REGRESSORS
+    _canary(extra_regressors=[_UNGROUPED[0], _UNGROUPED[0]]),  # DUPLICATE_REGRESSOR
     _canary(horizon=10),  # HORIZON_NOT_CONFIGURED
     _canary(symbol="TSLA"),  # SYMBOL_NOT_IN_UNIVERSE
 )
