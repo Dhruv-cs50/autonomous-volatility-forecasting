@@ -135,7 +135,7 @@ Branch `agent/first-real-sprint`, cut from `main` at `60da98f` (PR #25's merge, 
 |---|---|---|---|---|---|
 | P5-L1 | First live sprint on the real store | orchestrator | the user's go, R224 | sprint completes; `trials.jsonl` and `comparisons.jsonl` byte-identical; agent ledgers committed | done (`61d2da0`): `no_candidate`, every origin singular |
 | P5-L2 | Root cause of the 250-of-250 refusal | orchestrator | L1 | reproduced in-process, cause stated with evidence | done: identities in `features/realized.py` (R225) |
-| P5-L3 | The gate refuses identity-group combinations; canaries stay single-defect | orchestrator | L2 | observed payload refused as `collinear_regressors`; fit_ols and rank witnesses on engine-built columns; agent tests, ruff, mypy green | done (`f7ef947`, `b18ea29`, + canary commit) |
+| P5-L3 | The gate refuses identity-group combinations; canaries stay single-defect | orchestrator | L2 | observed payload refused as `collinear_regressors`; fit_ols and rank witnesses on engine-built columns; agent tests, ruff, mypy green | done (`f7ef947`, `b18ea29`, `e531638`) |
 | P5-L4 | Keep the first refusal reason in the proposal event | — | — | "no usable MCS" can no longer hide why | todo (follow-up, R225) |
 
 ## What the fences actually caught, recorded because a guard with no demonstrated bite is not evidence
