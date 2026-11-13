@@ -109,8 +109,9 @@ class Plan:
     log will understand:
 
     - ``work`` -- there is work to do, and ``stages`` is it.
-    - ``refused`` -- the date is past ``dev_end``, in the holdout or the live region; the reason
-      says which. ``stages`` is empty.
+    - ``refused`` -- the reveal is not committed and the date is past ``dev_end``, in the holdout
+      or the live region; or the date is outside the exchange calendar's range, so the calendar
+      cannot say whether it is a session (HR-8). The reason says which. ``stages`` is empty.
     - ``no_session`` -- the exchange was closed. ``stages`` is empty.
     - ``already_done`` -- a completed run for this date exists. ``stages`` is empty.
     """
@@ -177,15 +178,23 @@ def plan_for(
     as_of: dt.date,
     *,
     completed: frozenset[dt.date] = frozenset(),
+    revealed: bool = False,
 ) -> Plan:
     """The plan for ``as_of``, computed without running or reading anything but the calendar.
 
-    The order of the three refusals is load-bearing and is pinned by its own test. **The
+    The order of the refusals is load-bearing and is pinned by its own test. **The
     ``dev_end`` refusal comes first**, before the calendar is even asked, because a date past the
     boundary must be refused for that reason and not incidentally for being a Saturday: an
     operator who reads "the exchange was closed" where the truth is "this date is sealed" has been
     told the wrong thing, and the day that date falls on a session the refusal would have to come
     from somewhere else.
+
+    ``revealed`` is the one input that lifts the refusal, and it is a **value, not a lookup**: this
+    function asks no clock, no git and no settings whether the reveal happened, so it stays pure
+    and a test can state its answer as a table. It defaults to the sealed answer, and the only
+    caller that passes it is ``volab.daily.__main__``, which supplies
+    ``store.reveal_is_committed()`` -- the same fact ``store.load_panel`` lifts its own seal on.
+    A test pins that no argument, environment variable or config key feeds it.
 
     There is no key here and no route to one. Reading past ``dev_end`` needs ``allow_holdout`` and
     ``VOLAB_HOLDOUT_UNLOCK`` together, and neither name appears anywhere under
@@ -197,14 +206,32 @@ def plan_for(
     normal outcome rather than an edge case. Its reason names the region the date is in: a live
     date is not described as sealed holdout, though both are refused alike, with the same exit code.
     """
-    if as_of > settings.splits.dev_end:
+    # Once revealed there is NO upper bound, as ``store._read_limit`` returns ``dt.date.max``. Do
+    # not tidy this into ``as_of > (holdout_end if revealed else dev_end)``: every live date lies
+    # past ``holdout_end``, so that refuses every morning after the reveal -- the bug HR-7 fixes.
+    if not revealed and as_of > settings.splits.dev_end:
         return Plan(
             as_of=as_of,
             outcome="refused",
             reason=_refusal_reason(settings.splits, as_of),
             stages=(),
         )
-    if not is_session(get_calendar(settings), as_of):
+    calendar = get_calendar(settings)
+    # HR-8: outside the calendar's range ``is_session`` raises rather than answering. Both bounds
+    # roll forward with the clock, so they are read here, never written down. ``refused`` and not
+    # ``no_session``: whether the exchange was open on such a date is unknown, not "closed".
+    first, last = calendar.first_session.date(), calendar.last_session.date()
+    if not first <= as_of <= last:
+        return Plan(
+            as_of=as_of,
+            outcome="refused",
+            reason=(
+                f"{as_of} is outside the {settings.calendar} calendar's range {first}..{last}, "
+                "so whether it is a session cannot be known"
+            ),
+            stages=(),
+        )
+    if not is_session(calendar, as_of):
         return Plan(
             as_of=as_of,
             outcome="no_session",

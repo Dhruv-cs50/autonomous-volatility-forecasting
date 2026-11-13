@@ -102,7 +102,7 @@ from volab.daily.runlog import (
     run_log_path,
 )
 from volab.daily.runner import STAGE_TIMEOUT_SECONDS, LockHeld, run_lock, run_stages
-from volab.store import git_state
+from volab.store import git_state, reveal_is_committed
 
 # What ``run`` exits with when it ran and a stage did not succeed. 1 is the refusal's.
 STAGE_FAILED_EXIT_CODE = 2
@@ -222,7 +222,9 @@ def main(
 
     settings = load_settings()
     log = run_log_path(_REPO_ROOT if root is None else root)
-    plan = plan_for(settings, as_of, completed=completed_dates(log))
+    # The reveal is asked of git here, at the seam beside the clock, and handed to the pure plan as
+    # a value. This is the only call site, and nothing the operator types reaches it.
+    plan = plan_for(settings, as_of, completed=completed_dates(log), revealed=reveal_is_committed())
     print(f"as_of {plan.as_of}")
     print(f"outcome {plan.outcome}")
     print(plan.reason)

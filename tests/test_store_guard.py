@@ -255,7 +255,7 @@ def test_empty_dataset_directory_raises_dataset_not_found(synthetic_store) -> No
 
 
 @pytest.mark.holdout
-def test_both_keys_return_holdout_rows_and_write_one_audit_line(
+def test_both_keys_return_holdout_rows_and_write_an_open_and_a_close_line(
     synthetic_store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     synthetic_store.write("bars_daily", "SPY", [HOLDOUT_DAY])
@@ -271,17 +271,22 @@ def test_both_keys_return_holdout_rows_and_write_one_audit_line(
     assert len(frame) == 1
     audit = synthetic_store.settings.storage_root / AUDIT_FILENAME
     lines = audit.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 1
-    record = json.loads(lines[0])
+    assert len(lines) == 2
+    record, close = (json.loads(line) for line in lines)
+    assert (record["kind"], close["kind"]) == ("look_open", "look_close")
+    assert record["look_id"] == close["look_id"]
     assert record["dataset"] == "bars_daily"
     assert record["end"] == HOLDOUT_DAY.isoformat()
     assert record["start"] is None
     assert record["tier"] == Tier.CURATED.value
     assert record["caller_module"].endswith("test_store_guard")
-    assert record["outcome"] == "success"
+    assert close["outcome"] == "success"
     assert set(record) == {
+        "schema",
+        "kind",
+        "look_id",
+        "reveal_id",
         "ts",
-        "outcome",
         "dataset",
         "tier",
         "end",
@@ -292,6 +297,7 @@ def test_both_keys_return_holdout_rows_and_write_one_audit_line(
         "git_sha",
         "git_dirty",
     }
+    assert set(close) == {"schema", "kind", "look_id", "reveal_id", "ts", "outcome"}
 
 
 def test_the_audit_stamp_never_takes_gits_index_lock(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -454,14 +460,15 @@ def test_passed_settings_may_move_dev_end_earlier(synthetic_store) -> None:
 
 
 @pytest.mark.holdout
-def test_refused_unlocked_read_still_writes_one_audit_line(
+def test_refused_unlocked_read_still_writes_an_open_and_a_close_line(
     synthetic_store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failed holdout read is still an attempt on the sealed window, so it is recorded.
 
     Without this, a key-holder could probe the existence, emptiness and schema of post-
-    ``dev_end`` data without end while the log's line count -- the number the write-up must
-    report -- stayed clean.
+    ``dev_end`` data without end while the log's look count -- ``count(kind == "look_open")``, the
+    number the write-up must report -- stayed clean. The open line is written before the read, so
+    it exists even if the close line's write fails.
     """
     synthetic_store.write("bars_daily", "SPY", [DEV_DAY])
     monkeypatch.setenv(UNLOCK_ENV, "1")
@@ -477,9 +484,11 @@ def test_refused_unlocked_read_still_writes_one_audit_line(
 
     audit = synthetic_store.settings.storage_root / AUDIT_FILENAME
     lines = audit.read_text(encoding="utf-8").splitlines()
-    assert len(lines) == 1
-    record = json.loads(lines[0])
-    assert record["outcome"] == "DatasetNotFound"
+    assert len(lines) == 2
+    record, close = (json.loads(line) for line in lines)
+    assert (record["kind"], close["kind"]) == ("look_open", "look_close")
+    assert record["look_id"] == close["look_id"]
+    assert close["outcome"] == "DatasetNotFound"
     assert record["end"] == HOLDOUT_DAY.isoformat()
 
 
