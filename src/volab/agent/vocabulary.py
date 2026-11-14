@@ -62,6 +62,20 @@ one model at one origin and leaves the origin standing for everyone else.
 store-free; ``volab.features.targets`` and ``volab.compare.cohorts`` are not, so :data:`HORIZONS`
 and :data:`REFERENCE_CONTESTANTS` are literals, each pinned to the real source by a two-sided test.
 
+**The agent is offered only the horizons whose 10% confidence set the development window can hold
+(P5-L13).** Promotion needs the candidate in the 10% qlike MCS, and the compare layer refuses that
+set where ``n_eff = n / (q + 1)`` is below ``2/alpha = 20``. ``n`` and ``q`` follow from the child's
+fixed window and stride, so at a horizon where the floor is missed no proposal can ever be
+promoted: the third live sprint proposed three configurations at h=66 and every one's 10% set
+was refused.
+:data:`AGENT_HORIZONS` is the subset of :data:`HORIZONS` that clears the floor, and ``validate``
+refuses the rest as ``HORIZON_NOT_CONFIGURED`` with that reason. It is a literal, because the
+origin count, the stride and ``n_eff`` all live in modules that reach the store; and because which
+horizons clear the floor is a property of the window (R199's concern), it is pinned by a test that
+derives it from the child's own window, stride and the compare layer's own ``n_eff``
+(``test_the_offered_horizons_are_those_whose_ten_percent_mcs_the_dev_window_holds``),
+so the day the window or the stride moves the literal fails rather than goes stale.
+
 What this does **not** cover: it checks that a name is in the vocabulary, not that the resulting
 model is a good one; it does not check that the symbol has data, only that it is in the universe
 it is handed; and a proposal that passes is still only a *proposal* -- running it is another
@@ -118,6 +132,13 @@ _IDENTITY_GROUPS: tuple[tuple[tuple[str, ...], int], ...] = _identity_groups()
 # A literal, because ``volab.features.targets`` reaches ``volab.store``. Pinned by
 # ``test_the_horizons_literal_equals_the_real_horizons``.
 HORIZONS: tuple[int, ...] = (1, 5, 22, 66)
+
+# P5-L13. The horizons the agent is offered and the gate accepts: those whose 10% MCS can be formed
+# on the development window. A literal for the same reason as HORIZONS, and window-dependent, so it
+# is derived in the test that pins it rather than asserted here. MEASURED on the calendar to
+# dev_end at the child's stride of 5: n_eff is 251, 250 and 49.4 at h=1, 5 and 22; at h=66 it is
+# 17.0 (16.9 in the third live sprint, two origins fewer), below the floor of 20.
+AGENT_HORIZONS: tuple[int, ...] = (1, 5, 22)
 
 # Priced from a measurement, not chosen: 3 HAR + 5 extra + an intercept is 9 parameters, about
 # 16-20 ms per pure-Python ``fit_ols``, roughly 4-5 s per (symbol, horizon) over 251 origins.
@@ -202,9 +223,10 @@ def validate(raw: object, *, sprint_id: str, index: int, universe: tuple[str, ..
 
     Branches run in this order: shape, keys, family, regressors (``NO_REGRESSORS``, then
     ``OUT_OF_VOCABULARY``, ``TOO_MANY_REGRESSORS``, ``DUPLICATE_REGRESSOR``,
-    ``COLLINEAR_REGRESSORS``), symbol, horizon,
-    reference. That is not the order of the :class:`RefusalCode` members. The first defect found is
-    the one reported, so a payload with two defects names one.
+    ``COLLINEAR_REGRESSORS``), symbol, horizon (in :data:`HORIZONS`, then in
+    :data:`AGENT_HORIZONS`, both ``HORIZON_NOT_CONFIGURED``), reference. That is not the order of
+    the :class:`RefusalCode` members. The first defect found is the one reported, so a payload with
+    two defects names one.
     ``proposal_id`` is built here from ``sprint_id`` and ``index``; a payload that supplies one is
     refused as an unknown key like any other. Total over every ``object``: a malformed payload
     raises :class:`~volab.errors.ProposalRefused`, never anything else.
@@ -263,6 +285,14 @@ def validate(raw: object, *, sprint_id: str, index: int, universe: tuple[str, ..
     if not (isinstance(horizon, int) and not isinstance(horizon, bool) and horizon in HORIZONS):
         raise _refuse(
             RefusalCode.HORIZON_NOT_CONFIGURED, f"horizon {horizon!r} is not in {HORIZONS!r}"
+        )
+    if horizon not in AGENT_HORIZONS:
+        raise _refuse(
+            RefusalCode.HORIZON_NOT_CONFIGURED,
+            f"horizon {horizon!r} is configured but not offered: on the development window its "
+            "n_eff = n/(q+1) is below 2/alpha = 20 at alpha = 0.1, so the 10% model confidence set "
+            "promotion needs is refused and no proposal at it can be promoted; the offered "
+            f"horizons are {AGENT_HORIZONS!r}",
         )
 
     reference = _names(raw["reference"], "reference")

@@ -1503,3 +1503,33 @@ ruling does not exempt them; P5-L15 puts each proposal's horizon into the figure
 or `x2` passes. Cohort ids from other sprints (`agent-YYYY-MM-DD-<hash>-NN`) are not exempt. A hex
 hash in the figures can still supply a digit that excuses a bare number in the prose (`b33bf6e5`
 excuses a `5`); that predates this ruling and is in the module docstring's stated limits.
+
+## R230 — the agent is offered only horizons whose 10% MCS the development window can hold
+
+The third live sprint (P5-L12) proposed three configurations at h=66, and every comparison refused
+the 10% qlike MCS: `n_eff = 16.9` against the floor `2/alpha = 20`. None could ever have been
+promoted, so those 12 trials bought nothing.
+
+**The arithmetic.** `q = (h - 1) // stride` (`compare/dm.py`), `n_eff = n / (q + 1)`
+(`compare/multiple.py`), and a size is refused where `n_eff < 2 / size`. On the child's fixed
+window (`FIRST_ORIGIN` 2021-01-04 to `dev_end` 2025-12-31, `STRIDE` 5) the calendar gives n = 251,
+250, 247 and 238 origins at h = 1, 5, 22 and 66, so `n_eff` = 251, 250, 49.4 and 17.0. The live
+sprint's 236 at h66 is lower because model skips remove origins, so the calendar count is an upper
+bound and the refusal is sound. A finer stride cannot rescue h66; only a longer window could, and
+moving the window is a selection decision under R184.
+
+**Ruling.** `vocabulary.AGENT_HORIZONS = (1, 5, 22)`: the subset of `HORIZONS` the gate accepts and
+the Researcher and Configurator prompts list. A configured but unoffered horizon is refused as
+`HORIZON_NOT_CONFIGURED`, with a message naming the floor, so no new code or canary is needed; every
+canary not about the horizon names an offered one, and a test checks that.
+
+**Why a literal, and why that is not R199's mistake.** The origin count, the stride and `n_eff` all
+live in modules that reach the store, which `vocabulary.py` may not import (R192). Which horizons
+clear the floor is a property of the window, so a test derives the set from `volab.candidate`'s
+`FIRST_ORIGIN` and `STRIDE`, `dev_end`, and the compare layer's own `overlap_lag` and
+`effective_observations`; if any of them moves, the literal fails rather than going stale. A
+real-store test confirms the calendar count equals the child's `scoreable_origins` count for SPY,
+QQQ and IWM. `HORIZONS` stays pinned to `volab.features.targets`, so the harness still runs h66.
+
+**Side effect.** The candidate child re-validates every proposal file, so a recorded h66 proposal
+would now be refused there too. Nothing replays recorded proposals; this is consistent, not lost.

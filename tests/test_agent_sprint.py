@@ -55,6 +55,7 @@ from volab.agent.roles import (
 )
 from volab.agent.sprintlog import events, fingerprint_of, pending_approvals, record_event
 from volab.agent.vocabulary import (
+    AGENT_HORIZONS,
     CANARY_PAYLOADS,
     REPEATED_PROPOSAL,
     VOCABULARY,
@@ -993,6 +994,30 @@ def test_the_configurator_prompt_asks_for_json_arrays_and_its_example_passes_the
     }
     proposal = validate(raw, sprint_id=SPRINT, index=0, universe=("SPY",))
     assert list(proposal.reference) == example
+
+
+def _horizons_on(line: str) -> tuple[int, ...]:
+    """The comma-separated integers after the line's last colon (and "an integer, one of")."""
+    listed = line.rsplit(":", 1)[1].strip().rstrip(".").removeprefix("an integer, one of ")
+    return tuple(int(h) for h in listed.split(", "))
+
+
+def test_the_researcher_and_configurator_are_offered_only_the_horizons_the_gate_accepts() -> None:
+    """P5-L13: the prompts list the horizons whose 10% MCS the development window can hold, not
+    every configured one, so the agent is not invited to spend a slot on h=66. The lines are
+    parsed rather than searched for "66", which ``rv_proxy_d66`` in the vocabulary would match."""
+    researched = FakeCompleter(["a hypothesis"])
+    roles_module.researcher({"sprint_id": SPRINT}, completer=researched, memory=(), agent_trials=0)
+    lines = researched.prompts[0].user.splitlines()
+    researcher_line = next(x for x in lines if x.startswith("Horizons in sessions:"))
+    assert _horizons_on(researcher_line) == AGENT_HORIZONS
+    configured = FakeCompleter(["{}"] * PROPOSALS_PER_SPRINT)
+    roles_module.configurator(
+        {"hypothesis": "h"}, completer=configured, slots=PROPOSALS_PER_SPRINT, universe=("SPY",)
+    )
+    for prompt in configured.prompts:
+        line = next(x for x in prompt.user.splitlines() if x.startswith("horizon:"))
+        assert _horizons_on(line) == AGENT_HORIZONS
 
 
 def test_the_configurator_prompt_states_every_identity_groups_limit() -> None:

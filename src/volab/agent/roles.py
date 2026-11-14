@@ -15,10 +15,11 @@ receives ``submit``; the Critic receives dev metrics; the Reporter receives harn
 figures. None receives a storage root, a panel, a shell or a date-typed value.
 
 **What each prompt carries, which is the inventory R208 rests on (R214).** The Researcher sees the
-sprint id, the kept-line count of the agent ledger, the vocabulary, the horizons and, for earlier
+sprint id, the kept-line count of the agent ledger, the vocabulary, the offered horizons
+(``AGENT_HORIZONS``, those whose 10% MCS the development window can hold) and, for earlier
 sprints, their ids, hypotheses and gate verdicts. The Configurator sees the hypothesis, its slot
-number, the vocabulary, the universe, the horizons, the reference names and the parsed payloads
-the earlier slots of this sprint emitted (R227). The Critic sees the
+number, the vocabulary, the universe, the offered horizons, the reference names and the parsed
+payloads the earlier slots of this sprint emitted (R227). The Critic sees the
 hypothesis, the ledger count and, per proposal, its id, the child's verdict name and the child's
 ``reason``. The Reporter sees the hypothesis and the harness-rendered figures. Date-shaped text
 therefore reaches a prompt by three routes: the run date inside a sprint or proposal id, which
@@ -70,7 +71,7 @@ from volab.agent._llm import Completer, Prompt
 from volab.agent._runner import ChildRun
 from volab.agent.vocabulary import (
     _IDENTITY_GROUPS,
-    HORIZONS,
+    AGENT_HORIZONS,
     MAX_EXTRA_REGRESSORS,
     REFERENCE_CONTESTANTS,
     VOCABULARY,
@@ -143,7 +144,7 @@ def researcher(
         f"Sprint {state['sprint_id']}.",
         f"The agent ledger already holds {agent_trials} evaluated trial lines.",
         f"Features you may build a hypothesis on: {', '.join(VOCABULARY)}.",
-        f"Horizons in sessions: {', '.join(str(h) for h in HORIZONS)}.",
+        f"Horizons in sessions: {', '.join(str(h) for h in AGENT_HORIZONS)}.",
         "Earlier sprints:",
     ]
     lines.extend(
@@ -226,7 +227,7 @@ def configurator(
                     )
                     + ".\n"
                     f"symbol: one of {', '.join(universe)}.\n"
-                    f"horizon: an integer, one of {', '.join(str(h) for h in HORIZONS)}.\n"
+                    f"horizon: an integer, one of {', '.join(str(h) for h in AGENT_HORIZONS)}.\n"
                     # A list even for one name: the first live sprint sent a string (R224).
                     f"reference: a JSON array of names from {', '.join(REFERENCE_CONTESTANTS)}, "
                     f"{REFERENCE_CONTESTANTS[0]} first, e.g. "
