@@ -41,6 +41,13 @@ more than allowed as ``COLLINEAR_REGRESSORS``. The first live sprint on the real
 three of the d5 group in every slot, and all 250 origins of each were refused as singular. Each
 column is still in the vocabulary on its own; only naming too many from one group is refused.
 
+**A configuration runs once per sprint (R227).** The second real-store sprint emitted one
+configuration in all three real slots, so one idea cost three cohorts of trials. :func:`validate`
+sees one payload and cannot see a repeat, so the hub applies a second, sprint-level rule after
+it: a proposal whose :func:`configuration_key` equals one already accepted in the same sprint is
+refused as :data:`REPEATED_PROPOSAL`. That rule runs **after** the canary check and never on a
+canary, so it can never turn an accepted canary into a refusal.
+
 **What is deliberately *not* excluded: a column that is constant in some window.** Constancy is a
 property of a window, not of a column, so a static list would be wrong the day the window moves.
 ``has_distribution`` is the live instance today: measured on 2026-11-10 over the real SPY table
@@ -293,7 +300,10 @@ def validate(raw: object, *, sprint_id: str, index: int, universe: tuple[str, ..
 def gate(
     raw: object, *, sprint_id: str, index: int, universe: tuple[str, ...], canary: bool
 ) -> GateVerdict:
-    """``validate`` with its refusal captured as data. The only thing that gates a run.
+    """``validate`` with its refusal captured as data: the per-payload gate.
+
+    One of two refusals before a run. The other is the hub's sprint-level repeat rule
+    (:data:`REPEATED_PROPOSAL`, R227), which runs after this gate and after the canary check.
 
     Catches :class:`~volab.errors.ProposalRefused` and nothing broader, which is sufficient because
     ``validate`` is total over every payload. ``reason`` is always populated; ``canary`` is carried
@@ -306,6 +316,30 @@ def gate(
         assert isinstance(code, RefusalCode)
         return GateVerdict(False, None, str(refused), code, canary)
     return GateVerdict(True, proposal, "accepted", None, canary)
+
+
+# The hub's sprint-level refusal: a configuration already accepted in this sprint. Deliberately
+# not a ``RefusalCode``: ``validate`` sees one payload and a repeat needs two, and every
+# ``RefusalCode`` is reachable from a single payload (R227).
+REPEATED_PROPOSAL = "repeated_proposal"
+
+
+def configuration_key(
+    proposal: Proposal,
+) -> tuple[str, tuple[str, ...], str, int, tuple[str, ...]]:
+    """What ``proposal`` runs, without its id: two proposals with one key are one experiment.
+
+    The regressors are sorted, since their order changes no fit. The reference keeps its order,
+    which is the conservative choice: a key that separates too finely lets a repeat through,
+    where one that merges too much would refuse a configuration that differs (R227).
+    """
+    return (
+        proposal.family,
+        tuple(sorted(proposal.extra_regressors)),
+        proposal.symbol,
+        proposal.horizon,
+        proposal.reference,
+    )
 
 
 def agent_cohort_name(sprint_id: str, index: int) -> str:

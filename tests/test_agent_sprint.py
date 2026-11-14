@@ -56,6 +56,7 @@ from volab.agent.roles import (
 from volab.agent.sprintlog import events, fingerprint_of, pending_approvals, record_event
 from volab.agent.vocabulary import (
     CANARY_PAYLOADS,
+    REPEATED_PROPOSAL,
     VOCABULARY,
     GateVerdict,
     Proposal,
@@ -896,8 +897,8 @@ def test_the_configurator_prompt_asks_for_json_arrays_and_its_example_passes_the
     roles_module.configurator(
         {"hypothesis": "h"}, completer=completer, slots=PROPOSALS_PER_SPRINT, universe=("SPY",)
     )
-    users = [p.user.split("\n", 2)[2] for p in completer.prompts]
-    assert len(set(users)) == 1  # every slot's prompt has the same body (the canary's cover)
+    # Slots differ only by their number and the earlier slots' emissions, neither of which depends
+    # on where the canary goes: see test_no_configurator_prompt_depends_on_where_the_canary_goes.
     lines = {line.split(":", 1)[0]: line for line in completer.prompts[0].user.splitlines()}
     assert "a JSON array" in lines["extra_regressors"]
     assert "a JSON array" in lines["reference"]
@@ -917,15 +918,13 @@ def test_the_configurator_prompt_asks_for_json_arrays_and_its_example_passes_the
 
 def test_the_configurator_prompt_states_every_identity_groups_limit() -> None:
     """The first real-store sprint (R225) named three of one identity group in every slot. The
-    prompt now states each group's limit, derived from the gate's own groups, in a body that is
-    still the same for every slot."""
+    prompt now states each group's limit, derived from the gate's own groups."""
     from volab.agent.vocabulary import _IDENTITY_GROUPS
 
     completer = FakeCompleter(["{}"] * PROPOSALS_PER_SPRINT)
     roles_module.configurator(
         {"hypothesis": "h"}, completer=completer, slots=PROPOSALS_PER_SPRINT, universe=("SPY",)
     )
-    assert len({p.user.split("\n", 2)[2] for p in completer.prompts}) == 1
     user = completer.prompts[0].user
     for members, allowed in _IDENTITY_GROUPS:
         assert f"at most {allowed} of {', '.join(members)}" in user
@@ -1237,3 +1236,111 @@ def test_the_sprint_reads_the_ledger_the_evaluation_child_writes(settings: Setti
     # *relative* ledger path, so it cannot tell two roots apart; the content can. Against the old
     # read from ``storage_root`` this saw zero lines: it opened ``data/data/agent_trials.jsonl``.
     assert view.lines == ({"cohort": "agent-2025-12-01-0123abcd-00", "last_origin": "2025-06-30"},)
+
+
+# --- one configuration once per sprint (R227) --------------------------------------------------
+
+
+def test_each_configurator_slot_lists_exactly_the_earlier_slots_mapping_emissions() -> None:
+    """The second real-store sprint emitted one configuration in all three real slots, because
+    every slot's prompt was the same. Slot k now lists what slots 0..k-1 emitted, as canonical
+    JSON; a reply that is not a mapping is not listed, and slot 0 says ``none`` so every prompt
+    has the same shape."""
+    replies = [valid_reply(0), "not json", "{}", valid_reply(3)]
+    completer = FakeCompleter(replies)
+    roles_module.configurator(
+        {"hypothesis": "h"}, completer=completer, slots=PROPOSALS_PER_SPRINT, universe=("SPY",)
+    )
+    listed = [
+        next(line for line in p.user.splitlines() if line.startswith("Already proposed"))
+        for p in completer.prompts
+    ]
+    canonical = [json.dumps(json.loads(r), sort_keys=True) for r in (valid_reply(0), "{}")]
+    assert listed[0].endswith(": none")
+    assert listed[1].endswith(": " + canonical[0])
+    assert listed[2].endswith(": " + canonical[0])  # "not json" is not a mapping, so not listed
+    assert listed[3].endswith(": " + "; ".join(canonical))
+
+
+def test_no_configurator_prompt_depends_on_where_the_canary_goes(
+    tmp_path: Path, settings: Settings
+) -> None:
+    """What the "same body" assertions stood for: nothing upstream of the gate can tell which
+    slot the canary replaces. Two sprints whose canaries sit in different slots, run on one
+    script, send byte-identical Configurator prompts."""
+    ids = ("2026-11-10-repeat-a", "2026-11-10-repeat-c")
+    assert (
+        canary_placement(ids[0], PROPOSALS_PER_SPRINT)[0]
+        != canary_placement(ids[1], PROPOSALS_PER_SPRINT)[0]
+    )
+    sent = []
+    for n, sprint_id in enumerate(ids):
+        completer = FakeCompleter(script())
+        sprint(
+            tmp_path / f"run{n}",
+            settings,
+            completer=completer,
+            submit=StubSubmit(tmp_path / f"run{n}"),
+            sprint_id=sprint_id,
+        )
+        sent.append(completer.prompts[1 : 1 + PROPOSALS_PER_SPRINT])
+    assert sent[0] == sent[1]
+
+
+def test_a_configuration_already_accepted_this_sprint_is_refused_and_never_run(
+    tmp_path: Path, settings: Settings
+) -> None:
+    same = valid_reply(0)
+    submit = StubSubmit(tmp_path)
+    memory = FileCheckpointer(tmp_path / "memory")
+    sprint(
+        tmp_path,
+        settings,
+        completer=FakeCompleter(script(configurator=[same] * PROPOSALS_PER_SPRINT)),
+        submit=submit,
+        checkpointer=memory,
+    )
+    slot, _ = canary_placement(SPRINT, PROPOSALS_PER_SPRINT)
+    real = [i for i in range(PROPOSALS_PER_SPRINT) if i != slot]
+    first, repeats = f"{SPRINT}-{real[0]:02d}", [f"{SPRINT}-{i:02d}" for i in real[1:]]
+
+    assert [p.proposal_id for p in submit.calls] == [first]
+    refused = {e["proposal_id"]: e for e in log_of(tmp_path, "refused") if not e["canary"]}
+    assert sorted(refused) == repeats
+    for event in refused.values():
+        assert event["code"] == REPEATED_PROPOSAL
+        assert first in event["reason"]
+    gated = dict(memory.history(SPRINT))["gate"]["gated"]
+    assert [g["accepted"] for g in gated if not g["canary"]] == [True] + [False] * len(repeats)
+    assert all(g["proposal"] is None for g in gated if g["code"] == REPEATED_PROPOSAL)
+    lines = (tmp_path / "data" / "agent_trials.jsonl").read_text().splitlines()
+    assert {json.loads(line)["cohort"] for line in lines} == {
+        agent.agent_cohort_name(SPRINT, real[0])
+    }
+
+
+def test_the_repeat_rule_never_turns_an_accepted_canary_into_a_refusal(
+    tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The canary check runs first. A broken gate that accepts the canary must void the sprint
+    even when the canary's configuration repeats one accepted in an earlier slot; otherwise the
+    repeat rule would refuse it and the sprint would look healthy (R227)."""
+
+    def accept_everything(
+        raw: object, *, sprint_id: str, index: int, universe: tuple[str, ...], canary: bool
+    ) -> GateVerdict:
+        proposal = Proposal(
+            f"{sprint_id}-{index:02d}", "harx", (VOCABULARY[0],), "SPY", 5, ("har_levels",)
+        )
+        return GateVerdict(True, proposal, "accepted", None, canary)
+
+    slot, _ = canary_placement(SPRINT, PROPOSALS_PER_SPRINT)
+    assert slot > 0  # an accepted real slot precedes the canary, with the same configuration
+    monkeypatch.setattr(agent, "gate", accept_everything)
+    result = sprint(
+        tmp_path, settings, completer=FakeCompleter(script()), submit=StubSubmit(tmp_path)
+    )
+
+    assert result.outcome == "voided_by_canary"
+    assert [e["index"] for e in log_of(tmp_path, "canary_accepted")] == [slot]
+    assert not [e for e in log_of(tmp_path, "refused") if e["code"] == REPEATED_PROPOSAL]

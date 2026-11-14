@@ -112,7 +112,14 @@ from volab.agent.sprintlog import (
     record_start,
     sprint_ids,
 )
-from volab.agent.vocabulary import CANARY_PAYLOADS, Proposal, agent_cohort_name, gate
+from volab.agent.vocabulary import (
+    CANARY_PAYLOADS,
+    REPEATED_PROPOSAL,
+    Proposal,
+    agent_cohort_name,
+    configuration_key,
+    gate,
+)
 from volab.config import Settings
 from volab.errors import VolabError
 
@@ -403,6 +410,7 @@ class _Sprint:
             at=self.at,
         )
         verdicts: list[dict[str, Any]] = []
+        accepted_ids: dict[tuple[Any, ...], str] = {}
         for index, raw in enumerate(state["raw"]):
             is_canary = index == canary["index"]
             verdict = gate(
@@ -413,28 +421,40 @@ class _Sprint:
                 canary=is_canary,
             )
             proposal_id = f"{self.sprint_id}-{index:02d}"
+            accepted, reason = verdict.accepted, verdict.reason
+            code = None if verdict.code is None else verdict.code.value
+            proposal = verdict.proposal
+            # The sprint-level repeat rule (R227). Never applied to a canary: an accepted canary
+            # must reach the void below, and a repeat refusal here would hide it.
+            if accepted and not verdict.canary and proposal is not None:
+                earlier = accepted_ids.setdefault(configuration_key(proposal), proposal_id)
+                if earlier != proposal_id:
+                    accepted, proposal, code = False, None, REPEATED_PROPOSAL
+                    reason = (
+                        f"{REPEATED_PROPOSAL}: the same configuration as {earlier}, accepted "
+                        "earlier in this sprint, so running it again would add trials and "
+                        "no evidence"
+                    )
             verdicts.append(
                 {
                     "index": index,
                     "proposal_id": proposal_id,
-                    "accepted": verdict.accepted,
-                    "reason": verdict.reason,
-                    "code": None if verdict.code is None else verdict.code.value,
+                    "accepted": accepted,
+                    "reason": reason,
+                    "code": code,
                     "canary": verdict.canary,
-                    "proposal": None
-                    if verdict.proposal is None
-                    else proposal_to_state(verdict.proposal),
+                    "proposal": None if proposal is None else proposal_to_state(proposal),
                 }
             )
-            if not verdict.accepted:
+            if not accepted:
                 record_event(
                     self.log_path,
                     sprint_id=self.sprint_id,
                     kind="refused",
                     proposal_id=proposal_id,
                     canary=verdict.canary,
-                    code=verdict.code.value if verdict.code else None,
-                    reason=verdict.reason,
+                    code=code,
+                    reason=reason,
                     at=self.at,
                 )
             elif verdict.canary:

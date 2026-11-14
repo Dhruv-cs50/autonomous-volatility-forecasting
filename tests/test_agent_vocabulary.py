@@ -33,16 +33,19 @@ import real_panel
 from volab.agent.vocabulary import (
     _EXACT_HAR_TRANSFORMS,
     _IDENTITY_GROUPS,
+    _UNGROUPED,
     AGENT_COHORT_PATTERN,
     CANARY_PAYLOADS,
     HORIZONS,
     MAX_EXTRA_REGRESSORS,
     REFERENCE_CONTESTANTS,
+    REPEATED_PROPOSAL,
     VOCABULARY,
     GateVerdict,
     Proposal,
     RefusalCode,
     agent_cohort_name,
+    configuration_key,
     gate,
     validate,
 )
@@ -711,3 +714,46 @@ def test_a_sprint_id_with_no_leading_date_has_no_cohort_name() -> None:
 def test_an_agent_cohort_name_is_never_a_registered_cohort_name(registered: str) -> None:
     assert not re.fullmatch(AGENT_COHORT_PATTERN, registered)
     assert agent_cohort_name(SPRINT, 0) != registered
+
+
+# -- one configuration once per sprint (R227) ----------------------------------------------------
+
+
+def _proposal(index: int = 0, **changes: object) -> Proposal:
+    fields: dict[str, object] = {
+        "proposal_id": f"2026-11-10-s-{index:02d}",
+        "family": "harx",
+        "extra_regressors": (_UNGROUPED[0], _UNGROUPED[1]),
+        "symbol": "SPY",
+        "horizon": 5,
+        "reference": ("har_levels",),
+    }
+    fields.update(changes)
+    return Proposal(**fields)  # type: ignore[arg-type]
+
+
+def test_the_configuration_key_ignores_the_id_and_the_order_of_names() -> None:
+    base = configuration_key(_proposal())
+    assert configuration_key(_proposal(index=3)) == base
+    assert configuration_key(_proposal(extra_regressors=(_UNGROUPED[1], _UNGROUPED[0]))) == base
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"extra_regressors": (_UNGROUPED[0],)},
+        {"symbol": "QQQ"},
+        {"horizon": 22},
+        {"reference": ("har_levels", "har_semilog")},
+    ],
+)
+def test_the_configuration_key_separates_any_change_to_what_is_run(
+    changes: dict[str, object],
+) -> None:
+    assert configuration_key(_proposal(**changes)) != configuration_key(_proposal())
+
+
+def test_the_repeat_code_is_not_a_refusal_code_because_no_single_payload_can_carry_it() -> None:
+    """``validate`` sees one payload; a repeat needs two. So ``REPEATED_PROPOSAL`` is outside
+    ``RefusalCode``, whose every member a single payload reaches (the per-code test above)."""
+    assert REPEATED_PROPOSAL not in {code.value for code in RefusalCode}
