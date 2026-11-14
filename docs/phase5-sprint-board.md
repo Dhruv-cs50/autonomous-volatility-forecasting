@@ -139,13 +139,14 @@ Branch `agent/first-real-sprint`, cut from `main` at `60da98f` (PR #25's merge, 
 | P5-L4 | Keep the first refusal reason in the proposal event | — | — | "no usable MCS" can no longer hide why | todo (follow-up, R225) |
 | P5-L5 | Second live sprint on the real store | orchestrator | L3 merged, the user's go | sprint completes; real ledgers byte-identical | failed in the Researcher step, exit 1, nothing written; real ledgers byte-identical (R226) |
 | P5-L6 | Refuse a reply that did not finish; size the cap from measured replies | orchestrator | L5 | cut-off, refusal and absent stop reasons refused with the reason named; each role finishes under the cap; agent tests, ruff, mypy green | done (`6c5be53`) |
-| P5-L7 | `invented_numbers` stops flagging window digits inside feature names | — | — | sprint 1's report would validate | todo (follow-up, R226) |
+| P5-L7 | `invented_numbers` stops flagging window digits inside feature names | — | — | sprint 1's report would validate | todo (follow-up sprint, queued) |
 | P5-L8 | Rerun the second sprint on L6, fresh id | orchestrator | L6, the user's go, main free of the PR #22 hold | as L5 | done (`5865a8e`): `2026-11-13T122201Z` on `833a2ee`, `awaiting_approval`; real ledgers byte-identical; 12 agent trials, 6 comparisons |
 | P5-L9 | Stop identical proposals within a sprint | orchestrator | L8 | one configuration is evaluated once per sprint, not once per slot | done (`d85ffd6`, R227): each slot sees earlier emissions; the hub refuses a repeat as `repeated_proposal`, after the canary check |
-| P5-L11 | Refuse a configuration already run in an earlier sprint | — | — | a later sprint cannot re-run L8's configuration | todo (follow-up, R227) |
+| P5-L11 | Refuse a configuration already run in an earlier sprint | — | — | a later sprint cannot re-run L8's configuration | todo (follow-up sprint, queued) |
 | P5-L12 | Third live sprint, on L9 | orchestrator | L9 merged, the user's go | sprint completes; real ledgers byte-identical | done (`3671f64`): `2026-11-14T004243Z` on `859bd78`, `no_candidate`; three distinct proposals (`baa10y`, h66, SPY/IWM/QQQ), so L9 held; real ledgers byte-identical; 12 agent trials, 6 comparisons |
-| P5-L13 | Stop offering a horizon whose confidence set the dev window cannot hold | — | — | no accepted proposal is unpromotable by construction | todo (follow-up): at h66 every L12 comparison refused the 10% MCS, `n_eff = 16.9` below `2/alpha = 20`, so those 12 trials could not produce a candidate |
-| P5-L10 | Decide whether "in the 10% MCS" alone makes a candidate promotable | the user | — | a ruling in the decisions log | todo (decision): L8's candidates are in the MCS with `har_levels` (p 0.89); DM p 0.90; SPA finds nothing beating `har_levels` |
+| P5-L13 | Stop offering a horizon whose confidence set the dev window cannot hold | — | — | no accepted proposal is unpromotable by construction | todo (follow-up sprint, queued) |
+| P5-L10 | Decide whether "in the 10% MCS" alone makes a candidate promotable | the user; implementer | — | a ruling in the decisions log | done (R228): promotable only if the candidate is in the 10% qlike MCS and `har_levels` is not |
+| P5-L14 | Plant a signal in the rehearsal store so a real evaluation reaches `awaiting_approval` | — | L10 | the rehearsal's real evaluation beats `har_levels` and its fingerprint path runs on real ledger lines | todo (follow-up, R228) |
 
 ## What the fences actually caught, recorded because a guard with no demonstrated bite is not evidence
 

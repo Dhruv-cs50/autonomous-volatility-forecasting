@@ -123,6 +123,9 @@ class StubSubmit:
 
     ``verdict`` is the child outcome to fake. It also writes the cohort's line to the agent trial
     ledger under ``root`` for an ``evaluated`` child, since the hub reads that ledger as evidence.
+    ``member`` puts the candidate in the qlike MCS at 10%; ``baseline_member`` puts ``har_levels``
+    there too. By default the candidate is in and ``har_levels`` is out -- the candidate beat it,
+    which is what promotable means since R228 -- and a tie is asked for by name.
     """
 
     def __init__(
@@ -131,12 +134,14 @@ class StubSubmit:
         *,
         verdict: str = "evaluated",
         member: bool = True,
+        baseline_member: bool = False,
         ledger_lines: bool = True,
         fail_on_call: int | None = None,
     ) -> None:
         self.root = root
         self.verdict = verdict
         self.member = member
+        self.baseline_member = baseline_member
         self.ledger_lines = ledger_lines
         self.fail_on_call = fail_on_call
         self.calls: list[Proposal] = []
@@ -149,7 +154,12 @@ class StubSubmit:
         cohort = agent.agent_cohort_name(sprint, int(index))
         candidate = "harx+" + "+".join(proposal.extra_regressors)
         names = [*proposal.reference, candidate]
-        members = names if self.member else list(proposal.reference)
+        # The 10% set is never empty: when the candidate is out, the reference is in.
+        members = (
+            [n for n in names if n != "har_levels" or self.baseline_member]
+            if self.member
+            else list(proposal.reference)
+        )
         comparison = {
             "loss": "qlike",
             "contestants": names,
@@ -517,6 +527,75 @@ def test_a_promotable_candidate_persists_a_pending_approval_and_promotes_nothing
         f"{SPRINT}-{i:02d}" for i in range(4) if i != canary_placement(SPRINT, 4)[0]
     ]
     assert result.pending == pending[0]
+
+
+def test_a_candidate_tied_with_har_levels_in_the_mcs_is_not_promotable(
+    tmp_path: Path, settings: Settings
+) -> None:
+    """R228: both in the qlike MCS at 10% is a tie, and a tie does not beat the baseline."""
+    result = sprint(
+        tmp_path,
+        settings,
+        completer=FakeCompleter(script()),
+        submit=StubSubmit(tmp_path, baseline_member=True),
+    )
+    assert result.outcome == "no_candidate"
+    assert result.pending is None
+    assert not log_of(tmp_path, "awaiting_approval")
+    assert "tied with har_levels" in result.reason
+    assert "not in the qlike MCS" not in result.reason
+
+
+def test_a_candidate_in_the_mcs_without_har_levels_is_promotable(
+    tmp_path: Path, settings: Settings
+) -> None:
+    """R228, the other direction: the candidate in the set and ``har_levels`` eliminated."""
+    result = sprint(
+        tmp_path,
+        settings,
+        completer=FakeCompleter(script()),
+        submit=StubSubmit(tmp_path, member=True, baseline_member=False),
+    )
+    assert result.outcome == "awaiting_approval"
+    assert result.pending is not None
+    assert log_of(tmp_path, "awaiting_approval")
+
+
+def test_an_mcs_whose_comparison_lacks_har_levels_is_not_reported_and_not_promotable() -> None:
+    """R228 needs ``har_levels`` among the contestants; without it the answer is ``None``."""
+    proposal = {"reference": ["har_levels_mz"]}
+    summary = {
+        "verdict": "evaluated",
+        "comparisons": [
+            {
+                "loss": "qlike",
+                "contestants": ["har_levels_mz", "harx+rv_d"],
+                "refusal": None,
+                "mcs_sizes": {"0.1": {"members": ["harx+rv_d"]}},
+            }
+        ],
+    }
+    assert agent._mcs_membership(summary, proposal) is None
+
+
+@pytest.mark.parametrize(
+    ("baseline_member", "said"),
+    [(True, "member, tied with har_levels"), (False, "member, har_levels not a member")],
+)
+def test_the_reporters_figures_say_whether_har_levels_is_in_the_mcs(
+    tmp_path: Path, settings: Settings, baseline_member: bool, said: str
+) -> None:
+    """R228: a tie reads as a tie in the figures, not a bare "member" a Reporter could oversell."""
+    sprint(
+        tmp_path,
+        settings,
+        completer=FakeCompleter(script()),
+        submit=StubSubmit(tmp_path, baseline_member=baseline_member),
+    )
+    (report,) = [e for e in log_of(tmp_path, "report") if e["role"] == "reporter"]
+    runs = [line for line in report["figures"].splitlines() if line.startswith("run ")]
+    assert len(runs) == PROPOSALS_PER_SPRINT - 1
+    assert all(line.endswith(f"qlike MCS at 10%: {said}") for line in runs), runs
 
 
 def test_the_awaiting_event_carries_the_proposal_id_and_a_fingerprint_that_recomputes(

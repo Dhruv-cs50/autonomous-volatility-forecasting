@@ -1449,3 +1449,30 @@ stored code back to the enum. `gate`'s docstring no longer says it is the only r
   Researcher sees earlier hypotheses, not configurations. A follow-up if it happens.
 * *Whether the model actually varies.* Unverified until a live sprint runs, and a live sprint adds
   counted trials, so that is the user's decision.
+
+## R228 — a candidate is promotable only if it beats `har_levels`, not if it ties
+
+Until now a candidate was promotable when the child evaluated it cleanly, it was a member of the
+10% qlike model confidence set, and the agent ledger held a line of its cohort to fingerprint.
+Membership alone says only that the candidate was not significantly beaten. The second live sprint
+(P5-L8) showed why that is too weak: its candidate shared the 10% qlike MCS with `har_levels` (MCS
+p-value of `har_levels` 0.89, Diebold-Mariano p 0.90, SPA finding nothing that beat `har_levels`),
+yet the sprint ended `awaiting_approval`.
+
+**Ruling (the user, 2026-11-14):** a candidate is promotable only if it is in the 10% qlike MCS
+**and `har_levels` is not**. A tie is not enough.
+
+**In code.** `_mcs_membership` reports both memberships and `_promotable` refuses a tie, with a
+reason that says the candidate tied with `har_levels`; the sprint ends `no_candidate` and writes no
+`awaiting_approval` event. A qlike comparison in which `har_levels` is not a contestant counts as
+not reported, which is never promotable: a missing baseline fails closed. The Reporter's figures
+now say `member, tied with har_levels` or `member, har_levels not a member`, so a report cannot
+oversell a tie. `volab.promote` re-derives no promotability (it checks the event, single use and
+the fingerprint), so it needed no change.
+
+**A cost, accepted.** The rehearsal store is seeded noise, so its one real evaluation now ends in
+the tie refusal, and no real evaluation exercises the approval path; stubs and `test_promote.py`
+cover it. P5-L14 plants a signal in the rehearsal store so a real evaluation reaches it again.
+
+**Not covered.** The rule reads the 10% MCS only: not DM, not SPA, not the other references such as
+`har_levels_mz`, and nothing past `dev_end`.

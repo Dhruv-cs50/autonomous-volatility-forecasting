@@ -454,14 +454,19 @@ def _check_the_sprint_reached_a_pinned_outcome_after_one_real_evaluation(
     assert run.result is not None
     assert run.result["status"] == "ok"
     assert run.result["trials_written"] > 0
-    assert result.outcome == "awaiting_approval", result.reason
-    assert result.pending is not None
-    assert result.pending.proposal_id == f"{SPRINT}-{int(run.proposal_id.rsplit('-', 1)[1]):02d}"
+    # The store is noise, so the real qlike MCS at 10% keeps ``har_levels`` beside the candidate:
+    # a tie, which R228 refuses. Pinned to that refusal, and to the proposal that actually ran.
+    # (Before R228 this pinned ``awaiting_approval``; no real evaluation reaches that path now.)
+    assert result.outcome == "no_candidate", result.reason
+    assert result.pending is None
+    ran = f"{SPRINT}-{int(run.proposal_id.rsplit('-', 1)[1]):02d}"
+    assert result.reason.startswith(f"{ran}: "), result.reason
+    assert "tied with har_levels" in result.reason
 
     kinds = [e["kind"] for e in events(tmp_path / "data" / "agent_sprints.jsonl", SPRINT)]
     assert kinds[0] == "start"
     assert kinds.count("proposal") == 1
-    assert kinds.count("awaiting_approval") == 1
+    assert kinds.count("awaiting_approval") == 0
     assert kinds[-1] == "complete"
 
 

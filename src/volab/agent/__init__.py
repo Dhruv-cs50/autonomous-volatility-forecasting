@@ -49,10 +49,13 @@ no canary.
 ``awaiting_approval`` event per promotable candidate, keyed on ``proposal_id`` (R201), and returns
 ``awaiting_approval`` with the first as ``SprintResult.pending``; promotion is another package in
 another process. Promotable means, mechanically: the child evaluated cleanly (verdict
-``evaluated``), the candidate contestant is in the 10% MCS of the ``qlike`` comparison, and the
-agent ledger holds at least one line of that cohort to fingerprint. MCS membership says the
-candidate was not significantly beaten on the development window; it does not say it won, and the
-human decides what it is worth.
+``evaluated``), the candidate contestant is in the 10% MCS of the ``qlike`` comparison **and
+``har_levels`` is not** (R228), and the agent ledger holds at least one line of that cohort to
+fingerprint. Membership alone says only that the candidate was not significantly beaten on the
+development window; with ``har_levels`` also in the set that is a tie, and a tie is not promotable.
+``har_levels`` eliminated from the set the candidate survives in is the evidence that the candidate
+beat the baseline on the development window -- at the MCS's 10% level, not a claim about any other
+window -- and the human decides what it is worth.
 
 **Resumption.** Each finished step is checkpointed under its own name, and the run step also
 checkpoints after every proposal (``run:progress``), so a sprint that dies resumes at the next
@@ -114,6 +117,7 @@ from volab.agent.sprintlog import (
 )
 from volab.agent.vocabulary import (
     CANARY_PAYLOADS,
+    REFERENCE_CONTESTANTS,
     REPEATED_PROPOSAL,
     Proposal,
     agent_cohort_name,
@@ -140,9 +144,12 @@ PROPOSALS_PER_SPRINT: int = 4
 # How many earlier sprints the Researcher is shown.
 _MEMORY_SPRINTS = 5
 
-# The MCS size and loss a candidate must be a member of to be promotable (see the docstring).
+# The MCS size and loss a candidate must be a member of to be promotable, and the baseline that
+# must *not* be a member of that same set (R228; see the docstring). The gate makes ``har_levels``
+# the first reference of every proposal (R87), so it is a contestant of every comparison.
 _PROMOTION_LOSS = "qlike"
 _PROMOTION_MCS_SIZE = "0.1"
+_PROMOTION_BASELINE = REFERENCE_CONTESTANTS[0]
 
 # Verdicts (R203) that mean the harness, not the proposal, went wrong.
 _FAILED_VERDICTS = frozenset(
@@ -207,35 +214,49 @@ def evidence_hash(line: Mapping[str, Any]) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _mcs_member(summary: Mapping[str, Any], proposal: Mapping[str, Any]) -> bool | None:
-    """Whether the candidate is in the promotion MCS, or ``None`` when that is not reported.
+def _mcs_membership(
+    summary: Mapping[str, Any], proposal: Mapping[str, Any]
+) -> tuple[bool, bool] | None:
+    """``(candidate, baseline)``: whether each is in the promotion MCS, or ``None`` if unreported.
 
     The candidate is the one contestant of the ``qlike`` comparison that is not a reference
-    contestant; if there is not exactly one such, or the comparison is refused or lacks the size,
-    the answer is ``None``, which is never promotable.
+    contestant; the baseline is ``har_levels`` (R228). If there is not exactly one candidate, the
+    baseline is not a contestant, or the comparison is refused or lacks the size, the answer is
+    ``None``, which is never promotable.
     """
     for comparison in summary.get("comparisons", []):
         if comparison.get("loss") != _PROMOTION_LOSS or comparison.get("refusal"):
             continue
-        names = [c for c in comparison.get("contestants") or [] if c not in proposal["reference"]]
+        contestants = comparison.get("contestants") or []
+        names = [c for c in contestants if c not in proposal["reference"]]
         size = (comparison.get("mcs_sizes") or {}).get(_PROMOTION_MCS_SIZE) or {}
-        if len(names) != 1 or "members" not in size:
+        if len(names) != 1 or _PROMOTION_BASELINE not in contestants or "members" not in size:
             return None
-        return names[0] in size["members"]
+        return names[0] in size["members"], _PROMOTION_BASELINE in size["members"]
     return None
 
 
 def _promotable(
     summary: Mapping[str, Any], proposal: Mapping[str, Any], view: TrialView
 ) -> tuple[tuple[str, ...] | None, str]:
-    """``(evidence, reason)``: the evidence hashes if promotable, else ``None`` and why not."""
+    """``(evidence, reason)``: the evidence hashes if promotable, else ``None`` and why not.
+
+    Promotable is the candidate in the qlike MCS at 10% with ``har_levels`` out of it (R228); the
+    candidate in it *with* ``har_levels`` is a tie and is refused with a reason that says so.
+    """
     if summary["verdict"] != "evaluated":
         return None, f"the child's verdict was {summary['verdict']}"
-    member = _mcs_member(summary, proposal)
-    if member is None:
+    membership = _mcs_membership(summary, proposal)
+    if membership is None:
         return None, "no usable qlike MCS at 10% was reported"
+    member, baseline = membership
     if not member:
         return None, "the candidate is not in the qlike MCS at 10%"
+    if baseline:
+        return None, (
+            f"the candidate tied with {_PROMOTION_BASELINE}: both are in the qlike MCS at 10%, "
+            f"and promotion needs {_PROMOTION_BASELINE} out of it (R228)"
+        )
     evidence = tuple(
         evidence_hash(line) for line in view.lines if line.get("cohort") == summary["cohort"]
     )
@@ -267,11 +288,18 @@ def render_figures(state: Mapping[str, Any]) -> str:
         summary = state.get("runs", {}).get(entry["proposal_id"])
         if summary is None:
             continue
-        member = _mcs_member(summary, entry["proposal"]) if entry["proposal"] else None
+        membership = _mcs_membership(summary, entry["proposal"]) if entry["proposal"] else None
+        if membership is None:
+            said = "not reported"
+        elif not membership[0]:
+            said = "not a member"
+        elif membership[1]:
+            said = f"member, tied with {_PROMOTION_BASELINE}"
+        else:
+            said = f"member, {_PROMOTION_BASELINE} not a member"
         lines.append(
             f"run {entry['proposal_id']} (volab.candidate): {summary['verdict']}; "
-            f"cohort {summary['cohort']}; qlike MCS at 10%: "
-            f"{'not reported' if member is None else 'member' if member else 'not a member'}"
+            f"cohort {summary['cohort']}; qlike MCS at 10%: {said}"
         )
     return "\n".join(lines)
 
