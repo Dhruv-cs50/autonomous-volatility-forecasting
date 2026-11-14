@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import json
 import re
 from typing import Any
 
@@ -44,6 +45,7 @@ from volab.agent.vocabulary import (
     _UNGROUPED,
     AGENT_COHORT_PATTERN,
     AGENT_HORIZONS,
+    ALREADY_RUN,
     CANARY_PAYLOADS,
     HORIZONS,
     MAX_EXTRA_REGRESSORS,
@@ -55,6 +57,8 @@ from volab.agent.vocabulary import (
     RefusalCode,
     agent_cohort_name,
     configuration_key,
+    configuration_text,
+    configurations_run,
     gate,
     validate,
 )
@@ -853,3 +857,139 @@ def test_the_repeat_code_is_not_a_refusal_code_because_no_single_payload_can_car
     """``validate`` sees one payload; a repeat needs two. So ``REPEATED_PROPOSAL`` is outside
     ``RefusalCode``, whose every member a single payload reaches (the per-code test above)."""
     assert REPEATED_PROPOSAL not in {code.value for code in RefusalCode}
+
+
+# -- a configuration runs once across sprints (P5-L11) ------------------------------------------
+
+
+def child_lines(
+    cohort: str,
+    extra: tuple[str, ...],
+    *,
+    symbol: str = "SPY",
+    horizon: int = 5,
+    reference: tuple[str, ...] = ("har_levels",),
+    last_origin: str = "2025-12-17",
+) -> list[dict[str, Any]]:
+    """A cohort's agent-ledger lines in the child's shape: per loss, the reference in its order,
+    then the candidate (``Evaluation.trials`` loops losses, then ``contestants``)."""
+    models = (*reference, "harx+" + "+".join(extra))
+    return [
+        {
+            "model": model,
+            "symbol": symbol,
+            "horizon": horizon,
+            "loss": loss,
+            "last_origin": last_origin,
+            "cohort": cohort,
+        }
+        for loss in ("qlike", "mse")
+        for model in models
+    ]
+
+
+COHORT_A = "agent-2026-11-13-1731f8f3-00"
+COHORT_B = "agent-2026-11-13-1731f8f3-01"
+
+
+def test_a_cohort_in_the_childs_shape_gives_back_the_configuration_it_ran() -> None:
+    reference = ("har_levels", "random_walk", "har_semilog")  # not alphabetical, on purpose
+    ran = configurations_run(
+        child_lines(COHORT_A, (_UNGROUPED[1], _UNGROUPED[0]), horizon=22, reference=reference)
+    )
+    proposal = _proposal(horizon=22, reference=reference)
+    assert ran == {configuration_key(proposal): COHORT_A}
+
+
+def test_the_recovered_reference_keeps_the_order_it_ran_in() -> None:
+    reference = ("har_levels", "random_walk", "har_semilog")
+    ran = configurations_run(child_lines(COHORT_A, (_UNGROUPED[0],), reference=reference))
+    reordered = _proposal(
+        extra_regressors=(_UNGROUPED[0],), reference=reference[:1] + reference[:0:-1]
+    )
+    assert configuration_key(reordered) not in ran
+    assert (
+        configuration_key(_proposal(extra_regressors=(_UNGROUPED[0],), reference=reference)) in ran
+    )
+
+
+def test_a_configuration_run_by_two_cohorts_is_attributed_to_the_first() -> None:
+    lines = [*child_lines(COHORT_A, (_UNGROUPED[0],)), *child_lines(COHORT_B, (_UNGROUPED[0],))]
+    assert list(configurations_run(lines).values()) == [COHORT_A]
+
+
+def test_the_candidate_name_the_parser_splits_is_the_one_the_model_gives_itself() -> None:
+    """Two-sided: the parser reads ``harx+<a>+<b>`` because ``HarX.name`` writes it."""
+    from volab.models.harx import harx
+
+    extra = (_UNGROUPED[0], _UNGROUPED[1])
+    ran = configurations_run(
+        [
+            {**line, "model": harx(extra).name} if line["model"].startswith("harx") else line
+            for line in child_lines(COHORT_A, extra)
+        ]
+    )
+    assert configuration_key(_proposal(extra_regressors=extra)) in ran
+
+
+@pytest.mark.parametrize(
+    "spoil",
+    [
+        pytest.param(
+            lambda ls: [{k: v for k, v in ls[0].items() if k != "symbol"}, *ls[1:]], id="no-symbol"
+        ),
+        pytest.param(lambda ls: [{**ls[0], "horizon": 22}, *ls[1:]], id="two-horizons"),
+        pytest.param(lambda ls: [{**ls[0], "horizon": True}, *ls[1:]], id="bool-horizon"),
+        pytest.param(lambda ls: [{**ls[0], "symbol": "QQQ"}, *ls[1:]], id="two-symbols"),
+        pytest.param(lambda ls: [{**ls[0], "model": None}, *ls[1:]], id="model-not-a-string"),
+        pytest.param(lambda ls: [{**ls[0], "model": "garch"}, *ls[1:]], id="unknown-model"),
+        pytest.param(lambda ls: [{**ls[0], "model": "harx+"}, *ls[1:]], id="empty-candidate"),
+        pytest.param(lambda ls: [{**ls[0], "model": "harx+a++b"}, *ls[1:]], id="empty-name"),
+        pytest.param(lambda ls: [{**ls[0], "model": "harx+other"}, *ls[1:]], id="two-candidates"),
+        pytest.param(
+            lambda ls: [line for line in ls if line["model"].startswith("har_")], id="no-candidate"
+        ),
+        pytest.param(
+            lambda ls: [line for line in ls if line["model"].startswith("harx")], id="no-reference"
+        ),
+    ],
+)
+def test_a_cohort_that_does_not_parse_refuses_nothing_and_does_not_raise(spoil: Any) -> None:
+    """Fail safe: a cohort the parser cannot read whole contributes no configuration, so it can
+    refuse no proposal; dropping only its bad line could shorten the recovered reference and so
+    match a configuration that was never run. A sound cohort beside it is still read."""
+    spoiled = spoil(child_lines(COHORT_A, (_UNGROUPED[0],)))
+    sound = child_lines(COHORT_B, (_UNGROUPED[1],))
+    assert configurations_run([*spoiled, *sound]) == {
+        configuration_key(_proposal(extra_regressors=(_UNGROUPED[1],))): COHORT_B
+    }
+
+
+def test_a_line_with_no_cohort_is_ignored() -> None:
+    lines = [
+        {"model": "harx+x", "symbol": "SPY", "horizon": 5},
+        {"cohort": 7, "model": "har_levels"},
+    ]
+    assert configurations_run(lines) == {}
+
+
+def test_the_canonical_text_is_sorted_json_of_the_five_payload_keys() -> None:
+    key = configuration_key(_proposal(extra_regressors=(_UNGROUPED[1], _UNGROUPED[0])))
+    text = configuration_text(key)
+    assert json.loads(text) == {
+        "family": "harx",
+        "extra_regressors": sorted((_UNGROUPED[0], _UNGROUPED[1])),
+        "symbol": "SPY",
+        "horizon": 5,
+        "reference": ["har_levels"],
+    }
+    assert text == json.dumps(json.loads(text), sort_keys=True)
+
+
+def test_the_already_run_code_is_not_a_refusal_code_because_no_single_payload_can_carry_it() -> (
+    None
+):
+    """Like ``REPEATED_PROPOSAL``: whether a configuration already ran is a fact about the ledger,
+    not about one payload."""
+    assert ALREADY_RUN not in {code.value for code in RefusalCode}
+    assert ALREADY_RUN != REPEATED_PROPOSAL

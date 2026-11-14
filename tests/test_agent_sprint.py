@@ -56,12 +56,16 @@ from volab.agent.roles import (
 from volab.agent.sprintlog import events, fingerprint_of, pending_approvals, record_event
 from volab.agent.vocabulary import (
     AGENT_HORIZONS,
+    ALREADY_RUN,
     CANARY_PAYLOADS,
     REPEATED_PROPOSAL,
     VOCABULARY,
     GateVerdict,
     Proposal,
     RefusalCode,
+    configuration_key,
+    configuration_text,
+    configurations_run,
     validate,
 )
 from volab.config import Settings, Splits
@@ -975,7 +979,11 @@ def test_the_configurator_prompt_asks_for_json_arrays_and_its_example_passes_the
     """
     completer = FakeCompleter(["{}"] * PROPOSALS_PER_SPRINT)
     roles_module.configurator(
-        {"hypothesis": "h"}, completer=completer, slots=PROPOSALS_PER_SPRINT, universe=("SPY",)
+        {"hypothesis": "h"},
+        completer=completer,
+        slots=PROPOSALS_PER_SPRINT,
+        universe=("SPY",),
+        already_run=(),
     )
     # Slots differ only by their number and the earlier slots' emissions, neither of which depends
     # on where the canary goes: see test_no_configurator_prompt_depends_on_where_the_canary_goes.
@@ -1013,7 +1021,11 @@ def test_the_researcher_and_configurator_are_offered_only_the_horizons_the_gate_
     assert _horizons_on(researcher_line) == AGENT_HORIZONS
     configured = FakeCompleter(["{}"] * PROPOSALS_PER_SPRINT)
     roles_module.configurator(
-        {"hypothesis": "h"}, completer=configured, slots=PROPOSALS_PER_SPRINT, universe=("SPY",)
+        {"hypothesis": "h"},
+        completer=configured,
+        slots=PROPOSALS_PER_SPRINT,
+        universe=("SPY",),
+        already_run=(),
     )
     for prompt in configured.prompts:
         line = next(x for x in prompt.user.splitlines() if x.startswith("horizon:"))
@@ -1027,7 +1039,11 @@ def test_the_configurator_prompt_states_every_identity_groups_limit() -> None:
 
     completer = FakeCompleter(["{}"] * PROPOSALS_PER_SPRINT)
     roles_module.configurator(
-        {"hypothesis": "h"}, completer=completer, slots=PROPOSALS_PER_SPRINT, universe=("SPY",)
+        {"hypothesis": "h"},
+        completer=completer,
+        slots=PROPOSALS_PER_SPRINT,
+        universe=("SPY",),
+        already_run=(),
     )
     user = completer.prompts[0].user
     for members, allowed in _IDENTITY_GROUPS:
@@ -1433,7 +1449,11 @@ def test_each_configurator_slot_lists_exactly_the_earlier_slots_mapping_emission
     replies = [valid_reply(0), "not json", "{}", valid_reply(3)]
     completer = FakeCompleter(replies)
     roles_module.configurator(
-        {"hypothesis": "h"}, completer=completer, slots=PROPOSALS_PER_SPRINT, universe=("SPY",)
+        {"hypothesis": "h"},
+        completer=completer,
+        slots=PROPOSALS_PER_SPRINT,
+        universe=("SPY",),
+        already_run=(),
     )
     listed = [
         next(line for line in p.user.splitlines() if line.startswith("Already proposed"))
@@ -1528,3 +1548,269 @@ def test_the_repeat_rule_never_turns_an_accepted_canary_into_a_refusal(
     assert result.outcome == "voided_by_canary"
     assert [e["index"] for e in log_of(tmp_path, "canary_accepted")] == [slot]
     assert not [e for e in log_of(tmp_path, "refused") if e["code"] == REPEATED_PROPOSAL]
+
+
+# --- one configuration once across sprints (P5-L11) --------------------------------------------
+
+
+def child_lines(proposal: Proposal, cohort: str, *, last_origin: str = "2025-12-17") -> list[str]:
+    """A cohort's agent-ledger lines in the real child's shape, as JSON text: per loss, the
+    reference in its order then the candidate, each with symbol and horizon."""
+    models = (*proposal.reference, "harx+" + "+".join(proposal.extra_regressors))
+    return [
+        json.dumps(
+            {
+                "at": "2026-11-09T06:00:01+00:00",
+                "model": model,
+                "symbol": proposal.symbol,
+                "horizon": proposal.horizon,
+                "loss": loss,
+                "last_origin": last_origin,
+                "cohort": cohort,
+            }
+        )
+        for loss in ("qlike", "mse")
+        for model in models
+    ]
+
+
+def seed_ledger(root: Path, lines: Sequence[str]) -> None:
+    ledger = root / "data" / "agent_trials.jsonl"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with ledger.open("a", encoding="utf-8") as handle:
+        handle.write("".join(line + "\n" for line in lines))
+
+
+def reply_proposal(slot: int, *, proposal_id: str = "x-00") -> Proposal:
+    """The Proposal ``valid_reply(slot)`` gates to."""
+    return validate(
+        json.loads(valid_reply(slot)), sprint_id=proposal_id[:-3], index=0, universe=("SPY",)
+    )
+
+
+EARLIER = "agent-2026-11-03-0badc0de-01"
+
+
+def replies_with_real_slots(real: Sequence[str]) -> list[str]:
+    """Configurator replies whose non-canary slots of ``SPRINT`` are ``real``, in order."""
+    slot, _ = canary_placement(SPRINT, PROPOSALS_PER_SPRINT)
+    queue = list(real)
+    return ["{}" if i == slot else queue.pop(0) for i in range(PROPOSALS_PER_SPRINT)]
+
+
+def test_a_configuration_the_ledger_shows_run_is_refused_as_already_run_and_never_run(
+    tmp_path: Path, settings: Settings
+) -> None:
+    seed_ledger(tmp_path, child_lines(reply_proposal(0), EARLIER))
+    submit = StubSubmit(tmp_path)
+    memory = FileCheckpointer(tmp_path / "memory")
+    replies = replies_with_real_slots([valid_reply(0), valid_reply(0), valid_reply(1)])
+    sprint(
+        tmp_path,
+        settings,
+        completer=FakeCompleter(script(configurator=replies)),
+        submit=submit,
+        checkpointer=memory,
+    )
+    slot, _ = canary_placement(SPRINT, PROPOSALS_PER_SPRINT)
+    real = [i for i in range(PROPOSALS_PER_SPRINT) if i != slot]
+
+    assert [p.proposal_id for p in submit.calls] == [f"{SPRINT}-{real[2]:02d}"]
+    refused = {e["proposal_id"]: e for e in log_of(tmp_path, "refused") if not e["canary"]}
+    # Both slots are already_run; neither is "repeated", since a refused one was never accepted.
+    assert sorted(refused) == [f"{SPRINT}-{i:02d}" for i in real[:2]]
+    for event in refused.values():
+        assert event["code"] == ALREADY_RUN
+        assert EARLIER in event["reason"]
+    gated = dict(memory.history(SPRINT))["gate"]["gated"]
+    assert all(g["proposal"] is None for g in gated if g["code"] == ALREADY_RUN)
+    lines = (tmp_path / "data" / "agent_trials.jsonl").read_text().splitlines()
+    assert {json.loads(line)["cohort"] for line in lines} == {
+        EARLIER,
+        agent.agent_cohort_name(SPRINT, real[2]),
+    }
+
+
+class _ChildShapedSubmit(StubSubmit):
+    """A stub child that writes the ledger lines the real child would, symbol and horizon too."""
+
+    def __init__(self, root: Path) -> None:
+        super().__init__(root, ledger_lines=False)
+
+    def __call__(self, proposal: Proposal) -> ChildRun:
+        run = super().__call__(proposal)
+        sprint_id, _, index = proposal.proposal_id.rpartition("-")
+        seed_ledger(
+            self.root, child_lines(proposal, agent.agent_cohort_name(sprint_id, int(index)))
+        )
+        return run
+
+
+def test_a_later_sprint_does_not_rerun_what_an_earlier_sprint_ran(
+    tmp_path: Path, settings: Settings
+) -> None:
+    memory = FileCheckpointer(tmp_path / "memory")
+    first = _ChildShapedSubmit(tmp_path)
+    earlier_id = "2026-11-03-weekly"
+    sprint(
+        tmp_path,
+        settings,
+        completer=FakeCompleter(script()),
+        submit=first,
+        checkpointer=memory,
+        sprint_id=earlier_id,
+    )
+    assert len(first.calls) == PROPOSALS_PER_SPRINT - 1
+    cohorts = {
+        p.proposal_id: agent.agent_cohort_name(earlier_id, int(p.proposal_id[-2:]))
+        for p in first.calls
+    }
+    before = (tmp_path / "data" / "agent_trials.jsonl").read_text()
+
+    later = StubSubmit(tmp_path)
+    completer = FakeCompleter(script())  # the same four replies again
+    result = sprint(tmp_path, settings, completer=completer, submit=later, checkpointer=memory)
+
+    ran = {configuration_text(configuration_key(p)) for p in first.calls}
+    slot, _ = canary_placement(SPRINT, PROPOSALS_PER_SPRINT)
+    expected = {
+        i
+        for i in range(PROPOSALS_PER_SPRINT)
+        if i != slot and configuration_text(configuration_key(reply_proposal(i))) in ran
+    }
+    assert expected  # non-vacuous: the two sprints share at least one configuration
+    refused = {
+        int(e["proposal_id"][-2:]): e for e in log_of(tmp_path, "refused") if not e["canary"]
+    }
+    assert set(refused) == expected
+    for index, event in refused.items():
+        assert event["code"] == ALREADY_RUN
+        earlier_proposal = next(
+            p
+            for p in first.calls
+            if configuration_key(p) == configuration_key(reply_proposal(index))
+        )
+        assert cohorts[earlier_proposal.proposal_id] in event["reason"]
+    assert {int(p.proposal_id[-2:]) for p in later.calls}.isdisjoint(expected)
+    # No ledger line was written for a refused proposal.
+    added = (tmp_path / "data" / "agent_trials.jsonl").read_text()[len(before) :].splitlines()
+    assert {json.loads(line)["cohort"] for line in added} == {
+        agent.agent_cohort_name(SPRINT, int(p.proposal_id[-2:])) for p in later.calls
+    }
+    assert result.refused == len(expected)
+
+
+def test_the_already_run_rule_never_turns_an_accepted_canary_into_a_refusal(
+    tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A broken gate that accepts the canary must void the sprint even when the canary's
+    configuration is already in the ledger; otherwise the already-run rule would refuse it and
+    the sprint would look healthy."""
+    canary_config = Proposal("x-00", "harx", (VOCABULARY[0],), "SPY", 5, ("har_levels",))
+    seed_ledger(tmp_path, child_lines(canary_config, EARLIER))
+
+    def accept_everything(
+        raw: object, *, sprint_id: str, index: int, universe: tuple[str, ...], canary: bool
+    ) -> GateVerdict:
+        proposal = dataclasses.replace(canary_config, proposal_id=f"{sprint_id}-{index:02d}")
+        return GateVerdict(True, proposal, "accepted", None, canary)
+
+    monkeypatch.setattr(agent, "gate", accept_everything)
+    submit = StubSubmit(tmp_path)
+    result = sprint(tmp_path, settings, completer=FakeCompleter(script()), submit=submit)
+
+    slot, _ = canary_placement(SPRINT, PROPOSALS_PER_SPRINT)
+    assert result.outcome == "voided_by_canary"
+    assert [e["index"] for e in log_of(tmp_path, "canary_accepted")] == [slot]
+    assert not [e for e in log_of(tmp_path, "refused") if e["canary"]]
+    # Non-vacuous: the rule was live, and refused the real slots before the canary.
+    assert [e["code"] for e in log_of(tmp_path, "refused")] == [ALREADY_RUN] * slot
+    assert submit.calls == []
+
+
+def test_only_kept_ledger_lines_say_a_configuration_ran(tmp_path: Path) -> None:
+    """A cohort whose lines are past ``dev_end``, or carry no ``last_origin``, is not in the
+    view, so it shows nothing run (R208). (A sprint with such a line fails at ``research`` before
+    any prompt or gate, so this is witnessed on the view the hub reads, not on a whole sprint.)"""
+    from volab.agent.ledger import read_agent_trials
+
+    kept, late, undated = (reply_proposal(i) for i in range(3))
+    seed_ledger(tmp_path, child_lines(kept, EARLIER))
+    seed_ledger(
+        tmp_path, child_lines(late, "agent-2026-11-04-0badc0de-01", last_origin="2026-01-05")
+    )
+    seed_ledger(
+        tmp_path,
+        [
+            json.dumps({k: v for k, v in json.loads(line).items() if k != "last_origin"})
+            for line in child_lines(undated, "agent-2026-11-05-0badc0de-01")
+        ],
+    )
+    view = read_agent_trials(tmp_path, dev_end=dt.date(2025, 12, 31))
+    assert view.excluded > 0
+    assert configurations_run(view.lines) == {configuration_key(kept): EARLIER}
+
+
+def test_ledger_lines_that_do_not_parse_refuse_nothing_and_the_sprint_runs(
+    tmp_path: Path, settings: Settings
+) -> None:
+    """The stub's own shape (no symbol, no horizon, no reference line) and a model nobody
+    proposes are not configurations; they refuse nothing and crash nothing."""
+    proposal = reply_proposal(0)
+    candidate = "harx+" + "+".join(proposal.extra_regressors)
+    seed_ledger(
+        tmp_path,
+        [
+            json.dumps({"cohort": EARLIER, "model": candidate, "last_origin": "2025-12-30"}),
+            json.dumps(
+                {
+                    "cohort": "agent-2026-11-04-0badc0de-01",
+                    "model": "garch",
+                    "symbol": "SPY",
+                    "horizon": 5,
+                    "last_origin": "2025-12-30",
+                }
+            ),
+            json.dumps(
+                {"model": candidate, "symbol": "SPY", "horizon": 5, "last_origin": "2025-12-30"}
+            ),
+        ],
+    )
+    submit = StubSubmit(tmp_path)
+    result = sprint(tmp_path, settings, completer=FakeCompleter(script()), submit=submit)
+
+    assert result.outcome == "awaiting_approval"
+    assert len(submit.calls) == PROPOSALS_PER_SPRINT - 1
+    assert not [e for e in log_of(tmp_path, "refused") if e["code"] == ALREADY_RUN]
+
+
+def _already_run_line(prompt: Any) -> str:
+    return next(line for line in prompt.user.splitlines() if line.startswith("Already run"))
+
+
+def test_every_configurator_slot_is_shown_the_same_list_of_configurations_already_run(
+    tmp_path: Path, settings: Settings
+) -> None:
+    seed_ledger(tmp_path, child_lines(reply_proposal(2), "agent-2026-11-04-0badc0de-02"))
+    seed_ledger(tmp_path, child_lines(reply_proposal(0), EARLIER))
+    completer = FakeCompleter(script())
+    sprint(tmp_path, settings, completer=completer, submit=StubSubmit(tmp_path))
+
+    configuring = completer.prompts[1 : 1 + PROPOSALS_PER_SPRINT]
+    listed = {_already_run_line(p) for p in configuring}
+    assert len(listed) == 1
+    texts = sorted(configuration_text(configuration_key(reply_proposal(i))) for i in (0, 2))
+    assert listed.pop().endswith(": " + "; ".join(texts))
+    # The cohort names, which carry run dates, are not shown to the model.
+    seen = "\n".join(p.user for p in completer.prompts)
+    assert EARLIER not in seen and "0badc0de" not in seen
+    # The Configurator's prompt is the only one that changed.
+    others = (completer.prompts[0], *completer.prompts[1 + PROPOSALS_PER_SPRINT :])
+    assert not any("Already run" in p.user for p in others)
+
+
+def test_with_nothing_run_the_configurator_is_told_none(tmp_path: Path, settings: Settings) -> None:
+    completer = FakeCompleter(script())
+    sprint(tmp_path, settings, completer=completer, submit=StubSubmit(tmp_path))
+    for prompt in completer.prompts[1 : 1 + PROPOSALS_PER_SPRINT]:
+        assert _already_run_line(prompt).endswith(": none")

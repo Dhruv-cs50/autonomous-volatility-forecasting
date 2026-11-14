@@ -48,6 +48,11 @@ it: a proposal whose :func:`configuration_key` equals one already accepted in th
 refused as :data:`REPEATED_PROPOSAL`. That rule runs **after** the canary check and never on a
 canary, so it can never turn an accepted canary into a refusal.
 
+**And once across sprints (P5-L11).** :func:`configurations_run` recovers, from the agent trial
+ledger's kept lines, the configuration each cohort ran, and the hub refuses a proposal whose key is
+among them as :data:`ALREADY_RUN`, before the within-sprint rule and likewise never on a canary. A
+cohort whose lines do not read as one configuration contributes nothing, so it refuses nothing.
+
 **What is deliberately *not* excluded: a column that is constant in some window.** Constancy is a
 property of a window, not of a column, so a static list would be wrong the day the window moves.
 ``has_distribution`` is the live instance today: measured on 2026-11-10 over the real SPY table
@@ -87,7 +92,8 @@ from __future__ import annotations
 import datetime as dt
 import enum
 import hashlib
-from collections.abc import Mapping
+import json
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -353,10 +359,15 @@ def gate(
 # ``RefusalCode`` is reachable from a single payload (R227).
 REPEATED_PROPOSAL = "repeated_proposal"
 
+# The hub's cross-sprint refusal (P5-L11): a configuration the agent trial ledger already shows
+# run. Not a ``RefusalCode`` for the same reason: it is a fact about the ledger, not one payload.
+ALREADY_RUN = "already_run"
 
-def configuration_key(
-    proposal: Proposal,
-) -> tuple[str, tuple[str, ...], str, int, tuple[str, ...]]:
+# ``(family, sorted extra regressors, symbol, horizon, reference in order)``.
+ConfigurationKey = tuple[str, tuple[str, ...], str, int, tuple[str, ...]]
+
+
+def configuration_key(proposal: Proposal) -> ConfigurationKey:
     """What ``proposal`` runs, without its id: two proposals with one key are one experiment.
 
     The regressors are sorted, since their order changes no fit. The reference keeps its order,
@@ -370,6 +381,89 @@ def configuration_key(
         proposal.horizon,
         proposal.reference,
     )
+
+
+def configuration_text(key: ConfigurationKey) -> str:
+    """``key`` as canonical JSON: a payload's five keys, sorted, with the regressors sorted.
+
+    The form the Configurator is shown and the hub looks configurations up by, so the two cannot
+    disagree about what counts as the same configuration.
+    """
+    family, regressors, symbol, horizon, reference = key
+    return json.dumps(
+        {
+            "family": family,
+            "extra_regressors": sorted(regressors),
+            "symbol": symbol,
+            "horizon": horizon,
+            "reference": list(reference),
+        },
+        sort_keys=True,
+    )
+
+
+def _configuration_of(lines: Sequence[Mapping[str, Any]]) -> ConfigurationKey | None:
+    """The configuration one cohort's ledger lines show run, or ``None`` if they do not show one.
+
+    The child writes, per loss, one line per contestant in the cohort's order: the reference as
+    proposed, then the candidate (``volab.candidate.evaluate_proposal``). So the candidate is the
+    one ``harx+``-prefixed model, split on ``+`` (the name ``HarX`` gives itself); the reference is
+    every other model in order of first appearance; symbol and horizon are each the one value every
+    line carries. Anything else -- a second candidate, a model that is neither, a missing or second
+    symbol or horizon -- is ``None`` for the whole cohort.
+    """
+    candidates: list[str] = []
+    reference: list[str] = []
+    symbols: set[object] = set()
+    horizons: set[object] = set()
+    for line in lines:
+        model = line.get("model")
+        if not isinstance(model, str):
+            return None
+        if model.startswith(_FAMILY + "+"):
+            if model not in candidates:
+                candidates.append(model)
+        elif model in REFERENCE_CONTESTANTS:
+            if model not in reference:
+                reference.append(model)
+        else:
+            return None
+        symbols.add(line.get("symbol"))
+        horizons.add(line.get("horizon"))
+    if len(candidates) != 1 or not reference or len(symbols) != 1 or len(horizons) != 1:
+        return None
+    regressors = candidates[0].split("+")[1:]
+    (symbol,), (horizon,) = symbols, horizons
+    if not all(regressors) or not isinstance(symbol, str):
+        return None
+    if not isinstance(horizon, int) or isinstance(horizon, bool):
+        return None
+    return (_FAMILY, tuple(sorted(regressors)), symbol, horizon, tuple(reference))
+
+
+def configurations_run(lines: Iterable[Mapping[str, Any]]) -> dict[ConfigurationKey, str]:
+    """Each configuration the agent-ledger ``lines`` show run, and the first cohort that ran it.
+
+    ``lines`` are the kept lines of :func:`volab.agent.ledger.read_agent_trials`, so a line past
+    ``dev_end`` is never among them. They are grouped by ``cohort`` (a line with no string cohort
+    is ignored) and each cohort is read whole by the rules of :func:`_configuration_of`.
+
+    **Fail safe: a cohort that does not parse contributes nothing**, so it refuses no proposal. The
+    whole cohort is dropped rather than its bad line, because dropping a reference line would
+    shorten the recovered reference and could match a configuration that was never run. Store-free
+    (R192): it reads mappings it is handed and never opens the ledger.
+    """
+    cohorts: dict[str, list[Mapping[str, Any]]] = {}
+    for line in lines:
+        cohort = line.get("cohort")
+        if isinstance(cohort, str):
+            cohorts.setdefault(cohort, []).append(line)
+    ran: dict[ConfigurationKey, str] = {}
+    for cohort, grouped in cohorts.items():
+        key = _configuration_of(grouped)
+        if key is not None:
+            ran.setdefault(key, cohort)
+    return ran
 
 
 def agent_cohort_name(sprint_id: str, index: int) -> str:

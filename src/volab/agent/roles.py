@@ -9,27 +9,29 @@ the "no role calls another" claim from this file's AST rather than asserting it 
 
 **A role gets the tools it is listed with and nothing more.** The Supervisor receives
 :func:`list_models`' answer; the Researcher receives memory and a trial count; the Configurator
-receives the universe and returns raw payloads, because the typed ``propose_config`` of the
-framework's table is, in this design, the gate that the hub applies to what it returns; the Runner
-receives ``submit``; the Critic receives dev metrics; the Reporter receives harness-rendered
-figures. None receives a storage root, a panel, a shell or a date-typed value.
+receives the universe and the configurations already run, and returns raw payloads, because the
+typed ``propose_config`` of the framework's table is, in this design, the gate that the hub applies
+to what it returns; the Runner receives ``submit``; the Critic receives dev metrics; the Reporter
+receives harness-rendered figures. None receives a storage root, a panel, a shell or a
+date-typed value.
 
 **What each prompt carries, which is the inventory R208 rests on (R214).** The Researcher sees the
 sprint id, the kept-line count of the agent ledger, the vocabulary, the offered horizons
-(``AGENT_HORIZONS``, those whose 10% MCS the development window can hold) and, for earlier
-sprints, their ids, hypotheses and gate verdicts. The Configurator sees the hypothesis, its slot
-number, the vocabulary, the universe, the offered horizons, the reference names and the parsed
-payloads the earlier slots of this sprint emitted (R227). The Critic sees the
-hypothesis, the ledger count and, per proposal, its id, the child's verdict name and the child's
-``reason``. The Reporter sees the hypothesis and the harness-rendered figures. Date-shaped text
-therefore reaches a prompt by three routes: the run date inside a sprint or proposal id, which
-selects no window; origin dates inside the Critic's ``reason``, which is coverage or audit text
-from the child (``the first origin that qualifies is <date>``, ``max as_of=``) and is bounded by
-``dev_end`` because the child reads with ``end = dev_end``; and whatever the Reporter's figures
-render, which is dev-only. ``exit_code``, ``pid``, ``trials_written``, ``comparisons``,
-``output_tail`` and the child's stamps are in the Runner's output and in no prompt. That last
-sentence is not left to this prose: ``tests/test_agent_sprint.py`` runs a sprint with sentinel
-values in each such field and asserts none reaches a recorded prompt.
+(``AGENT_HORIZONS``, those whose 10% MCS the development window can hold) and, for earlier sprints,
+their ids, hypotheses and gate verdicts. The Configurator sees the hypothesis, its slot number, the
+vocabulary, the universe, the offered horizons, the reference names and the parsed payloads the
+earlier slots of this sprint emitted (R227), and the configurations the agent ledger's kept lines
+show already run, as canonical JSON with no cohort name (P5-L11). The Critic sees the hypothesis,
+the ledger count and, per proposal, its id, the child's verdict name and the child's ``reason``. The
+Reporter sees the hypothesis and the harness-rendered figures. Date-shaped text therefore reaches a
+prompt by three routes: the run date inside a sprint or proposal id, which selects no window; origin
+dates inside the Critic's ``reason``, which is coverage or audit text from the child (``the first
+origin that qualifies is <date>``, ``max as_of=``) and is bounded by ``dev_end`` because the child
+reads with ``end = dev_end``; and whatever the Reporter's figures render, which is dev-only.
+``exit_code``, ``pid``, ``trials_written``, ``comparisons``, ``output_tail`` and the child's stamps
+are in the Runner's output and in no prompt. That last sentence is not left to this prose:
+``tests/test_agent_sprint.py`` runs a sprint with sentinel values in each such field and asserts
+none reaches a recorded prompt.
 This module imports nothing that reaches ``volab.store`` (R192).
 
 **The Critic gates nothing, and that is a ruling and not an omission.** The framework asks it for
@@ -37,7 +39,8 @@ This module imports nothing that reaches ``volab.store`` (R192).
 configuration -- *precisely this project's founding negative result*, where an LLM reviewer
 approved a feature built from future intraday bars. So :func:`critic` returns a verdict that the
 hub writes to the sprint log and that **permits or blocks no run**. Only
-``volab.agent.vocabulary.gate`` gates, with the hub's sprint-level repeat rule after it (R227).
+``volab.agent.vocabulary.gate`` gates, with the hub's already-run (P5-L11) and sprint-level
+repeat (R227) rules after it.
 Nothing in this module returns something the hub consults to decide whether to run.
 
 **The Supervisor is not an LLM and does not learn.** The framework allows "cheap, or no LLM". It is
@@ -190,6 +193,7 @@ def configurator(
     completer: Completer,
     slots: int,
     universe: Sequence[str],
+    already_run: Sequence[str],
 ) -> dict[str, Any]:
     """One raw payload per slot, parsed but not validated. Validation is the gate's, not ours.
 
@@ -200,7 +204,13 @@ def configurator(
     canary substitution still cannot be distinguished from a real emission by anything upstream
     of the gate. The canary slot's own emission is listed to later slots and then discarded; not
     listing it would need to know the canary's slot. ``emitted`` is returned in slot order.
+
+    ``already_run`` is what the hub read from the agent ledger's kept lines: the configurations an
+    earlier sprint already ran, as canonical JSON (P5-L11). It is one line, the same in every slot,
+    so it does not depend on the canary either; the hub refuses such a configuration anyway, and
+    the line exists so the model does not spend a slot on one.
     """
+    ran = "; ".join(already_run) if already_run else "none"
     emitted: list[object] = []
     for slot in range(slots):
         earlier = [json.dumps(e, sort_keys=True) for e in emitted if isinstance(e, dict)]
@@ -215,6 +225,7 @@ def configurator(
                     f"Proposal {slot} of {slots}.\n"
                     "Already proposed in this sprint, so propose something different: "
                     f"{'; '.join(earlier) if earlier else 'none'}\n"
+                    f"Already run in earlier sprints, so do not propose again: {ran}\n"
                     f"family: one of {', '.join(MODEL_FAMILIES)}.\n"
                     f"extra_regressors: a JSON array of 1 to {MAX_EXTRA_REGRESSORS} distinct "
                     f"names from {', '.join(VOCABULARY)}.\n"

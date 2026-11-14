@@ -72,7 +72,15 @@ ledger is read through :func:`volab.agent.ledger.read_agent_trials`, which drops
 ``dev_end`` and counts them; that count is an operator-only quantity. If it is non-zero the sprint
 fails (``outcome="failed"``) with an ``integrity`` report on the sprint log and asks no model,
 because the child never evaluates past ``dev_end`` and such a line means something else wrote
-there. Only the count of kept lines is ever put in a prompt.
+there. Only what the kept lines show is ever put in a prompt: their count, and the configurations
+they show already run (P5-L11).
+
+**A configuration runs once across sprints (P5-L11).** ``research`` recovers, from the same kept
+lines, every configuration an earlier cohort ran (:func:`volab.agent.vocabulary.configurations_run`)
+and checkpoints it. The Configurator is shown that list, the same line in every slot; the gate step
+refuses a non-canary proposal whose configuration is on it as ``already_run``, naming the cohort,
+and it never runs. The order after the gate is: the canary check, then already-run, then the
+within-sprint repeat (R227), so neither rule can hide an accepted canary.
 
 **What is not covered.** Events written by a step that then dies before checkpointing are written
 again on resume (only ``proposal`` events are de-duplicated); the sprint reads the agent trial
@@ -116,12 +124,15 @@ from volab.agent.sprintlog import (
     sprint_ids,
 )
 from volab.agent.vocabulary import (
+    ALREADY_RUN,
     CANARY_PAYLOADS,
     REFERENCE_CONTESTANTS,
     REPEATED_PROPOSAL,
     Proposal,
     agent_cohort_name,
     configuration_key,
+    configuration_text,
+    configurations_run,
     gate,
 )
 from volab.config import Settings
@@ -402,13 +413,20 @@ class _Sprint:
         # counts*: only the kept lines are counted below, and the excluded count (zero here, by
         # the check above) is operator-only by construction.
         ledger = {"agent_trials": len(view.lines)}
+        # What the kept lines show already run (P5-L11), as canonical text -> the first cohort that
+        # ran it. Read here, from the same view, so the Configurator's list and the gate's refusal
+        # rest on one read, and a resumed sprint replays both from the checkpoint.
+        already_run = {
+            configuration_text(key): cohort
+            for key, cohort in configurations_run(view.lines).items()
+        }
         update = researcher(
             state,
             completer=self.completer,
             memory=self._memory(),
             agent_trials=ledger["agent_trials"],
         )
-        return {**update, "ledger": ledger}
+        return {**update, "ledger": ledger, "already_run": already_run}
 
     def configure(self, state: dict[str, Any]) -> dict[str, Any]:
         emitted = configurator(
@@ -416,6 +434,8 @@ class _Sprint:
             completer=self.completer,
             slots=PROPOSALS_PER_SPRINT,
             universe=self.settings.universe,
+            # The configurations only, sorted: the cohort names carry run dates (R214).
+            already_run=sorted(state.get("already_run", {})),
         )["emitted"]
         slot, which = canary_placement(self.sprint_id, PROPOSALS_PER_SPRINT)
         raw = list(emitted)
@@ -439,6 +459,7 @@ class _Sprint:
         )
         verdicts: list[dict[str, Any]] = []
         accepted_ids: dict[tuple[Any, ...], str] = {}
+        already_run: Mapping[str, str] = state.get("already_run", {})
         for index, raw in enumerate(state["raw"]):
             is_canary = index == canary["index"]
             verdict = gate(
@@ -452,11 +473,24 @@ class _Sprint:
             accepted, reason = verdict.accepted, verdict.reason
             code = None if verdict.code is None else verdict.code.value
             proposal = verdict.proposal
-            # The sprint-level repeat rule (R227). Never applied to a canary: an accepted canary
-            # must reach the void below, and a repeat refusal here would hide it.
+            # The hub's two refusals after the gate: already run in the agent ledger (P5-L11), then
+            # repeated within this sprint (R227). Neither is ever applied to a canary: an accepted
+            # canary must reach the void below, and a refusal here would hide it. Already-run comes
+            # first so a proposal it refuses is never registered as accepted, and a later slot
+            # with the same configuration is then also already-run, not "repeated" of a proposal
+            # that never ran.
             if accepted and not verdict.canary and proposal is not None:
-                earlier = accepted_ids.setdefault(configuration_key(proposal), proposal_id)
-                if earlier != proposal_id:
+                key = configuration_key(proposal)
+                cohort = already_run.get(configuration_text(key))
+                earlier = proposal_id if cohort else accepted_ids.setdefault(key, proposal_id)
+                if cohort:
+                    accepted, proposal, code = False, None, ALREADY_RUN
+                    reason = (
+                        f"{ALREADY_RUN}: the same configuration as cohort {cohort}, which the "
+                        "agent trial ledger shows already run, so running it again would add "
+                        "trials and no evidence"
+                    )
+                elif earlier != proposal_id:
                     accepted, proposal, code = False, None, REPEATED_PROPOSAL
                     reason = (
                         f"{REPEATED_PROPOSAL}: the same configuration as {earlier}, accepted "

@@ -1533,3 +1533,37 @@ QQQ and IWM. `HORIZONS` stays pinned to `volab.features.targets`, so the harness
 
 **Side effect.** The candidate child re-validates every proposal file, so a recorded h66 proposal
 would now be refused there too. Nothing replays recorded proposals; this is consistent, not lost.
+
+## R231 — a configuration runs once across sprints
+
+R227 stopped a configuration repeating within a sprint, but a later sprint could still re-run one an
+earlier sprint evaluated (sprint 2's `harx + signed_jump_proxy_d22 + iv_h22` on SPY at h22,
+reference `[har_levels]`), adding counted trials and no evidence.
+
+**Source of truth: the agent trial ledger's kept lines** (`read_agent_trials`, R208), tracked in git
+and durable, not the gitignored sprint log or checkpoints. `vocabulary.configurations_run` recovers
+each cohort's configuration from its lines: the candidate is the single `harx+`-prefixed model, split
+on `+` (tied to `HarX.name` by a two-sided test); the reference is the other models in
+first-appearance order, which is the cohort's contestant order because the child writes losses,
+then contestants; symbol and horizon must each be single-valued. **A cohort that does not read as
+exactly one configuration contributes nothing**, so a malformed ledger can only miss a refusal,
+never cause one; the whole cohort is dropped, not the bad line, since dropping a reference line
+could shorten the reference and match a configuration that never ran. On today's ledger: 9 cohorts,
+5 configurations.
+
+**The rule.** `research` computes the set once, from the same view as the trial count, and
+checkpoints it, so prompt and gate rest on one read and a resume replays both. In the gate step the
+order is: canary check, then `already_run`, then R227's `repeated_proposal`. `already_run` is a
+string code beside `REPEATED_PROPOSAL`, not a `RefusalCode`; its reason names the earlier cohort and
+the proposal never runs. It comes before the repeat rule so a refused proposal is never registered
+as accepted, and a later slot with the same configuration is also `already_run`. Mutation checks:
+disabling it fails three tests; applying it to canaries fails the canary test.
+
+**The prompt.** The Configurator gets one more line, identical in every slot: the configurations
+already run, as sorted canonical JSON, **without cohort names**, which carry run dates, so no new
+date-shaped route reaches a prompt and the prompt still cannot depend on the canary's placement.
+The R214 inventory and the R208 sentence in the package docstring are updated.
+
+**Not covered.** A cohort counts as run whenever it has ledger lines, including one whose every
+origin was refused (sprint 1's singular fits); a coverage-refused proposal writes no lines and stays
+re-proposable. The already-run line has no cap and grows with every configuration; it may need one.
