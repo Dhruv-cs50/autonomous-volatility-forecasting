@@ -17,7 +17,8 @@ figures. None receives a storage root, a panel, a shell or a date-typed value.
 **What each prompt carries, which is the inventory R208 rests on (R214).** The Researcher sees the
 sprint id, the kept-line count of the agent ledger, the vocabulary, the horizons and, for earlier
 sprints, their ids, hypotheses and gate verdicts. The Configurator sees the hypothesis, its slot
-number, the vocabulary, the universe, the horizons and the reference names. The Critic sees the
+number, the vocabulary, the universe, the horizons, the reference names and the parsed payloads
+the earlier slots of this sprint emitted (R227). The Critic sees the
 hypothesis, the ledger count and, per proposal, its id, the child's verdict name and the child's
 ``reason``. The Reporter sees the hypothesis and the harness-rendered figures. Date-shaped text
 therefore reaches a prompt by three routes: the run date inside a sprint or proposal id, which
@@ -35,8 +36,8 @@ This module imports nothing that reaches ``volab.store`` (R192).
 configuration -- *precisely this project's founding negative result*, where an LLM reviewer
 approved a feature built from future intraday bars. So :func:`critic` returns a verdict that the
 hub writes to the sprint log and that **permits or blocks no run**. Only
-``volab.agent.vocabulary.gate`` gates. Nothing in this module returns something the hub consults
-to decide whether to run.
+``volab.agent.vocabulary.gate`` gates, with the hub's sprint-level repeat rule after it (R227).
+Nothing in this module returns something the hub consults to decide whether to run.
 
 **The Supervisor is not an LLM and does not learn.** The framework allows "cheap, or no LLM". It is
 handed the model families, of which there is one, so "change model family" is not an available
@@ -185,12 +186,17 @@ def configurator(
 ) -> dict[str, Any]:
     """One raw payload per slot, parsed but not validated. Validation is the gate's, not ours.
 
-    Every slot gets a prompt of the same shape, differing only in its number, so that the hub's
-    canary substitution cannot be distinguished from a real emission by anything upstream of the
-    gate. ``emitted`` is returned in slot order.
+    Every slot gets a prompt of the same shape. It differs by the slot's number and by the list
+    of what earlier slots emitted, so the model can see what this sprint already proposed (R227):
+    with identical prompts the second real-store sprint emitted one configuration in every slot.
+    Neither depends on where the canary goes, which is chosen after this returns, so the hub's
+    canary substitution still cannot be distinguished from a real emission by anything upstream
+    of the gate. The canary slot's own emission is listed to later slots and then discarded; not
+    listing it would need to know the canary's slot. ``emitted`` is returned in slot order.
     """
     emitted: list[object] = []
     for slot in range(slots):
+        earlier = [json.dumps(e, sort_keys=True) for e in emitted if isinstance(e, dict)]
         completion = completer(
             Prompt(
                 system=(
@@ -200,6 +206,8 @@ def configurator(
                 user=(
                     f"Hypothesis: {state['hypothesis']}\n"
                     f"Proposal {slot} of {slots}.\n"
+                    "Already proposed in this sprint, so propose something different: "
+                    f"{'; '.join(earlier) if earlier else 'none'}\n"
                     f"family: one of {', '.join(MODEL_FAMILIES)}.\n"
                     f"extra_regressors: a JSON array of 1 to {MAX_EXTRA_REGRESSORS} distinct "
                     f"names from {', '.join(VOCABULARY)}.\n"

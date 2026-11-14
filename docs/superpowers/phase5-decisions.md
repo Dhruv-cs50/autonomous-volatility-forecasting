@@ -1404,3 +1404,48 @@ reached a ledger, the sprint log or a checkpoint, and the real ledgers were hash
 **Found, not fixed:** the Reporter's `invented_numbers` flagged `1`, `22` and `66`, the window
 digits inside names like `semivar_neg_proxy_d1` and `rv_proxy_d66`. Those are not invented
 figures, so `validated: false` on sprint 1's report is a false alarm. A board follow-up.
+
+## R227 — a configuration runs once per sprint, and each slot sees what earlier slots proposed
+
+**What happened.** Sprint `2026-11-13T122201Z` (P5-L8) emitted `harx + signed_jump_proxy_d22 +
+iv_h22` on SPY at h22 in all three real slots. Each was accepted and evaluated, so one idea wrote
+three cohorts, 12 agent trials, with identical results. The cause was by design: every slot got the
+same prompt body, which R189 kept identical as the canary's cover, and the model answered the same
+prompt the same way.
+
+**Two changes, because either alone falls short.**
+* *The prompt.* Slot k's prompt now carries one more line: the parsed payloads slots 0 to k-1
+  emitted, as canonical JSON (`sort_keys`), or `none` for slot 0, so every prompt keeps one shape.
+  A reply that is not a mapping is not listed. This gives the model the information to vary; it
+  cannot guarantee it does.
+* *The hub rule.* A proposal whose `configuration_key` equals one already accepted in the same
+  sprint is refused as `repeated_proposal`, naming the earlier proposal id. It never runs and writes
+  no trial. The key is the family, the sorted regressors (their order changes no fit), the symbol,
+  the horizon and the reference *in order*: a key that separates too finely lets a repeat through,
+  one that merges too much refuses a different configuration, and the first is the cheaper error.
+
+**What the "same body" rule was for, and why it still holds.** Its purpose was that nothing upstream
+of the gate can tell which slot the canary replaces. The new line is built from the model's own
+emissions, and the canary's slot is chosen after the Configurator returns, so it depends on neither.
+The two assertions that every slot's body was identical are replaced by the property itself: two
+sprints whose canaries sit in different slots, run on one script, send byte-identical Configurator
+prompts. The known cost: the canary slot's own emission is listed to later slots and then
+discarded. Not listing it would need the canary's slot, which is what must stay hidden.
+
+**The repeat rule never touches a canary, and runs after the canary check.** Otherwise a broken gate
+that accepted a canary whose configuration repeated an earlier accepted slot would see it refused
+as a repeat, and the sprint would look healthy instead of void. A test pins this with a gate that
+accepts everything and a canary placed after an accepted slot. Mutation checks: applying the rule
+to canaries fails that test and the existing accept-everything test; removing the rule fails the
+repeat test.
+
+**`repeated_proposal` is not a `RefusalCode`.** `validate` sees one payload and a repeat needs two,
+and every `RefusalCode` is reachable from a single payload (`_PAYLOAD_PER_CODE` pins that). It is a
+string constant beside the enum, stored in the same `code` field, and nothing in `src` converts a
+stored code back to the enum. `gate`'s docstring no longer says it is the only refusal before a run.
+
+**Not covered.**
+* *Repeats across sprints.* A later sprint proposing L8's configuration again is not refused. The
+  Researcher sees earlier hypotheses, not configurations. A follow-up if it happens.
+* *Whether the model actually varies.* Unverified until a live sprint runs, and a live sprint adds
+  counted trials, so that is the user's decision.
