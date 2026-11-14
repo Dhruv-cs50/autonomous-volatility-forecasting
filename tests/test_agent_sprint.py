@@ -1022,6 +1022,86 @@ def test_the_digit_check_rejects_an_invented_figure_and_passes_a_faithful_report
     assert invented_numbers("the loss was 0.5", "loss 5") == ("0.5",)
 
 
+def test_the_digit_check_exempts_digits_that_are_part_of_a_name() -> None:
+    """R229: a digit run preceded by a letter or underscore, or inside a sprint/proposal id, is
+    part of a name and is not a figure; a bare number beside such a name is still checked."""
+    figures = "agent ledger: 12 trials evaluated"
+    # a feature name, a horizon-tagged name, a FRED series id, a mid-run digit of d22
+    assert invented_numbers("`semivar_neg_proxy_d1`, `rv_proxy_d66`, iv_h22, baa10y", figures) == ()
+    assert invented_numbers("the d5 and d22 measures", figures) == ()
+    # sprint ids: full, with a proposal suffix, and the short form
+    assert invented_numbers("sprint 2026-11-13T054207Z", figures) == ()
+    assert invented_numbers("run 2026-11-14T004243Z-02 was evaluated", figures) == ()
+    assert invented_numbers("the 054207Z idea and (122201Z)", figures) == ()
+    # an invented figure in the same sentence as names is still caught
+    assert invented_numbers(
+        "`rv_proxy_d66` from 054207Z gained 47 basis points over 12 trials", figures
+    ) == ("47",)
+    # a number with a unit after it is a figure, not a name
+    assert invented_numbers("a 22% gain, or 5bp", figures) == ("22", "5")
+    # six digits not shaped like an id, a negative decimal, a number opening a line
+    assert invented_numbers("054207 trials", figures) == ("054207",)
+    assert invented_numbers("the loss moved by -0.5", figures) == ("0.5",)
+    assert invented_numbers("12 trials.\n47 basis points.", figures) == ("47",)
+
+
+def test_the_digit_check_on_the_first_real_sprint_reports() -> None:
+    """Snippets of the three real reports that failed on identifier digits (R229)."""
+    # 2026-11-13T054207Z flagged ["1", "22", "66"]: all three were digits inside names.
+    figures = (
+        "sprint id (run_sprint): 2026-11-13T054207Z\n"
+        "run 2026-11-13T054207Z-01 (volab.candidate): evaluated; "
+        "cohort agent-2026-11-13-b33bf6e5-01; qlike MCS at 10%: not reported"
+    )
+    draft = (
+        "**Sprint log: 2026-11-13T054207Z** ... `semivar_neg_proxy_d5`, `signed_jump_proxy_d5` "
+        "... daily RV defined as `semivar_neg_proxy_d1 + semivar_pos_proxy_d1` ... Weekly and "
+        "monthly terms come from the d5 and d22 measures. `rv_proxy_d66` is a candidate control."
+    )
+    assert invented_numbers(draft, figures) == ()
+
+    # 2026-11-13T122201Z flagged ["22", "1", "5", "66", "054207", "02", "2"]. The names are
+    # exempt; the horizons in prose, run -02 (absent from the figures) and the list marker
+    # "2." are numbers the figures do not contain, so they stay flagged.
+    figures = (
+        "sprint id (run_sprint): 2026-11-13T122201Z\n"
+        "proposal slots (run_sprint): 4, one of them the canary\n"
+        "agent ledger (volab.agent.ledger, data/agent_trials.jsonl): 12 trials evaluated\n"
+        "run 2026-11-13T122201Z-00 (volab.candidate): evaluated; "
+        "cohort agent-2026-11-13-1731f8f3-00; qlike MCS at 10%: member\n"
+        "run 2026-11-13T122201Z-01 (volab.candidate): evaluated\n"
+        "run 2026-11-13T122201Z-03 (volab.candidate): evaluated"
+    )
+    draft = (
+        "adding (`signed_jump_proxy_d22`) and (`iv_h22`) should improve 22-session-ahead "
+        "forecasts ... (`semivar_neg_proxy_d1`), the weekly component (d5), the monthly "
+        "component (d22), with `rv_proxy_d66` as a control ... without degrading the 1- and "
+        "5-session forecasts. The hypothesis moves the 054207Z idea to the monthly scale. "
+        "Run -00 (cohort agent-2026-11-13-1731f8f3-00) ... Run -02 does not appear.\n"
+        "1. Fix the index symbol\n2. Check the ledger\n3. Reconcile\n4. Obtain the tables"
+    )
+    assert invented_numbers(draft, figures) == ("22", "1", "5", "02", "2")
+
+    # 2026-11-14T004243Z flagged ["66", "1", "22", "054207", "122201", "2"]. The names and the
+    # short sprint ids are exempt; h=66, h=1, 22 and the "(2)" marker stay flagged. ("5" was
+    # never flagged here: the cohort hash ebf5f969 puts a 5 among the figures.)
+    figures = (
+        "sprint id (run_sprint): 2026-11-14T004243Z\n"
+        "agent ledger (volab.agent.ledger, data/agent_trials.jsonl): 24 trials evaluated\n"
+        "run 2026-11-14T004243Z-01 (volab.candidate): evaluated; "
+        "cohort agent-2026-11-14-ebf5f969-01; qlike MCS at 10%: not reported"
+    )
+    draft = (
+        "**Sprint 2026-11-14T004243Z** improves 66-session-ahead forecasts. The baseline uses "
+        "(`semivar_neg_proxy_d1 + semivar_pos_proxy_d1`), weekly (d5), monthly (d22), and "
+        "(`rv_proxy_d66`) components ... QLIKE at h=66 ... at h=1, 5, or 22. None of the 24 "
+        "trials ... the d5 semivariance split (054207Z) and the d22 jump plus `iv_h22` idea "
+        "(122201Z) ... - 2026-11-14T004243Z-01, cohort agent-2026-11-14-ebf5f969-01\n"
+        "(1) check the 24 ledger trials; (2) reconcile the gate counts"
+    )
+    assert invented_numbers(draft, figures) == ("66", "1", "22", "2")
+
+
 def test_the_digit_check_does_not_cover_spelled_numbers_or_emphasis() -> None:
     figures = "agent ledger: 12 trials evaluated"
     assert invented_numbers("forty trials, and a spectacular result", figures) == ()

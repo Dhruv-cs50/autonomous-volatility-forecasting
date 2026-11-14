@@ -1476,3 +1476,30 @@ cover it. P5-L14 plants a signal in the rehearsal store so a real evaluation rea
 
 **Not covered.** The rule reads the 10% MCS only: not DM, not SPA, not the other references such as
 `har_levels_mz`, and nothing past `dev_end`.
+
+## R229 — digits inside a name are not figures
+
+All three real sprints failed report validation, and most of what the digit check flagged came from
+names the Reporter quoted correctly: `1`, `22` and `66` from feature names (`semivar_neg_proxy_d1`,
+`iv_h22`, `rv_proxy_d66`, bare `d22`), and `054207`, `122201` from earlier sprint ids written short
+(`054207Z`).
+
+**Rule.** In the report, `invented_numbers` skips a digit run when the character before it is a
+letter or an underscore, or when it lies inside a sprint id (`%Y-%m-%dT%H%M%SZ`, with an optional
+`-NN` proposal suffix, or the short `HHMMSSZ`). Only the report side is filtered: every digit run in
+the figures may still be quoted, so a report's `run -01` still matches the figures' `...Z-01`.
+Backtick spans are deliberately **not** exempt: that would let `` `0.89` `` through.
+
+**Still caught:** a number with a unit (`22%`, `5bp`), a decimal, a signed number, a number at a
+line start, and an invented number in the same sentence as a name (`rv_proxy_d66 gained 47 bp`
+flags `47`).
+
+**Result on the real reports.** `2026-11-13T054207Z` now validates. `122201Z` and `004243Z` still
+fail, on horizons written in prose (`22-session`, `h=66`, `1- and 5-session`), list markers (`2.`,
+`(2)`) and `run -02`, a run the figures do not contain (it was the canary). None is a name, so this
+ruling does not exempt them; P5-L15 puts each proposal's horizon into the figures.
+
+**Costs and gaps.** A digit run directly after a letter is now unchecked, so an invented `R2`, `Q3`
+or `x2` passes. Cohort ids from other sprints (`agent-YYYY-MM-DD-<hash>-NN`) are not exempt. A hex
+hash in the figures can still supply a digit that excuses a bare number in the prose (`b33bf6e5`
+excuses a `5`); that predates this ruling and is in the module docstring's stated limits.

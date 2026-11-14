@@ -47,11 +47,12 @@ between continuing and stopping. A bandit could replace it; this is not one.
 
 **The Reporter's output is checked for digits, and for nothing else.**
 :func:`invented_numbers` finds every numeric literal in the report that does not appear among the
-harness-rendered figures the Reporter was given. That is the one validation of a report that is
-possible. It does **not** validate tone or emphasis, spelled-out numbers ("forty trials"), the
-*position* of a literal (a ``5`` anywhere in the figures excuses a ``5`` anywhere in the report),
-or whether a true number is attached to the right claim. A report with every number right and the
-emphasis wrong passes every check in this package.
+harness-rendered figures the Reporter was given; digits inside a name (``rv_proxy_d66``, a sprint
+id) are not literals (R229). That is the one validation of a report that is possible. It does
+**not** validate tone or emphasis, spelled-out numbers ("forty trials"), the *position* of a literal
+(a ``5`` anywhere in the figures excuses a ``5`` anywhere in the report), or whether a true number
+is attached to the right claim. A report with every number right and the emphasis wrong passes
+every check in this package.
 
 What this module does not do: it makes no LLM call except through the ``Completer`` it is handed,
 reads no environment and no file, and decides nothing about promotion.
@@ -92,6 +93,11 @@ MODEL_FAMILIES: tuple[str, ...] = ("harx",)
 # A numeric literal: digits, optionally joined to more digits by "." or ",". Applied identically
 # to the report and to the figures, so ``1,000`` is one token on both sides.
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+
+# A sprint id as ``python -m volab.agent`` writes it (``%Y-%m-%dT%H%M%SZ``), with an optional
+# proposal suffix ``-NN``, or its short ``HHMMSSZ`` form. Its digits are a name, not a figure
+# (R229). Matched in the report only.
+_SPRINT_ID = re.compile(r"(?<!\w)(?:\d{4}-\d{2}-\d{2}T)?\d{6}Z(?:-\d{2})?(?!\w)")
 
 
 def list_models() -> tuple[str, ...]:
@@ -317,10 +323,25 @@ def invented_numbers(report: str, figures: str) -> tuple[str, ...]:
 
     Digits only; see the module docstring for what that leaves unchecked. An empty tuple means no
     literal was invented, which is **not** the same as the report being accurate.
+
+    Digits that are part of a name are not literals (R229). In the report, a digit run is skipped
+    when the character before it is a letter or an underscore (``semivar_neg_proxy_d1``, ``d22``,
+    ``iv_h22``, ``baa10y``), or when it lies inside a sprint id (``2026-11-13T054207Z``, with or
+    without a ``-02`` proposal suffix, or the short ``054207Z``). Everything else is still a
+    literal: a number followed by a unit (``22%``, ``5bp``), a horizon in prose (``22-session``,
+    ``h=66``), a list marker (``2.``, ``(2)``), a bare suffix (``run -02``), a sign or a line start
+    in front of it. The figures side is not filtered: every digit run there may be quoted, so a
+    report's ``run -01`` still matches the figures' ``...Z-01``.
     """
     allowed = set(_NUMBER.findall(figures))
+    ids = [m.span() for m in _SPRINT_ID.finditer(report)]
     seen: list[str] = []
-    for literal in _NUMBER.findall(report):
+    for match in _NUMBER.finditer(report):
+        start, literal = match.start(), match.group()
+        if start and (report[start - 1].isalpha() or report[start - 1] == "_"):
+            continue
+        if any(lo <= start < hi for lo, hi in ids):
+            continue
         if literal not in allowed and literal not in seen:
             seen.append(literal)
     return tuple(seen)
