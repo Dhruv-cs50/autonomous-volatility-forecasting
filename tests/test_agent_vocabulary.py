@@ -2,7 +2,7 @@
 
 What these tests are for. The agent must not be able to *express* a peek, so ``validate`` is a
 positive allowlist and refuses unknown keys rather than consulting a list of forbidden ones. This
-module pins that, and pins the three literals ``vocabulary.py`` must carry because it may not
+module pins that, and pins the four literals ``vocabulary.py`` must carry because it may not
 import anything that reaches ``volab.store``:
 
 * ``HORIZONS`` against ``volab.features.targets.HORIZONS``;
@@ -13,7 +13,12 @@ import anything that reaches ``volab.store``:
   which is a real witness everywhere, and on the real ``har_daily`` table up to ``dev_end``. **The
   real-store version fails rather than skips when the store is absent** (the convention of
   ``test_coverage_real.py``), so in CI it is a witness only if the store is built there; the
-  synthetic version is the one that always runs.
+  synthetic version is the one that always runs;
+* ``AGENT_HORIZONS`` (P5-L13) by derivation rather than equality: the horizons whose ``n_eff``
+  clears the 10% MCS floor on the candidate child's own window and stride, with the compare
+  layer's own ``overlap_lag`` and ``effective_observations``. The derivation counts origins off the
+  calendar, so it runs everywhere; a real-store test checks that count against the child's
+  ``scoreable_origins`` and, like the fittability witness, fails rather than skips without a store.
 
 Each of the first two pairs follows the idiom of ``test_preregistration_fence.py``: a literal in
 the source and a derived truth in the test, so neither can be edited alone.
@@ -23,6 +28,7 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import json
 import re
 from typing import Any
 
@@ -30,11 +36,16 @@ import pandas as pd
 import pytest
 import real_panel
 
+import volab.agent as agent
+import volab.candidate as candidate
+import volab.walkforward as wf
 from volab.agent.vocabulary import (
     _EXACT_HAR_TRANSFORMS,
     _IDENTITY_GROUPS,
     _UNGROUPED,
     AGENT_COHORT_PATTERN,
+    AGENT_HORIZONS,
+    ALREADY_RUN,
     CANARY_PAYLOADS,
     HORIZONS,
     MAX_EXTRA_REGRESSORS,
@@ -46,10 +57,16 @@ from volab.agent.vocabulary import (
     RefusalCode,
     agent_cohort_name,
     configuration_key,
+    configuration_text,
+    configurations_run,
     gate,
+    offerable,
     validate,
 )
 from volab.compare.cohorts import COHORTS, SHOOTOUT
+from volab.compare.dm import overlap_lag
+from volab.compare.multiple import SIZES, effective_observations
+from volab.config import load_settings
 from volab.errors import ModelSkip, ProposalRefused, SchemaError, VolabError
 from volab.features.build import FEATURE_COLUMNS, HAR_COLUMNS, WINDOWS
 from volab.features.har import har_components
@@ -64,6 +81,7 @@ from volab.features.targets import target_column
 from volab.models.base import TrainingView
 from volab.models.harx import harx
 from volab.paths import Tier, validate_segment
+from volab.sessions import get_calendar, sessions_between
 from volab.store import load_panel
 from volab.walkforward import BASELINE_COHORT, fit_ols
 
@@ -97,6 +115,62 @@ def test_the_horizons_literal_equals_the_real_horizons() -> None:
     """``vocabulary`` cannot import ``volab.features.targets`` (it reaches ``volab.store``), so it
     carries a literal and this is the other side of it."""
     assert HORIZONS == REAL_HORIZONS
+
+
+def _dev_window_origins(horizon: int) -> int:
+    """How many of the candidate child's origins have a completed ``horizon`` target by ``dev_end``.
+
+    The child's window and stride are read from ``volab.candidate``, never restated, and its
+    origins come from ``origins_in`` as ``run_configuration``'s do. An origin is kept when the
+    ``horizon``-th session after it is on or before ``dev_end``, which is when its target's
+    ``as_of`` falls inside the window (``features/targets.py``) and so what ``scoreable_origins``
+    keeps on a complete store. Calendar-only, so it runs everywhere; that it equals the child's
+    count on the real store is the next test but one. It is a ceiling on the comparable origins:
+    a model skip can only remove one (the third live sprint had 236 of these 238 at h=66).
+    """
+    settings = load_settings()
+    calendar = get_calendar(settings)
+    end = settings.splits.dev_end
+    sessions = sessions_between(calendar, candidate.FIRST_ORIGIN, end)
+    position = {day: i for i, day in enumerate(sessions)}
+    origins = wf.origins_in(calendar, candidate.FIRST_ORIGIN, end, every=candidate.STRIDE)
+    return sum(position[origin] + horizon < len(sessions) for origin in origins)
+
+
+def test_the_offered_horizons_are_those_whose_ten_percent_mcs_the_dev_window_holds() -> None:
+    """P5-L13: ``AGENT_HORIZONS`` is a literal (the inputs reach the store), and which horizons it
+    should hold is a property of the window (R199), so it is derived here from the child's own
+    origins and stride and the compare layer's own ``overlap_lag`` and ``effective_observations``.
+    Moving ``dev_end``, ``FIRST_ORIGIN`` or ``STRIDE`` re-derives the set and fails this test until
+    the literal follows. The floor ``n_eff < 2 / alpha`` is restated, as ``sink.py`` does, because
+    the compare layer exports it as an expression in ``model_confidence_set`` and not a function.
+    """
+    size = float(agent._PROMOTION_MCS_SIZE)
+    assert size in SIZES, "promotion reads an MCS size the compare layer does not report"
+    n_eff = {
+        h: effective_observations(_dev_window_origins(h), overlap_lag(h, candidate.STRIDE))
+        for h in HORIZONS
+    }
+    holds = tuple(h for h in HORIZONS if n_eff[h] >= 2 / size)
+    assert holds == AGENT_HORIZONS, n_eff
+    assert set(AGENT_HORIZONS) <= set(HORIZONS)
+
+
+def test_the_calendar_origin_count_is_the_childs_own_count_on_the_real_targets() -> None:
+    """The derivation above counts origins off the calendar; the child counts them with
+    ``scoreable_origins`` over the targets it reads to ``dev_end``. On the real store the two agree
+    for every symbol and horizon (measured 2026-11-13: 251, 250, 247 and 238), so the derivation is
+    the child's count rather than a model of it. Fails rather than skips when the store is absent,
+    like the real-store fittability witness in this module."""
+    settings = real_panel.settings()
+    end = settings.splits.dev_end
+    for symbol in settings.universe:
+        for horizon in HORIZONS:
+            targets = wf.load_targets(settings, symbol, horizon, end=end)
+            scoreable = wf.scoreable_origins(
+                settings, targets, first=candidate.FIRST_ORIGIN, last=end, every=candidate.STRIDE
+            )
+            assert len(scoreable) == _dev_window_origins(horizon), (symbol, horizon)
 
 
 def test_the_reference_contestants_are_real_and_har_levels_leads_them() -> None:
@@ -509,6 +583,24 @@ def test_a_horizon_that_is_not_a_configured_integer_is_refused(horizon: object) 
     assert refused.code is RefusalCode.HORIZON_NOT_CONFIGURED and repr(horizon) in str(refused)
 
 
+def test_a_configured_horizon_whose_ten_percent_confidence_set_cannot_form_is_refused() -> None:
+    """P5-L13: the third live sprint spent three proposals at h=66, and every comparison refused the
+    10% MCS (``n_eff`` 16.9 against a floor of 20), so none could ever have been promoted. The
+    refusal says why, since 66 *is* a configured horizon."""
+    refused = refusal_of(good(horizon=66))
+    assert refused.code is RefusalCode.HORIZON_NOT_CONFIGURED
+    assert "66" in str(refused) and "n_eff" in str(refused)
+    # The message's figures are literals in vocabulary.py; this ties them to the promotion size.
+    size = float(agent._PROMOTION_MCS_SIZE)
+    assert f"2/alpha = {2 / size:.0f} at alpha = {size:g}" in str(refused)
+
+
+@pytest.mark.parametrize("horizon", [1, 5, 22])
+def test_the_offered_horizons_are_accepted(horizon: int) -> None:
+    proposal = validate(good(horizon=horizon), sprint_id=SPRINT, index=0, universe=UNIVERSE)
+    assert proposal.horizon == horizon
+
+
 def test_an_unknown_family_is_refused_and_named() -> None:
     refused = refusal_of(good(family="garch"))
     assert refused.code is RefusalCode.UNKNOWN_FAMILY and "garch" in str(refused)
@@ -676,6 +768,15 @@ def test_each_canary_is_one_defect_in_an_otherwise_valid_payload() -> None:
         validate(fixed, sprint_id=SPRINT, index=0, universe=UNIVERSE)
 
 
+def test_every_canary_not_about_the_horizon_names_an_offered_one() -> None:
+    """P5-L13: a canary planted for another defect at h=66 would now carry two, and a broken branch
+    of its own would go unnoticed behind the horizon refusal."""
+    for payload in CANARY_PAYLOADS:
+        verdict = gate(payload, sprint_id=SPRINT, index=0, universe=UNIVERSE, canary=True)
+        if verdict.code is not RefusalCode.HORIZON_NOT_CONFIGURED:
+            assert payload["horizon"] in AGENT_HORIZONS, payload
+
+
 def test_no_canary_also_breaks_an_identity_group() -> None:
     """R225: a canary that named too many of one group would be refused as collinear even if its
     own branch broke, and the six-code floor would not notice. Counted with repeats, so a
@@ -757,3 +858,219 @@ def test_the_repeat_code_is_not_a_refusal_code_because_no_single_payload_can_car
     """``validate`` sees one payload; a repeat needs two. So ``REPEATED_PROPOSAL`` is outside
     ``RefusalCode``, whose every member a single payload reaches (the per-code test above)."""
     assert REPEATED_PROPOSAL not in {code.value for code in RefusalCode}
+
+
+# -- a configuration runs once across sprints (P5-L11) ------------------------------------------
+
+
+def child_lines(
+    cohort: str,
+    extra: tuple[str, ...],
+    *,
+    symbol: str = "SPY",
+    horizon: int = 5,
+    reference: tuple[str, ...] = ("har_levels",),
+    last_origin: str = "2025-12-17",
+) -> list[dict[str, Any]]:
+    """A cohort's agent-ledger lines in the child's shape: per loss, the reference in its order,
+    then the candidate (``Evaluation.trials`` loops losses, then ``contestants``)."""
+    models = (*reference, "harx+" + "+".join(extra))
+    return [
+        {
+            "model": model,
+            "symbol": symbol,
+            "horizon": horizon,
+            "loss": loss,
+            "last_origin": last_origin,
+            "cohort": cohort,
+        }
+        for loss in ("qlike", "mse")
+        for model in models
+    ]
+
+
+COHORT_A = "agent-2026-11-13-1731f8f3-00"
+COHORT_B = "agent-2026-11-13-1731f8f3-01"
+
+
+def test_a_cohort_in_the_childs_shape_gives_back_the_configuration_it_ran() -> None:
+    reference = ("har_levels", "random_walk", "har_semilog")  # not alphabetical, on purpose
+    ran = configurations_run(
+        child_lines(COHORT_A, (_UNGROUPED[1], _UNGROUPED[0]), horizon=22, reference=reference)
+    )
+    proposal = _proposal(horizon=22, reference=reference)
+    assert ran == {configuration_key(proposal): COHORT_A}
+
+
+def test_the_recovered_reference_keeps_the_order_it_ran_in() -> None:
+    reference = ("har_levels", "random_walk", "har_semilog")
+    ran = configurations_run(child_lines(COHORT_A, (_UNGROUPED[0],), reference=reference))
+    reordered = _proposal(
+        extra_regressors=(_UNGROUPED[0],), reference=reference[:1] + reference[:0:-1]
+    )
+    assert configuration_key(reordered) not in ran
+    assert (
+        configuration_key(_proposal(extra_regressors=(_UNGROUPED[0],), reference=reference)) in ran
+    )
+
+
+def test_a_configuration_run_by_two_cohorts_is_attributed_to_the_first() -> None:
+    lines = [*child_lines(COHORT_A, (_UNGROUPED[0],)), *child_lines(COHORT_B, (_UNGROUPED[0],))]
+    assert list(configurations_run(lines).values()) == [COHORT_A]
+
+
+def test_the_candidate_name_the_parser_splits_is_the_one_the_model_gives_itself() -> None:
+    """Two-sided: the parser reads ``harx+<a>+<b>`` because ``HarX.name`` writes it."""
+    from volab.models.harx import harx
+
+    extra = (_UNGROUPED[0], _UNGROUPED[1])
+    ran = configurations_run(
+        [
+            {**line, "model": harx(extra).name} if line["model"].startswith("harx") else line
+            for line in child_lines(COHORT_A, extra)
+        ]
+    )
+    assert configuration_key(_proposal(extra_regressors=extra)) in ran
+
+
+def test_the_parser_reads_the_lines_the_real_child_writes(tmp_path: Any) -> None:
+    """M-1: every other test here feeds hand-built lines, so renaming ``model``, ``symbol`` or
+    ``horizon`` in ``Trial.record`` would leave them passing while the already-run rule refused
+    nothing. This one builds the cohort as ``volab.candidate.evaluate_proposal`` does, takes its
+    trials from a real ``Evaluation.trials``, writes them with the child's own
+    ``append_agent_trials`` and reads them back with the hub's ``read_agent_trials``. No store is
+    read: the forecasts are made up, and only the line shape is under test."""
+    from volab.agent.ledger import read_agent_trials
+    from volab.models.base import Cohort
+    from volab.models.harx import harx
+
+    proposal = _proposal(
+        7,
+        extra_regressors=(_UNGROUPED[1], _UNGROUPED[0]),
+        horizon=22,
+        reference=("har_levels", "random_walk", "har_semilog"),  # not alphabetical, on purpose
+    )
+    models = (*candidate.resolve_reference(proposal.reference), harx(proposal.extra_regressors))
+    cohort = Cohort(candidate.cohort_name_for(proposal), models)
+    origins = (dt.date(2025, 11, 3), dt.date(2025, 11, 10))
+    evaluation = wf.Evaluation(
+        symbol=proposal.symbol,
+        horizon=proposal.horizon,
+        results=tuple(
+            wf.OriginResult(origin, 1.0, {name: 1.1 for name in cohort.contestants}, 500)
+            for origin in origins
+        ),
+        features=pd.DataFrame(),
+        skipped=(),
+        requested=len(origins),
+        every=5,
+        contestants=cohort.contestants,
+        cohort=cohort.name,
+    )
+    trials = evaluation.trials()
+    assert trials and all(t.origins == len(origins) for t in trials)  # the scored branch
+    written = candidate.append_agent_trials(
+        trials, root=tmp_path, at=dt.datetime(2026, 11, 10, tzinfo=dt.UTC), sha="0", dirty=False
+    )
+    view = read_agent_trials(tmp_path, dev_end=dt.date(2025, 12, 31))
+    assert written == len(view.lines) and view.excluded == 0
+
+    assert configurations_run(view.lines) == {configuration_key(proposal): cohort.name}
+    assert offerable(configurations_run(view.lines), universe=("SPY",)) == {
+        configuration_key(proposal): cohort.name
+    }
+
+
+@pytest.mark.parametrize(
+    "spoil",
+    [
+        pytest.param(
+            lambda ls: [{k: v for k, v in ls[0].items() if k != "symbol"}, *ls[1:]], id="no-symbol"
+        ),
+        pytest.param(lambda ls: [{**ls[0], "horizon": 22}, *ls[1:]], id="two-horizons"),
+        pytest.param(lambda ls: [{**ls[0], "horizon": True}, *ls[1:]], id="bool-horizon"),
+        pytest.param(lambda ls: [{**ls[0], "symbol": "QQQ"}, *ls[1:]], id="two-symbols"),
+        pytest.param(lambda ls: [{**ls[0], "model": None}, *ls[1:]], id="model-not-a-string"),
+        pytest.param(lambda ls: [{**ls[0], "model": "garch"}, *ls[1:]], id="unknown-model"),
+        pytest.param(lambda ls: [{**ls[0], "model": "harx+"}, *ls[1:]], id="empty-candidate"),
+        pytest.param(lambda ls: [{**ls[0], "model": "harx+a++b"}, *ls[1:]], id="empty-name"),
+        pytest.param(lambda ls: [{**ls[0], "model": "harx+other"}, *ls[1:]], id="two-candidates"),
+        pytest.param(
+            lambda ls: [line for line in ls if line["model"].startswith("har_")], id="no-candidate"
+        ),
+        pytest.param(
+            lambda ls: [line for line in ls if line["model"].startswith("harx")], id="no-reference"
+        ),
+    ],
+)
+def test_a_cohort_that_does_not_parse_refuses_nothing_and_does_not_raise(spoil: Any) -> None:
+    """Fail safe: a cohort the parser cannot read whole contributes no configuration, so it can
+    refuse no proposal; dropping only its bad line could shorten the recovered reference and so
+    match a configuration that was never run. A sound cohort beside it is still read."""
+    spoiled = spoil(child_lines(COHORT_A, (_UNGROUPED[0],)))
+    sound = child_lines(COHORT_B, (_UNGROUPED[1],))
+    assert configurations_run([*spoiled, *sound]) == {
+        configuration_key(_proposal(extra_regressors=(_UNGROUPED[1],))): COHORT_B
+    }
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param({"extra_regressors": ("2025-06-30",)}, id="date-shaped-regressor"),
+        pytest.param({"extra_regressors": ("not_a_feature",)}, id="out-of-vocabulary"),
+        pytest.param({"symbol": "2025-06-30"}, id="date-shaped-symbol"),
+        pytest.param({"symbol": "QQQ"}, id="symbol-outside-the-universe"),
+        pytest.param({"horizon": 66}, id="configured-but-not-offered-horizon"),
+        pytest.param({"reference": ("random_walk", "har_levels")}, id="har-levels-not-first"),
+        pytest.param({"extra_regressors": _UNGROUPED[: MAX_EXTRA_REGRESSORS + 1]}, id="too-many"),
+    ],
+)
+def test_only_a_configuration_the_gate_would_accept_is_offerable(
+    changes: dict[str, object],
+) -> None:
+    """R231: the ledger is text a past child wrote, so what it shows run reaches the Configurator
+    prompt and the already-run lookup only if ``validate`` would accept it now (R214, R230)."""
+    good = configuration_key(_proposal())
+    bad = configuration_key(_proposal(**changes))
+    assert offerable({good: COHORT_A, bad: COHORT_B}, universe=("SPY",)) == {good: COHORT_A}
+
+
+def test_a_cohort_parsed_from_bad_lines_is_not_offerable() -> None:
+    lines = [
+        *child_lines(COHORT_A, (_UNGROUPED[0],)),
+        *child_lines(COHORT_B, ("2025-06-30",), symbol="2025-07-01", horizon=66),
+    ]
+    ran = configurations_run(lines)
+    assert len(ran) == 2  # the parser reads both; only the gate's rules drop one
+    assert list(offerable(ran, universe=("SPY",)).values()) == [COHORT_A]
+
+
+def test_a_line_with_no_cohort_is_ignored() -> None:
+    lines = [
+        {"model": "harx+x", "symbol": "SPY", "horizon": 5},
+        {"cohort": 7, "model": "har_levels"},
+    ]
+    assert configurations_run(lines) == {}
+
+
+def test_the_canonical_text_is_sorted_json_of_the_five_payload_keys() -> None:
+    key = configuration_key(_proposal(extra_regressors=(_UNGROUPED[1], _UNGROUPED[0])))
+    text = configuration_text(key)
+    assert json.loads(text) == {
+        "family": "harx",
+        "extra_regressors": sorted((_UNGROUPED[0], _UNGROUPED[1])),
+        "symbol": "SPY",
+        "horizon": 5,
+        "reference": ["har_levels"],
+    }
+    assert text == json.dumps(json.loads(text), sort_keys=True)
+
+
+def test_the_already_run_code_is_not_a_refusal_code_because_no_single_payload_can_carry_it() -> (
+    None
+):
+    """Like ``REPEATED_PROPOSAL``: whether a configuration already ran is a fact about the ledger,
+    not about one payload."""
+    assert ALREADY_RUN not in {code.value for code in RefusalCode}
+    assert ALREADY_RUN != REPEATED_PROPOSAL

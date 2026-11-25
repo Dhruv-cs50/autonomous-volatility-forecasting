@@ -9,26 +9,31 @@ the "no role calls another" claim from this file's AST rather than asserting it 
 
 **A role gets the tools it is listed with and nothing more.** The Supervisor receives
 :func:`list_models`' answer; the Researcher receives memory and a trial count; the Configurator
-receives the universe and returns raw payloads, because the typed ``propose_config`` of the
-framework's table is, in this design, the gate that the hub applies to what it returns; the Runner
-receives ``submit``; the Critic receives dev metrics; the Reporter receives harness-rendered
-figures. None receives a storage root, a panel, a shell or a date-typed value.
+receives the universe and the configurations already run, and returns raw payloads, because the
+typed ``propose_config`` of the framework's table is, in this design, the gate that the hub applies
+to what it returns; the Runner receives ``submit``; the Critic receives dev metrics; the Reporter
+receives harness-rendered figures. None receives a storage root, a panel, a shell or a
+date-typed value.
 
 **What each prompt carries, which is the inventory R208 rests on (R214).** The Researcher sees the
-sprint id, the kept-line count of the agent ledger, the vocabulary, the horizons and, for earlier
-sprints, their ids, hypotheses and gate verdicts. The Configurator sees the hypothesis, its slot
-number, the vocabulary, the universe, the horizons, the reference names and the parsed payloads
-the earlier slots of this sprint emitted (R227). The Critic sees the
-hypothesis, the ledger count and, per proposal, its id, the child's verdict name and the child's
-``reason``. The Reporter sees the hypothesis and the harness-rendered figures. Date-shaped text
-therefore reaches a prompt by three routes: the run date inside a sprint or proposal id, which
-selects no window; origin dates inside the Critic's ``reason``, which is coverage or audit text
-from the child (``the first origin that qualifies is <date>``, ``max as_of=``) and is bounded by
-``dev_end`` because the child reads with ``end = dev_end``; and whatever the Reporter's figures
-render, which is dev-only. ``exit_code``, ``pid``, ``trials_written``, ``comparisons``,
-``output_tail`` and the child's stamps are in the Runner's output and in no prompt. That last
-sentence is not left to this prose: ``tests/test_agent_sprint.py`` runs a sprint with sentinel
-values in each such field and asserts none reaches a recorded prompt.
+sprint id, the kept-line count of the agent ledger, the vocabulary, the offered horizons
+(``AGENT_HORIZONS``, those whose 10% MCS the development window can hold) and, for earlier sprints,
+their ids, hypotheses and gate verdicts. The Configurator sees the hypothesis, its slot number, the
+vocabulary, the universe, the offered horizons, the reference names and the parsed payloads the
+earlier slots of this sprint emitted (R227), and the configurations the agent ledger's kept lines
+show already run, as canonical JSON with no cohort name, and only those ``validate`` would accept
+now, so every name in that line is from the vocabulary, the universe, the offered horizons or the
+reference names, and no other ledger text reaches it (P5-L11, R231). The Critic sees the hypothesis,
+the ledger count and, per proposal, its id, the child's verdict name and the child's ``reason``. The
+Reporter sees the hypothesis and the harness-rendered figures. Date-shaped text therefore reaches a
+prompt by three routes: the run date inside a sprint or proposal id, which selects no window; origin
+dates inside the Critic's ``reason``, which is coverage or audit text from the child (``the first
+origin that qualifies is <date>``, ``max as_of=``) and is bounded by ``dev_end`` because the child
+reads with ``end = dev_end``; and whatever the Reporter's figures render, which is dev-only.
+``exit_code``, ``pid``, ``trials_written``, ``comparisons``, ``output_tail`` and the child's stamps
+are in the Runner's output and in no prompt. That last sentence is not left to this prose:
+``tests/test_agent_sprint.py`` runs a sprint with sentinel values in each such field and asserts
+none reaches a recorded prompt.
 This module imports nothing that reaches ``volab.store`` (R192).
 
 **The Critic gates nothing, and that is a ruling and not an omission.** The framework asks it for
@@ -36,7 +41,8 @@ This module imports nothing that reaches ``volab.store`` (R192).
 configuration -- *precisely this project's founding negative result*, where an LLM reviewer
 approved a feature built from future intraday bars. So :func:`critic` returns a verdict that the
 hub writes to the sprint log and that **permits or blocks no run**. Only
-``volab.agent.vocabulary.gate`` gates, with the hub's sprint-level repeat rule after it (R227).
+``volab.agent.vocabulary.gate`` gates, with the hub's already-run (P5-L11) and sprint-level
+repeat (R227) rules after it.
 Nothing in this module returns something the hub consults to decide whether to run.
 
 **The Supervisor is not an LLM and does not learn.** The framework allows "cheap, or no LLM". It is
@@ -45,13 +51,14 @@ action; ``get_mcs_result`` is not wired because the agent reads no comparison fi
 those records carry no origin dates, so no filter can make them safe). What it does is choose
 between continuing and stopping. A bandit could replace it; this is not one.
 
-**The Reporter's output is checked for digits, and for nothing else.**
-:func:`invented_numbers` finds every numeric literal in the report that does not appear among the
-harness-rendered figures the Reporter was given. That is the one validation of a report that is
-possible. It does **not** validate tone or emphasis, spelled-out numbers ("forty trials"), the
-*position* of a literal (a ``5`` anywhere in the figures excuses a ``5`` anywhere in the report),
-or whether a true number is attached to the right claim. A report with every number right and the
-emphasis wrong passes every check in this package.
+**The Reporter's output is checked for digits, and for nothing else.** :func:`invented_numbers`
+finds every numeric literal in the report that does not appear among the harness-rendered figures
+the Reporter was given; digits inside a name (``rv_proxy_d66``, a sprint id) are not literals, and a
+name needs a letter, so ``_47_`` in emphasis is still one (R229). That is the one validation of a
+report that is possible. It does **not** validate tone or emphasis, spelled-out numbers ("forty
+trials"), the *position* of a literal (a ``5`` anywhere in the figures excuses a ``5`` anywhere in
+the report), or whether a true number is attached to the right claim. A report with every number
+right and the emphasis wrong passes every check in this package.
 
 What this module does not do: it makes no LLM call except through the ``Completer`` it is handed,
 reads no environment and no file, and decides nothing about promotion.
@@ -69,7 +76,7 @@ from volab.agent._llm import Completer, Prompt
 from volab.agent._runner import ChildRun
 from volab.agent.vocabulary import (
     _IDENTITY_GROUPS,
-    HORIZONS,
+    AGENT_HORIZONS,
     MAX_EXTRA_REGRESSORS,
     REFERENCE_CONTESTANTS,
     VOCABULARY,
@@ -92,6 +99,28 @@ MODEL_FAMILIES: tuple[str, ...] = ("harx",)
 # A numeric literal: digits, optionally joined to more digits by "." or ",". Applied identically
 # to the report and to the figures, so ``1,000`` is one token on both sides.
 _NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+
+# A sprint id as ``python -m volab.agent`` writes it (``%Y-%m-%dT%H%M%SZ``), with an optional
+# proposal suffix ``-NN``, or its short ``HHMMSSZ`` form. Its digits are a name, not a figure
+# (R229). Matched in the report only.
+_SPRINT_ID = re.compile(r"(?<!\w)(?:\d{4}-\d{2}-\d{2}T)?\d{6}Z(?:-\d{2})?(?!\w)")
+
+# The characters of a name, and the ones that make a run of them a name rather than Markdown
+# emphasis (``_47_``) or a separator: ASCII, so the rule is the one R229 states and no wider.
+_LETTERS = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+_NAME_CHARS = _LETTERS | frozenset("0123456789_")
+
+
+def _inside_a_name(text: str, start: int) -> bool:
+    """Whether the digit run at ``start`` continues a name: the ``[A-Za-z0-9_]`` run ending just
+    before it holds a letter (``rv_proxy_d66``, ``d_22``), which ``_47_`` and ``__0.93__`` lack.
+    """
+    i = start
+    while i and text[i - 1] in _NAME_CHARS:
+        i -= 1
+        if text[i] in _LETTERS:
+            return True
+    return False
 
 
 def list_models() -> tuple[str, ...]:
@@ -137,7 +166,7 @@ def researcher(
         f"Sprint {state['sprint_id']}.",
         f"The agent ledger already holds {agent_trials} evaluated trial lines.",
         f"Features you may build a hypothesis on: {', '.join(VOCABULARY)}.",
-        f"Horizons in sessions: {', '.join(str(h) for h in HORIZONS)}.",
+        f"Horizons in sessions: {', '.join(str(h) for h in AGENT_HORIZONS)}.",
         "Earlier sprints:",
     ]
     lines.extend(
@@ -183,6 +212,7 @@ def configurator(
     completer: Completer,
     slots: int,
     universe: Sequence[str],
+    already_run: Sequence[str],
 ) -> dict[str, Any]:
     """One raw payload per slot, parsed but not validated. Validation is the gate's, not ours.
 
@@ -193,7 +223,14 @@ def configurator(
     canary substitution still cannot be distinguished from a real emission by anything upstream
     of the gate. The canary slot's own emission is listed to later slots and then discarded; not
     listing it would need to know the canary's slot. ``emitted`` is returned in slot order.
+
+    ``already_run`` is what the hub read from the agent ledger's kept lines: the configurations an
+    earlier sprint already ran, as canonical JSON (P5-L11), kept only where ``validate`` would
+    accept the configuration now (``volab.agent.vocabulary.offerable``, R231). It is one line, the
+    same in every slot, so it does not depend on the canary either; the hub refuses such a
+    configuration anyway, and the line exists so the model does not spend a slot on one.
     """
+    ran = "; ".join(already_run) if already_run else "none"
     emitted: list[object] = []
     for slot in range(slots):
         earlier = [json.dumps(e, sort_keys=True) for e in emitted if isinstance(e, dict)]
@@ -208,6 +245,7 @@ def configurator(
                     f"Proposal {slot} of {slots}.\n"
                     "Already proposed in this sprint, so propose something different: "
                     f"{'; '.join(earlier) if earlier else 'none'}\n"
+                    f"Already run in earlier sprints, so do not propose again: {ran}\n"
                     f"family: one of {', '.join(MODEL_FAMILIES)}.\n"
                     f"extra_regressors: a JSON array of 1 to {MAX_EXTRA_REGRESSORS} distinct "
                     f"names from {', '.join(VOCABULARY)}.\n"
@@ -220,7 +258,7 @@ def configurator(
                     )
                     + ".\n"
                     f"symbol: one of {', '.join(universe)}.\n"
-                    f"horizon: an integer, one of {', '.join(str(h) for h in HORIZONS)}.\n"
+                    f"horizon: an integer, one of {', '.join(str(h) for h in AGENT_HORIZONS)}.\n"
                     # A list even for one name: the first live sprint sent a string (R224).
                     f"reference: a JSON array of names from {', '.join(REFERENCE_CONTESTANTS)}, "
                     f"{REFERENCE_CONTESTANTS[0]} first, e.g. "
@@ -317,10 +355,27 @@ def invented_numbers(report: str, figures: str) -> tuple[str, ...]:
 
     Digits only; see the module docstring for what that leaves unchecked. An empty tuple means no
     literal was invented, which is **not** the same as the report being accurate.
+
+    Digits that are part of a name are not literals (R229). In the report, a digit run is skipped
+    when the ``[A-Za-z0-9_]`` run ending just before it contains a letter (``semivar_neg_proxy_d1``,
+    ``d22``, ``d_22``, ``iv_h22``, ``baa10y``), or when it lies inside a sprint id
+    (``2026-11-13T054207Z``, with or without a ``-02`` proposal suffix, or the short ``054207Z``).
+    An underscore alone makes no name, so Markdown emphasis is still checked (``_47_``,
+    ``__0.93__``, ``_5``). Everything else is still a literal: a number followed by a unit
+    (``22%``, ``5bp``), a horizon in prose (``22-session``, ``h=66``), a list marker (``2.``,
+    ``(2)``), a bare suffix (``run -02``), a sign or a line start in front of it. The figures side
+    is not filtered: every digit run there may be quoted, so a report's ``run -01`` still matches
+    the figures' ``...Z-01``.
     """
     allowed = set(_NUMBER.findall(figures))
+    ids = [m.span() for m in _SPRINT_ID.finditer(report)]
     seen: list[str] = []
-    for literal in _NUMBER.findall(report):
+    for match in _NUMBER.finditer(report):
+        start, literal = match.start(), match.group()
+        if _inside_a_name(report, start):
+            continue
+        if any(lo <= start < hi for lo, hi in ids):
+            continue
         if literal not in allowed and literal not in seen:
             seen.append(literal)
     return tuple(seen)

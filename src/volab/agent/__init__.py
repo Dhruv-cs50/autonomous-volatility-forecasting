@@ -49,10 +49,13 @@ no canary.
 ``awaiting_approval`` event per promotable candidate, keyed on ``proposal_id`` (R201), and returns
 ``awaiting_approval`` with the first as ``SprintResult.pending``; promotion is another package in
 another process. Promotable means, mechanically: the child evaluated cleanly (verdict
-``evaluated``), the candidate contestant is in the 10% MCS of the ``qlike`` comparison, and the
-agent ledger holds at least one line of that cohort to fingerprint. MCS membership says the
-candidate was not significantly beaten on the development window; it does not say it won, and the
-human decides what it is worth.
+``evaluated``), the candidate contestant is in the 10% MCS of the ``qlike`` comparison **and
+``har_levels`` is not** (R228), and the agent ledger holds at least one line of that cohort to
+fingerprint. Membership alone says only that the candidate was not significantly beaten on the
+development window; with ``har_levels`` also in the set that is a tie, and a tie is not promotable.
+``har_levels`` eliminated from the set the candidate survives in is the evidence that the candidate
+beat the baseline on the development window -- at the MCS's 10% level, not a claim about any other
+window -- and the human decides what it is worth.
 
 **Resumption.** Each finished step is checkpointed under its own name, and the run step also
 checkpoints after every proposal (``run:progress``), so a sprint that dies resumes at the next
@@ -69,7 +72,19 @@ ledger is read through :func:`volab.agent.ledger.read_agent_trials`, which drops
 ``dev_end`` and counts them; that count is an operator-only quantity. If it is non-zero the sprint
 fails (``outcome="failed"``) with an ``integrity`` report on the sprint log and asks no model,
 because the child never evaluates past ``dev_end`` and such a line means something else wrote
-there. Only the count of kept lines is ever put in a prompt.
+there. Only what the kept lines show is ever put in a prompt: their count, and the configurations
+they show already run (P5-L11).
+
+**A configuration runs once across sprints (P5-L11).** ``research`` recovers, from the same kept
+lines, every configuration an earlier cohort ran
+(:func:`volab.agent.vocabulary.configurations_run`), keeps only those the gate would accept now
+(:func:`volab.agent.vocabulary.offerable`, every rule of ``validate``: vocabulary names, their count
+and collinearity, the universe, the offered horizons, the reference; R231) and checkpoints them. The
+Configurator is shown that list, the same line in every slot; the gate step refuses a non-canary
+proposal whose configuration is on it as ``already_run``, naming the cohort, and it never runs. A
+``research`` checkpoint written before R231's filter replays its unfiltered list. The order after
+the gate is: the canary check, then already-run, then the within-sprint repeat (R227), so neither
+rule can hide an accepted canary.
 
 **What is not covered.** Events written by a step that then dies before checkpointing are written
 again on resume (only ``proposal`` events are de-duplicated); the sprint reads the agent trial
@@ -113,12 +128,17 @@ from volab.agent.sprintlog import (
     sprint_ids,
 )
 from volab.agent.vocabulary import (
+    ALREADY_RUN,
     CANARY_PAYLOADS,
+    REFERENCE_CONTESTANTS,
     REPEATED_PROPOSAL,
     Proposal,
     agent_cohort_name,
     configuration_key,
+    configuration_text,
+    configurations_run,
     gate,
+    offerable,
 )
 from volab.config import Settings
 from volab.errors import VolabError
@@ -140,9 +160,12 @@ PROPOSALS_PER_SPRINT: int = 4
 # How many earlier sprints the Researcher is shown.
 _MEMORY_SPRINTS = 5
 
-# The MCS size and loss a candidate must be a member of to be promotable (see the docstring).
+# The MCS size and loss a candidate must be a member of to be promotable, and the baseline that
+# must *not* be a member of that same set (R228; see the docstring). The gate makes ``har_levels``
+# the first reference of every proposal (R87), so it is a contestant of every comparison.
 _PROMOTION_LOSS = "qlike"
 _PROMOTION_MCS_SIZE = "0.1"
+_PROMOTION_BASELINE = REFERENCE_CONTESTANTS[0]
 
 # Verdicts (R203) that mean the harness, not the proposal, went wrong.
 _FAILED_VERDICTS = frozenset(
@@ -207,35 +230,49 @@ def evidence_hash(line: Mapping[str, Any]) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _mcs_member(summary: Mapping[str, Any], proposal: Mapping[str, Any]) -> bool | None:
-    """Whether the candidate is in the promotion MCS, or ``None`` when that is not reported.
+def _mcs_membership(
+    summary: Mapping[str, Any], proposal: Mapping[str, Any]
+) -> tuple[bool, bool] | None:
+    """``(candidate, baseline)``: whether each is in the promotion MCS, or ``None`` if unreported.
 
     The candidate is the one contestant of the ``qlike`` comparison that is not a reference
-    contestant; if there is not exactly one such, or the comparison is refused or lacks the size,
-    the answer is ``None``, which is never promotable.
+    contestant; the baseline is ``har_levels`` (R228). If there is not exactly one candidate, the
+    baseline is not a contestant, or the comparison is refused or lacks the size, the answer is
+    ``None``, which is never promotable.
     """
     for comparison in summary.get("comparisons", []):
         if comparison.get("loss") != _PROMOTION_LOSS or comparison.get("refusal"):
             continue
-        names = [c for c in comparison.get("contestants") or [] if c not in proposal["reference"]]
+        contestants = comparison.get("contestants") or []
+        names = [c for c in contestants if c not in proposal["reference"]]
         size = (comparison.get("mcs_sizes") or {}).get(_PROMOTION_MCS_SIZE) or {}
-        if len(names) != 1 or "members" not in size:
+        if len(names) != 1 or _PROMOTION_BASELINE not in contestants or "members" not in size:
             return None
-        return names[0] in size["members"]
+        return names[0] in size["members"], _PROMOTION_BASELINE in size["members"]
     return None
 
 
 def _promotable(
     summary: Mapping[str, Any], proposal: Mapping[str, Any], view: TrialView
 ) -> tuple[tuple[str, ...] | None, str]:
-    """``(evidence, reason)``: the evidence hashes if promotable, else ``None`` and why not."""
+    """``(evidence, reason)``: the evidence hashes if promotable, else ``None`` and why not.
+
+    Promotable is the candidate in the qlike MCS at 10% with ``har_levels`` out of it (R228); the
+    candidate in it *with* ``har_levels`` is a tie and is refused with a reason that says so.
+    """
     if summary["verdict"] != "evaluated":
         return None, f"the child's verdict was {summary['verdict']}"
-    member = _mcs_member(summary, proposal)
-    if member is None:
+    membership = _mcs_membership(summary, proposal)
+    if membership is None:
         return None, "no usable qlike MCS at 10% was reported"
+    member, baseline = membership
     if not member:
         return None, "the candidate is not in the qlike MCS at 10%"
+    if baseline:
+        return None, (
+            f"the candidate tied with {_PROMOTION_BASELINE}: both are in the qlike MCS at 10%, "
+            f"and promotion needs {_PROMOTION_BASELINE} out of it (R228)"
+        )
     evidence = tuple(
         evidence_hash(line) for line in view.lines if line.get("cohort") == summary["cohort"]
     )
@@ -267,11 +304,18 @@ def render_figures(state: Mapping[str, Any]) -> str:
         summary = state.get("runs", {}).get(entry["proposal_id"])
         if summary is None:
             continue
-        member = _mcs_member(summary, entry["proposal"]) if entry["proposal"] else None
+        membership = _mcs_membership(summary, entry["proposal"]) if entry["proposal"] else None
+        if membership is None:
+            said = "not reported"
+        elif not membership[0]:
+            said = "not a member"
+        elif membership[1]:
+            said = f"member, tied with {_PROMOTION_BASELINE}"
+        else:
+            said = f"member, {_PROMOTION_BASELINE} not a member"
         lines.append(
             f"run {entry['proposal_id']} (volab.candidate): {summary['verdict']}; "
-            f"cohort {summary['cohort']}; qlike MCS at 10%: "
-            f"{'not reported' if member is None else 'member' if member else 'not a member'}"
+            f"cohort {summary['cohort']}; qlike MCS at 10%: {said}"
         )
     return "\n".join(lines)
 
@@ -374,13 +418,19 @@ class _Sprint:
         # counts*: only the kept lines are counted below, and the excluded count (zero here, by
         # the check above) is operator-only by construction.
         ledger = {"agent_trials": len(view.lines)}
+        # What the kept lines show already run (P5-L11), as canonical text -> the first cohort that
+        # ran it. Read here, from the same view, so the Configurator's list and the gate's refusal
+        # rest on one read, and a resumed sprint replays both from the checkpoint. Only what the
+        # gate would accept now is kept, so no other ledger text reaches the prompt (R231).
+        ran = offerable(configurations_run(view.lines), universe=self.settings.universe)
+        already_run = {configuration_text(key): cohort for key, cohort in ran.items()}
         update = researcher(
             state,
             completer=self.completer,
             memory=self._memory(),
             agent_trials=ledger["agent_trials"],
         )
-        return {**update, "ledger": ledger}
+        return {**update, "ledger": ledger, "already_run": already_run}
 
     def configure(self, state: dict[str, Any]) -> dict[str, Any]:
         emitted = configurator(
@@ -388,6 +438,8 @@ class _Sprint:
             completer=self.completer,
             slots=PROPOSALS_PER_SPRINT,
             universe=self.settings.universe,
+            # The configurations only, sorted: the cohort names carry run dates (R214).
+            already_run=sorted(state.get("already_run", {})),
         )["emitted"]
         slot, which = canary_placement(self.sprint_id, PROPOSALS_PER_SPRINT)
         raw = list(emitted)
@@ -411,6 +463,7 @@ class _Sprint:
         )
         verdicts: list[dict[str, Any]] = []
         accepted_ids: dict[tuple[Any, ...], str] = {}
+        already_run: Mapping[str, str] = state.get("already_run", {})
         for index, raw in enumerate(state["raw"]):
             is_canary = index == canary["index"]
             verdict = gate(
@@ -424,11 +477,24 @@ class _Sprint:
             accepted, reason = verdict.accepted, verdict.reason
             code = None if verdict.code is None else verdict.code.value
             proposal = verdict.proposal
-            # The sprint-level repeat rule (R227). Never applied to a canary: an accepted canary
-            # must reach the void below, and a repeat refusal here would hide it.
+            # The hub's two refusals after the gate: already run in the agent ledger (P5-L11), then
+            # repeated within this sprint (R227). Neither is ever applied to a canary: an accepted
+            # canary must reach the void below, and a refusal here would hide it. Already-run comes
+            # first so a proposal it refuses is never registered as accepted, and a later slot
+            # with the same configuration is then also already-run, not "repeated" of a proposal
+            # that never ran.
             if accepted and not verdict.canary and proposal is not None:
-                earlier = accepted_ids.setdefault(configuration_key(proposal), proposal_id)
-                if earlier != proposal_id:
+                key = configuration_key(proposal)
+                cohort = already_run.get(configuration_text(key))
+                earlier = proposal_id if cohort else accepted_ids.setdefault(key, proposal_id)
+                if cohort:
+                    accepted, proposal, code = False, None, ALREADY_RUN
+                    reason = (
+                        f"{ALREADY_RUN}: the same configuration as cohort {cohort}, which the "
+                        "agent trial ledger shows already run, so running it again would add "
+                        "trials and no evidence"
+                    )
+                elif earlier != proposal_id:
                     accepted, proposal, code = False, None, REPEATED_PROPOSAL
                     reason = (
                         f"{REPEATED_PROPOSAL}: the same configuration as {earlier}, accepted "

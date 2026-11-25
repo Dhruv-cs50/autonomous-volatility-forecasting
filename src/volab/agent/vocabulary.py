@@ -48,6 +48,11 @@ it: a proposal whose :func:`configuration_key` equals one already accepted in th
 refused as :data:`REPEATED_PROPOSAL`. That rule runs **after** the canary check and never on a
 canary, so it can never turn an accepted canary into a refusal.
 
+**And once across sprints (P5-L11).** :func:`configurations_run` recovers, from the agent trial
+ledger's kept lines, the configuration each cohort ran, and the hub refuses a proposal whose key is
+among them as :data:`ALREADY_RUN`, before the within-sprint rule and likewise never on a canary. A
+cohort whose lines do not read as one configuration contributes nothing, so it refuses nothing.
+
 **What is deliberately *not* excluded: a column that is constant in some window.** Constancy is a
 property of a window, not of a column, so a static list would be wrong the day the window moves.
 ``has_distribution`` is the live instance today: measured on 2026-11-10 over the real SPY table
@@ -62,6 +67,20 @@ one model at one origin and leaves the origin standing for everyone else.
 store-free; ``volab.features.targets`` and ``volab.compare.cohorts`` are not, so :data:`HORIZONS`
 and :data:`REFERENCE_CONTESTANTS` are literals, each pinned to the real source by a two-sided test.
 
+**The agent is offered only the horizons whose 10% confidence set the development window can hold
+(P5-L13).** Promotion needs the candidate in the 10% qlike MCS, and the compare layer refuses that
+set where ``n_eff = n / (q + 1)`` is below ``2/alpha = 20``. ``n`` and ``q`` follow from the child's
+fixed window and stride, so at a horizon where the floor is missed no proposal can ever be
+promoted: the third live sprint proposed three configurations at h=66 and every one's 10% set
+was refused.
+:data:`AGENT_HORIZONS` is the subset of :data:`HORIZONS` that clears the floor, and ``validate``
+refuses the rest as ``HORIZON_NOT_CONFIGURED`` with that reason. It is a literal, because the
+origin count, the stride and ``n_eff`` all live in modules that reach the store; and because which
+horizons clear the floor is a property of the window (R199's concern), it is pinned by a test that
+derives it from the child's own window, stride and the compare layer's own ``n_eff``
+(``test_the_offered_horizons_are_those_whose_ten_percent_mcs_the_dev_window_holds``),
+so the day the window or the stride moves the literal fails rather than goes stale.
+
 What this does **not** cover: it checks that a name is in the vocabulary, not that the resulting
 model is a good one; it does not check that the symbol has data, only that it is in the universe
 it is handed; and a proposal that passes is still only a *proposal* -- running it is another
@@ -73,7 +92,8 @@ from __future__ import annotations
 import datetime as dt
 import enum
 import hashlib
-from collections.abc import Mapping
+import json
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -118,6 +138,13 @@ _IDENTITY_GROUPS: tuple[tuple[tuple[str, ...], int], ...] = _identity_groups()
 # A literal, because ``volab.features.targets`` reaches ``volab.store``. Pinned by
 # ``test_the_horizons_literal_equals_the_real_horizons``.
 HORIZONS: tuple[int, ...] = (1, 5, 22, 66)
+
+# P5-L13. The horizons the agent is offered and the gate accepts: those whose 10% MCS can be formed
+# on the development window. A literal for the same reason as HORIZONS, and window-dependent, so it
+# is derived in the test that pins it rather than asserted here. MEASURED on the calendar to
+# dev_end at the child's stride of 5: n_eff is 251, 250 and 49.4 at h=1, 5 and 22; at h=66 it is
+# 17.0 (16.9 in the third live sprint, two origins fewer), below the floor of 20.
+AGENT_HORIZONS: tuple[int, ...] = (1, 5, 22)
 
 # Priced from a measurement, not chosen: 3 HAR + 5 extra + an intercept is 9 parameters, about
 # 16-20 ms per pure-Python ``fit_ols``, roughly 4-5 s per (symbol, horizon) over 251 origins.
@@ -202,9 +229,10 @@ def validate(raw: object, *, sprint_id: str, index: int, universe: tuple[str, ..
 
     Branches run in this order: shape, keys, family, regressors (``NO_REGRESSORS``, then
     ``OUT_OF_VOCABULARY``, ``TOO_MANY_REGRESSORS``, ``DUPLICATE_REGRESSOR``,
-    ``COLLINEAR_REGRESSORS``), symbol, horizon,
-    reference. That is not the order of the :class:`RefusalCode` members. The first defect found is
-    the one reported, so a payload with two defects names one.
+    ``COLLINEAR_REGRESSORS``), symbol, horizon (in :data:`HORIZONS`, then in
+    :data:`AGENT_HORIZONS`, both ``HORIZON_NOT_CONFIGURED``), reference. That is not the order of
+    the :class:`RefusalCode` members. The first defect found is the one reported, so a payload with
+    two defects names one.
     ``proposal_id`` is built here from ``sprint_id`` and ``index``; a payload that supplies one is
     refused as an unknown key like any other. Total over every ``object``: a malformed payload
     raises :class:`~volab.errors.ProposalRefused`, never anything else.
@@ -263,6 +291,14 @@ def validate(raw: object, *, sprint_id: str, index: int, universe: tuple[str, ..
     if not (isinstance(horizon, int) and not isinstance(horizon, bool) and horizon in HORIZONS):
         raise _refuse(
             RefusalCode.HORIZON_NOT_CONFIGURED, f"horizon {horizon!r} is not in {HORIZONS!r}"
+        )
+    if horizon not in AGENT_HORIZONS:
+        raise _refuse(
+            RefusalCode.HORIZON_NOT_CONFIGURED,
+            f"horizon {horizon!r} is configured but not offered: on the development window its "
+            "n_eff = n/(q+1) is below 2/alpha = 20 at alpha = 0.1, so the 10% model confidence set "
+            "promotion needs is refused and no proposal at it can be promoted; the offered "
+            f"horizons are {AGENT_HORIZONS!r}",
         )
 
     reference = _names(raw["reference"], "reference")
@@ -323,10 +359,15 @@ def gate(
 # ``RefusalCode`` is reachable from a single payload (R227).
 REPEATED_PROPOSAL = "repeated_proposal"
 
+# The hub's cross-sprint refusal (P5-L11): a configuration the agent trial ledger already shows
+# run. Not a ``RefusalCode`` for the same reason: it is a fact about the ledger, not one payload.
+ALREADY_RUN = "already_run"
 
-def configuration_key(
-    proposal: Proposal,
-) -> tuple[str, tuple[str, ...], str, int, tuple[str, ...]]:
+# ``(family, sorted extra regressors, symbol, horizon, reference in order)``.
+ConfigurationKey = tuple[str, tuple[str, ...], str, int, tuple[str, ...]]
+
+
+def configuration_key(proposal: Proposal) -> ConfigurationKey:
     """What ``proposal`` runs, without its id: two proposals with one key are one experiment.
 
     The regressors are sorted, since their order changes no fit. The reference keeps its order,
@@ -340,6 +381,124 @@ def configuration_key(
         proposal.horizon,
         proposal.reference,
     )
+
+
+def configuration_text(key: ConfigurationKey) -> str:
+    """``key`` as canonical JSON: a payload's five keys, sorted, with the regressors sorted.
+
+    The form the Configurator is shown and the hub looks configurations up by, so the two cannot
+    disagree about what counts as the same configuration.
+    """
+    family, regressors, symbol, horizon, reference = key
+    return json.dumps(
+        {
+            "family": family,
+            "extra_regressors": sorted(regressors),
+            "symbol": symbol,
+            "horizon": horizon,
+            "reference": list(reference),
+        },
+        sort_keys=True,
+    )
+
+
+def _configuration_of(lines: Sequence[Mapping[str, Any]]) -> ConfigurationKey | None:
+    """The configuration one cohort's ledger lines show run, or ``None`` if they do not show one.
+
+    The child writes, per loss, one line per contestant in the cohort's order: the reference as
+    proposed, then the candidate (``volab.candidate.evaluate_proposal``). So the candidate is the
+    one ``harx+``-prefixed model, split on ``+`` (the name ``HarX`` gives itself); the reference is
+    every other model in order of first appearance; symbol and horizon are each the one value every
+    line carries. Anything else -- a second candidate, a model that is neither, a missing or second
+    symbol or horizon -- is ``None`` for the whole cohort.
+    """
+    candidates: list[str] = []
+    reference: list[str] = []
+    symbols: set[object] = set()
+    horizons: set[object] = set()
+    for line in lines:
+        model = line.get("model")
+        if not isinstance(model, str):
+            return None
+        if model.startswith(_FAMILY + "+"):
+            if model not in candidates:
+                candidates.append(model)
+        elif model in REFERENCE_CONTESTANTS:
+            if model not in reference:
+                reference.append(model)
+        else:
+            return None
+        symbols.add(line.get("symbol"))
+        horizons.add(line.get("horizon"))
+    if len(candidates) != 1 or not reference or len(symbols) != 1 or len(horizons) != 1:
+        return None
+    regressors = candidates[0].split("+")[1:]
+    (symbol,), (horizon,) = symbols, horizons
+    if not all(regressors) or not isinstance(symbol, str):
+        return None
+    if not isinstance(horizon, int) or isinstance(horizon, bool):
+        return None
+    return (_FAMILY, tuple(sorted(regressors)), symbol, horizon, tuple(reference))
+
+
+def configurations_run(lines: Iterable[Mapping[str, Any]]) -> dict[ConfigurationKey, str]:
+    """Each configuration the agent-ledger ``lines`` show run, and the first cohort that ran it.
+
+    ``lines`` are the kept lines of :func:`volab.agent.ledger.read_agent_trials`, so a line past
+    ``dev_end`` is never among them. They are grouped by ``cohort`` (a line with no string cohort
+    is ignored) and each cohort is read whole by the rules of :func:`_configuration_of`.
+
+    **Fail safe: a cohort that does not parse contributes nothing**, so it refuses no proposal. The
+    whole cohort is dropped rather than its bad line, because dropping a reference line would
+    shorten the recovered reference and could match a configuration that was never run. Store-free
+    (R192): it reads mappings it is handed and never opens the ledger. It does not check names
+    against the vocabulary or the universe; :func:`offerable` does, before anything reaches a
+    prompt or the already-run lookup (R231).
+    """
+    cohorts: dict[str, list[Mapping[str, Any]]] = {}
+    for line in lines:
+        cohort = line.get("cohort")
+        if isinstance(cohort, str):
+            cohorts.setdefault(cohort, []).append(line)
+    ran: dict[ConfigurationKey, str] = {}
+    for cohort, grouped in cohorts.items():
+        key = _configuration_of(grouped)
+        if key is not None:
+            ran.setdefault(key, cohort)
+    return ran
+
+
+def offerable(
+    ran: Mapping[ConfigurationKey, str], *, universe: tuple[str, ...]
+) -> dict[ConfigurationKey, str]:
+    """The entries of ``ran`` whose configuration :func:`validate` would accept now.
+
+    :func:`configurations_run` reads ledger text a past child wrote, and checks only that it reads
+    as one configuration; any non-empty regressor string and any symbol string pass. What it
+    returns reaches the Configurator's prompt, so each key is rebuilt as a payload and put through
+    ``validate`` with the sprint's ``universe``. Every rule of ``validate`` applies: names in
+    :data:`VOCABULARY`, their count, no duplicate and no collinear set (R225), a symbol in the
+    universe, a horizon in :data:`AGENT_HORIZONS` and a valid reference. So no other ledger text
+    reaches a prompt (R214, R231), and a configuration the gate now refuses before ``already_run``
+    could apply (an h66 cohort, R230; a collinear one, R225) is dropped, since it only crowded the
+    prompt. Store-free (R192).
+    """
+    kept: dict[ConfigurationKey, str] = {}
+    for key, cohort in ran.items():
+        family, regressors, symbol, horizon, reference = key
+        payload = {
+            "family": family,
+            "extra_regressors": list(regressors),
+            "symbol": symbol,
+            "horizon": horizon,
+            "reference": list(reference),
+        }
+        try:
+            proposal = validate(payload, sprint_id="ledger", index=0, universe=universe)
+        except ProposalRefused:
+            continue
+        kept[configuration_key(proposal)] = cohort
+    return kept
 
 
 def agent_cohort_name(sprint_id: str, index: int) -> str:

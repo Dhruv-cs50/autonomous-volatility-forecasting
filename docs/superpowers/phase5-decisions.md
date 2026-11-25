@@ -1449,3 +1449,141 @@ stored code back to the enum. `gate`'s docstring no longer says it is the only r
   Researcher sees earlier hypotheses, not configurations. A follow-up if it happens.
 * *Whether the model actually varies.* Unverified until a live sprint runs, and a live sprint adds
   counted trials, so that is the user's decision.
+
+## R228 — a candidate is promotable only if it beats `har_levels`, not if it ties
+
+Until now a candidate was promotable when the child evaluated it cleanly, it was a member of the
+10% qlike model confidence set, and the agent ledger held a line of its cohort to fingerprint.
+Membership alone says only that the candidate was not significantly beaten. The second live sprint
+(P5-L8) showed why that is too weak: its candidate shared the 10% qlike MCS with `har_levels` (MCS
+p-value of `har_levels` 0.89, Diebold-Mariano p 0.90, SPA finding nothing that beat `har_levels`),
+yet the sprint ended `awaiting_approval`.
+
+**Ruling (the user, 2026-11-14):** a candidate is promotable only if it is in the 10% qlike MCS
+**and `har_levels` is not**. A tie is not enough.
+
+**In code.** `_mcs_membership` reports both memberships and `_promotable` refuses a tie, with a
+reason that says the candidate tied with `har_levels`; the sprint ends `no_candidate` and writes no
+`awaiting_approval` event. A qlike comparison in which `har_levels` is not a contestant counts as
+not reported, which is never promotable: a missing baseline fails closed. The Reporter's figures
+now say `member, tied with har_levels` or `member, har_levels not a member`, so a report cannot
+oversell a tie. `volab.promote` re-derives no promotability (it checks the event, single use and
+the fingerprint), so it needed no change.
+
+**A cost, accepted.** The rehearsal store is seeded noise, so its one real evaluation now ends in
+the tie refusal, and no real evaluation exercises the approval path; stubs and `test_promote.py`
+cover it. P5-L14 plants a signal in the rehearsal store so a real evaluation reaches it again.
+
+**Not covered.** The rule reads the 10% MCS only: not DM, not SPA, not the other references such as
+`har_levels_mz`, and nothing past `dev_end`.
+
+**Three earlier approvals this ruling supersedes.** Sprint `2026-11-13T122201Z` (P5-L8) wrote three
+`awaiting_approval` events, for `-00`, `-01` and `-03`, before this ruling; all three are the tie it
+now refuses, and none has been promoted. `volab.promote` checks the event, single use and the
+fingerprint, not promotability, so it would still accept them. They stand as recorded and **must not
+be promoted**; whether `volab.promote` should refuse them mechanically is the user's call.
+
+## R229 — digits inside a name are not figures
+
+All three real sprints failed report validation, and most of what the digit check flagged came from
+names the Reporter quoted correctly: `1`, `22` and `66` from feature names (`semivar_neg_proxy_d1`,
+`iv_h22`, `rv_proxy_d66`, bare `d22`), and `054207`, `122201` from earlier sprint ids written short
+(`054207Z`).
+
+**Rule.** In the report, `invented_numbers` skips a digit run when the character before it is a
+letter or an underscore, or when it lies inside a sprint id (`%Y-%m-%dT%H%M%SZ`, with an optional
+`-NN` proposal suffix, or the short `HHMMSSZ`). Only the report side is filtered: every digit run in
+the figures may still be quoted, so a report's `run -01` still matches the figures' `...Z-01`.
+Backtick spans are deliberately **not** exempt: that would let `` `0.89` `` through.
+**Amended after review:** a digit run counts as part of a name only when the `[A-Za-z0-9_]` run just
+before it contains an ASCII letter. An underscore alone makes no name, so Markdown emphasis such as
+`_47_`, `__0.93__` or `_5` is checked again; `rv_proxy_d66`, `iv_h22`, `d_22` and `baa10y` stay
+exempt, and the three real-report results are unchanged.
+
+**Still caught:** a number with a unit (`22%`, `5bp`), a decimal, a signed number, a number at a
+line start, and an invented number in the same sentence as a name (`rv_proxy_d66 gained 47 bp`
+flags `47`).
+
+**Result on the real reports.** `2026-11-13T054207Z` now validates. `122201Z` and `004243Z` still
+fail, on horizons written in prose (`22-session`, `h=66`, `1- and 5-session`), list markers (`2.`,
+`(2)`) and `run -02`, a run the figures do not contain (it was the canary). None is a name, so this
+ruling does not exempt them; P5-L15 puts each proposal's horizon into the figures.
+
+**Costs and gaps.** A digit run directly after a letter is now unchecked, so an invented `R2`, `Q3`
+or `x2` passes. Cohort ids from other sprints (`agent-YYYY-MM-DD-<hash>-NN`) are not exempt. A hex
+hash in the figures can still supply a digit that excuses a bare number in the prose (`b33bf6e5`
+excuses a `5`); that predates this ruling and is in the module docstring's stated limits.
+
+## R230 — the agent is offered only horizons whose 10% MCS the development window can hold
+
+The third live sprint (P5-L12) proposed three configurations at h=66, and every comparison refused
+the 10% qlike MCS: `n_eff = 16.9` against the floor `2/alpha = 20`. None could ever have been
+promoted, so those 12 trials bought nothing.
+
+**The arithmetic.** `q = (h - 1) // stride` (`compare/dm.py`), `n_eff = n / (q + 1)`
+(`compare/multiple.py`), and a size is refused where `n_eff < 2 / size`. On the child's fixed
+window (`FIRST_ORIGIN` 2021-01-04 to `dev_end` 2025-12-31, `STRIDE` 5) the calendar gives n = 251,
+250, 247 and 238 origins at h = 1, 5, 22 and 66, so `n_eff` = 251, 250, 49.4 and 17.0. The live
+sprint's 236 at h66 is lower because model skips remove origins, so the calendar count is an upper
+bound and the refusal is sound. A finer stride cannot rescue h66; only a longer window could, and
+moving the window is a selection decision under R184.
+
+**Ruling.** `vocabulary.AGENT_HORIZONS = (1, 5, 22)`: the subset of `HORIZONS` the gate accepts and
+the Researcher and Configurator prompts list. A configured but unoffered horizon is refused as
+`HORIZON_NOT_CONFIGURED`, with a message naming the floor, so no new code or canary is needed; every
+canary not about the horizon names an offered one, and a test checks that.
+
+**Why a literal, and why that is not R199's mistake.** The origin count, the stride and `n_eff` all
+live in modules that reach the store, which `vocabulary.py` may not import (R192). Which horizons
+clear the floor is a property of the window, so a test derives the set from `volab.candidate`'s
+`FIRST_ORIGIN` and `STRIDE`, `dev_end`, and the compare layer's own `overlap_lag` and
+`effective_observations`; if any of them moves, the literal fails rather than going stale. A
+real-store test confirms the calendar count equals the child's `scoreable_origins` count for SPY,
+QQQ and IWM. `HORIZONS` stays pinned to `volab.features.targets`, so the harness still runs h66.
+
+**Side effect.** The candidate child re-validates every proposal file, so a recorded h66 proposal
+would now be refused there too. Nothing replays recorded proposals; this is consistent, not lost.
+
+## R231 — a configuration runs once across sprints
+
+R227 stopped a configuration repeating within a sprint, but a later sprint could still re-run one an
+earlier sprint evaluated (sprint 2's `harx + signed_jump_proxy_d22 + iv_h22` on SPY at h22,
+reference `[har_levels]`), adding counted trials and no evidence.
+
+**Source of truth: the agent trial ledger's kept lines** (`read_agent_trials`, R208), tracked in git
+and durable, not the gitignored sprint log or checkpoints. `vocabulary.configurations_run` recovers
+each cohort's configuration from its lines: the candidate is the single `harx+`-prefixed model, split
+on `+` (tied to `HarX.name` by a two-sided test); the reference is the other models in
+first-appearance order, which is the cohort's contestant order because the child writes losses,
+then contestants; symbol and horizon must each be single-valued. **A cohort that does not read as
+exactly one configuration contributes nothing**, so a malformed ledger can only miss a refusal,
+never cause one; the whole cohort is dropped, not the bad line, since dropping a reference line
+could shorten the reference and match a configuration that never ran. On today's ledger: 9 cohorts,
+5 configurations.
+
+**Only configurations the gate would accept are used (amended after review).** `research` passes
+what `configurations_run` recovers through `vocabulary.offerable`, which runs each key through
+`validate` with the sprint's universe. So off-vocabulary or date-shaped ledger text can never reach
+a prompt, and configurations the gate now refuses anyway are not shown: on today's ledger 1 of the 5
+remains, the three h66 ones (R230) and sprint 1's collinear one (R225) being dropped. A test ties the
+parser to lines written by the child's own `Evaluation.trials()` and `append_agent_trials`, so
+renaming a ledger key fails it rather than leaving the rule silently refusing nothing.
+
+**The rule.** `research` computes the set once, from the same view as the trial count, and
+checkpoints it, so prompt and gate rest on one read and a resume replays both. In the gate step the
+order is: canary check, then `already_run`, then R227's `repeated_proposal`. `already_run` is a
+string code beside `REPEATED_PROPOSAL`, not a `RefusalCode`; its reason names the earlier cohort and
+the proposal never runs. It comes before the repeat rule so a refused proposal is never registered
+as accepted, and a later slot with the same configuration is also `already_run`. Mutation checks:
+disabling it fails three tests; applying it to canaries fails the canary test.
+
+**The prompt.** The Configurator gets one more line, identical in every slot: the configurations
+already run, as sorted canonical JSON, **without cohort names**, which carry run dates, so no new
+date-shaped route reaches a prompt and the prompt still cannot depend on the canary's placement.
+The R214 inventory and the R208 sentence in the package docstring are updated.
+
+**Not covered.** A coverage-refused proposal writes no lines and stays re-proposable. Sprint 1's
+singular-fit configuration no longer counts as run, since `offerable` drops it, but the gate refuses
+it as collinear before `already_run` applies, so nothing can rerun it. The already-run line has no cap and grows with every configuration; it may need one. A
+sprint resumed from a `research` checkpoint written before this ruling has no already-run set, so
+it resumes with no cross-sprint refusals: the fail-open direction, which never touches a canary.
