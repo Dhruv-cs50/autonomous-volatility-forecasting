@@ -1064,8 +1064,8 @@ def test_the_digit_check_rejects_an_invented_figure_and_passes_a_faithful_report
 
 
 def test_the_digit_check_exempts_digits_that_are_part_of_a_name() -> None:
-    """R229: a digit run preceded by a letter or underscore, or inside a sprint/proposal id, is
-    part of a name and is not a figure; a bare number beside such a name is still checked."""
+    """R229: a digit run continuing a word run that holds a letter, or inside a sprint/proposal
+    id, is part of a name and is not a figure; a bare number beside such a name is still checked."""
     figures = "agent ledger: 12 trials evaluated"
     # a feature name, a horizon-tagged name, a FRED series id, a mid-run digit of d22
     assert invented_numbers("`semivar_neg_proxy_d1`, `rv_proxy_d66`, iv_h22, baa10y", figures) == ()
@@ -1084,6 +1084,18 @@ def test_the_digit_check_exempts_digits_that_are_part_of_a_name() -> None:
     assert invented_numbers("054207 trials", figures) == ("054207",)
     assert invented_numbers("the loss moved by -0.5", figures) == ("0.5",)
     assert invented_numbers("12 trials.\n47 basis points.", figures) == ("47",)
+
+
+def test_markdown_emphasis_does_not_make_a_figure_a_name() -> None:
+    """An underscore alone does not make a name: the word run before the digits must hold a
+    letter (R229). Otherwise Markdown emphasis (``_47_``, ``__0.93__``) hides an invented figure."""
+    figures = "agent ledger: 12 trials evaluated"
+    assert invented_numbers("the candidate gained _47_ bp", figures) == ("47",)
+    assert invented_numbers("a __0.93__ qlike ratio", figures) == ("0.93",)
+    assert invented_numbers("over _5 sessions", figures) == ("5",)
+    assert invented_numbers("_12_ trials", figures) == ()
+    # an underscore after a letter is still inside a name
+    assert invented_numbers("d_22, x1_2, semivar_neg_proxy_d1 and rv_proxy_d66", figures) == ()
 
 
 def test_the_digit_check_on_the_first_real_sprint_reports() -> None:
@@ -1807,6 +1819,42 @@ def test_every_configurator_slot_is_shown_the_same_list_of_configurations_alread
     # The Configurator's prompt is the only one that changed.
     others = (completer.prompts[0], *completer.prompts[1 + PROPOSALS_PER_SPRINT :])
     assert not any("Already run" in p.user for p in others)
+
+
+def test_only_configurations_the_gate_would_accept_reach_the_prompt_or_the_lookup(
+    tmp_path: Path, settings: Settings
+) -> None:
+    """R231 and R214: ledger text reaches the Configurator only as a configuration ``validate``
+    would accept now. A date-shaped regressor or symbol, a symbol outside the universe and an
+    h66 cohort (refused at the gate since R230) are not shown; a valid one is, and still refuses."""
+    bad = [
+        Proposal("x-00", "harx", ("2025-06-30",), "SPY", 5, ("har_levels",)),
+        Proposal("x-00", "harx", (VOCABULARY[1],), "2025-07-01", 5, ("har_levels",)),
+        Proposal("x-00", "harx", (VOCABULARY[2],), "QQQ", 5, ("har_levels",)),
+        Proposal("x-00", "harx", (VOCABULARY[3],), "SPY", 66, ("har_levels",)),
+    ]
+    for i, proposal in enumerate(bad):
+        seed_ledger(tmp_path, child_lines(proposal, f"agent-2026-11-0{i + 4}-0badc0de-01"))
+    seed_ledger(tmp_path, child_lines(reply_proposal(0), EARLIER))
+    completer = FakeCompleter(
+        script(configurator=replies_with_real_slots([valid_reply(i) for i in range(3)]))
+    )
+    sprint(tmp_path, settings, completer=completer, submit=StubSubmit(tmp_path))
+
+    configuring = completer.prompts[1 : 1 + PROPOSALS_PER_SPRINT]
+    shown = configuration_text(configuration_key(reply_proposal(0)))
+    assert {_already_run_line(p) for p in configuring} == {
+        f"Already run in earlier sprints, so do not propose again: {shown}"
+    }
+    seen = "\n".join(p.user for p in completer.prompts)
+    assert "2025-06-30" not in seen and "2025-07-01" not in seen and "QQQ" not in seen
+    assert '"horizon": 66' not in seen
+    # The valid cohort still refuses its configuration, and the dropped ones refuse nothing.
+    slot, _ = canary_placement(SPRINT, PROPOSALS_PER_SPRINT)
+    real = [i for i in range(PROPOSALS_PER_SPRINT) if i != slot]
+    refused = [e for e in log_of(tmp_path, "refused") if e["code"] == ALREADY_RUN]
+    assert [e["proposal_id"] for e in refused] == [f"{SPRINT}-{real[0]:02d}"]
+    assert EARLIER in refused[0]["reason"]
 
 
 def test_with_nothing_run_the_configurator_is_told_none(tmp_path: Path, settings: Settings) -> None:

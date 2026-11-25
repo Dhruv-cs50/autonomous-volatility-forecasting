@@ -76,11 +76,15 @@ there. Only what the kept lines show is ever put in a prompt: their count, and t
 they show already run (P5-L11).
 
 **A configuration runs once across sprints (P5-L11).** ``research`` recovers, from the same kept
-lines, every configuration an earlier cohort ran (:func:`volab.agent.vocabulary.configurations_run`)
-and checkpoints it. The Configurator is shown that list, the same line in every slot; the gate step
-refuses a non-canary proposal whose configuration is on it as ``already_run``, naming the cohort,
-and it never runs. The order after the gate is: the canary check, then already-run, then the
-within-sprint repeat (R227), so neither rule can hide an accepted canary.
+lines, every configuration an earlier cohort ran
+(:func:`volab.agent.vocabulary.configurations_run`), keeps only those the gate would accept now
+(:func:`volab.agent.vocabulary.offerable`, every rule of ``validate``: vocabulary names, their count
+and collinearity, the universe, the offered horizons, the reference; R231) and checkpoints them. The
+Configurator is shown that list, the same line in every slot; the gate step refuses a non-canary
+proposal whose configuration is on it as ``already_run``, naming the cohort, and it never runs. A
+``research`` checkpoint written before R231's filter replays its unfiltered list. The order after
+the gate is: the canary check, then already-run, then the within-sprint repeat (R227), so neither
+rule can hide an accepted canary.
 
 **What is not covered.** Events written by a step that then dies before checkpointing are written
 again on resume (only ``proposal`` events are de-duplicated); the sprint reads the agent trial
@@ -134,6 +138,7 @@ from volab.agent.vocabulary import (
     configuration_text,
     configurations_run,
     gate,
+    offerable,
 )
 from volab.config import Settings
 from volab.errors import VolabError
@@ -415,11 +420,10 @@ class _Sprint:
         ledger = {"agent_trials": len(view.lines)}
         # What the kept lines show already run (P5-L11), as canonical text -> the first cohort that
         # ran it. Read here, from the same view, so the Configurator's list and the gate's refusal
-        # rest on one read, and a resumed sprint replays both from the checkpoint.
-        already_run = {
-            configuration_text(key): cohort
-            for key, cohort in configurations_run(view.lines).items()
-        }
+        # rest on one read, and a resumed sprint replays both from the checkpoint. Only what the
+        # gate would accept now is kept, so no other ledger text reaches the prompt (R231).
+        ran = offerable(configurations_run(view.lines), universe=self.settings.universe)
+        already_run = {configuration_text(key): cohort for key, cohort in ran.items()}
         update = researcher(
             state,
             completer=self.completer,

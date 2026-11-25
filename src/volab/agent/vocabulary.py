@@ -451,7 +451,9 @@ def configurations_run(lines: Iterable[Mapping[str, Any]]) -> dict[Configuration
     **Fail safe: a cohort that does not parse contributes nothing**, so it refuses no proposal. The
     whole cohort is dropped rather than its bad line, because dropping a reference line would
     shorten the recovered reference and could match a configuration that was never run. Store-free
-    (R192): it reads mappings it is handed and never opens the ledger.
+    (R192): it reads mappings it is handed and never opens the ledger. It does not check names
+    against the vocabulary or the universe; :func:`offerable` does, before anything reaches a
+    prompt or the already-run lookup (R231).
     """
     cohorts: dict[str, list[Mapping[str, Any]]] = {}
     for line in lines:
@@ -464,6 +466,39 @@ def configurations_run(lines: Iterable[Mapping[str, Any]]) -> dict[Configuration
         if key is not None:
             ran.setdefault(key, cohort)
     return ran
+
+
+def offerable(
+    ran: Mapping[ConfigurationKey, str], *, universe: tuple[str, ...]
+) -> dict[ConfigurationKey, str]:
+    """The entries of ``ran`` whose configuration :func:`validate` would accept now.
+
+    :func:`configurations_run` reads ledger text a past child wrote, and checks only that it reads
+    as one configuration; any non-empty regressor string and any symbol string pass. What it
+    returns reaches the Configurator's prompt, so each key is rebuilt as a payload and put through
+    ``validate`` with the sprint's ``universe``. Every rule of ``validate`` applies: names in
+    :data:`VOCABULARY`, their count, no duplicate and no collinear set (R225), a symbol in the
+    universe, a horizon in :data:`AGENT_HORIZONS` and a valid reference. So no other ledger text
+    reaches a prompt (R214, R231), and a configuration the gate now refuses before ``already_run``
+    could apply (an h66 cohort, R230; a collinear one, R225) is dropped, since it only crowded the
+    prompt. Store-free (R192).
+    """
+    kept: dict[ConfigurationKey, str] = {}
+    for key, cohort in ran.items():
+        family, regressors, symbol, horizon, reference = key
+        payload = {
+            "family": family,
+            "extra_regressors": list(regressors),
+            "symbol": symbol,
+            "horizon": horizon,
+            "reference": list(reference),
+        }
+        try:
+            proposal = validate(payload, sprint_id="ledger", index=0, universe=universe)
+        except ProposalRefused:
+            continue
+        kept[configuration_key(proposal)] = cohort
+    return kept
 
 
 def agent_cohort_name(sprint_id: str, index: int) -> str:

@@ -60,6 +60,7 @@ from volab.agent.vocabulary import (
     configuration_text,
     configurations_run,
     gate,
+    offerable,
     validate,
 )
 from volab.compare.cohorts import COHORTS, SHOOTOUT
@@ -932,6 +933,54 @@ def test_the_candidate_name_the_parser_splits_is_the_one_the_model_gives_itself(
     assert configuration_key(_proposal(extra_regressors=extra)) in ran
 
 
+def test_the_parser_reads_the_lines_the_real_child_writes(tmp_path: Any) -> None:
+    """M-1: every other test here feeds hand-built lines, so renaming ``model``, ``symbol`` or
+    ``horizon`` in ``Trial.record`` would leave them passing while the already-run rule refused
+    nothing. This one builds the cohort as ``volab.candidate.evaluate_proposal`` does, takes its
+    trials from a real ``Evaluation.trials``, writes them with the child's own
+    ``append_agent_trials`` and reads them back with the hub's ``read_agent_trials``. No store is
+    read: the forecasts are made up, and only the line shape is under test."""
+    from volab.agent.ledger import read_agent_trials
+    from volab.models.base import Cohort
+    from volab.models.harx import harx
+
+    proposal = _proposal(
+        7,
+        extra_regressors=(_UNGROUPED[1], _UNGROUPED[0]),
+        horizon=22,
+        reference=("har_levels", "random_walk", "har_semilog"),  # not alphabetical, on purpose
+    )
+    models = (*candidate.resolve_reference(proposal.reference), harx(proposal.extra_regressors))
+    cohort = Cohort(candidate.cohort_name_for(proposal), models)
+    origins = (dt.date(2025, 11, 3), dt.date(2025, 11, 10))
+    evaluation = wf.Evaluation(
+        symbol=proposal.symbol,
+        horizon=proposal.horizon,
+        results=tuple(
+            wf.OriginResult(origin, 1.0, {name: 1.1 for name in cohort.contestants}, 500)
+            for origin in origins
+        ),
+        features=pd.DataFrame(),
+        skipped=(),
+        requested=len(origins),
+        every=5,
+        contestants=cohort.contestants,
+        cohort=cohort.name,
+    )
+    trials = evaluation.trials()
+    assert trials and all(t.origins == len(origins) for t in trials)  # the scored branch
+    written = candidate.append_agent_trials(
+        trials, root=tmp_path, at=dt.datetime(2026, 11, 10, tzinfo=dt.UTC), sha="0", dirty=False
+    )
+    view = read_agent_trials(tmp_path, dev_end=dt.date(2025, 12, 31))
+    assert written == len(view.lines) and view.excluded == 0
+
+    assert configurations_run(view.lines) == {configuration_key(proposal): cohort.name}
+    assert offerable(configurations_run(view.lines), universe=("SPY",)) == {
+        configuration_key(proposal): cohort.name
+    }
+
+
 @pytest.mark.parametrize(
     "spoil",
     [
@@ -963,6 +1012,38 @@ def test_a_cohort_that_does_not_parse_refuses_nothing_and_does_not_raise(spoil: 
     assert configurations_run([*spoiled, *sound]) == {
         configuration_key(_proposal(extra_regressors=(_UNGROUPED[1],))): COHORT_B
     }
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param({"extra_regressors": ("2025-06-30",)}, id="date-shaped-regressor"),
+        pytest.param({"extra_regressors": ("not_a_feature",)}, id="out-of-vocabulary"),
+        pytest.param({"symbol": "2025-06-30"}, id="date-shaped-symbol"),
+        pytest.param({"symbol": "QQQ"}, id="symbol-outside-the-universe"),
+        pytest.param({"horizon": 66}, id="configured-but-not-offered-horizon"),
+        pytest.param({"reference": ("random_walk", "har_levels")}, id="har-levels-not-first"),
+        pytest.param({"extra_regressors": _UNGROUPED[: MAX_EXTRA_REGRESSORS + 1]}, id="too-many"),
+    ],
+)
+def test_only_a_configuration_the_gate_would_accept_is_offerable(
+    changes: dict[str, object],
+) -> None:
+    """R231: the ledger is text a past child wrote, so what it shows run reaches the Configurator
+    prompt and the already-run lookup only if ``validate`` would accept it now (R214, R230)."""
+    good = configuration_key(_proposal())
+    bad = configuration_key(_proposal(**changes))
+    assert offerable({good: COHORT_A, bad: COHORT_B}, universe=("SPY",)) == {good: COHORT_A}
+
+
+def test_a_cohort_parsed_from_bad_lines_is_not_offerable() -> None:
+    lines = [
+        *child_lines(COHORT_A, (_UNGROUPED[0],)),
+        *child_lines(COHORT_B, ("2025-06-30",), symbol="2025-07-01", horizon=66),
+    ]
+    ran = configurations_run(lines)
+    assert len(ran) == 2  # the parser reads both; only the gate's rules drop one
+    assert list(offerable(ran, universe=("SPY",)).values()) == [COHORT_A]
 
 
 def test_a_line_with_no_cohort_is_ignored() -> None:

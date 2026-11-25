@@ -1477,6 +1477,12 @@ cover it. P5-L14 plants a signal in the rehearsal store so a real evaluation rea
 **Not covered.** The rule reads the 10% MCS only: not DM, not SPA, not the other references such as
 `har_levels_mz`, and nothing past `dev_end`.
 
+**Three earlier approvals this ruling supersedes.** Sprint `2026-11-13T122201Z` (P5-L8) wrote three
+`awaiting_approval` events, for `-00`, `-01` and `-03`, before this ruling; all three are the tie it
+now refuses, and none has been promoted. `volab.promote` checks the event, single use and the
+fingerprint, not promotability, so it would still accept them. They stand as recorded and **must not
+be promoted**; whether `volab.promote` should refuse them mechanically is the user's call.
+
 ## R229 — digits inside a name are not figures
 
 All three real sprints failed report validation, and most of what the digit check flagged came from
@@ -1489,6 +1495,10 @@ letter or an underscore, or when it lies inside a sprint id (`%Y-%m-%dT%H%M%SZ`,
 `-NN` proposal suffix, or the short `HHMMSSZ`). Only the report side is filtered: every digit run in
 the figures may still be quoted, so a report's `run -01` still matches the figures' `...Z-01`.
 Backtick spans are deliberately **not** exempt: that would let `` `0.89` `` through.
+**Amended after review:** a digit run counts as part of a name only when the `[A-Za-z0-9_]` run just
+before it contains an ASCII letter. An underscore alone makes no name, so Markdown emphasis such as
+`_47_`, `__0.93__` or `_5` is checked again; `rv_proxy_d66`, `iv_h22`, `d_22` and `baa10y` stay
+exempt, and the three real-report results are unchanged.
 
 **Still caught:** a number with a unit (`22%`, `5bp`), a decimal, a signed number, a number at a
 line start, and an invented number in the same sentence as a name (`rv_proxy_d66 gained 47 bp`
@@ -1551,6 +1561,14 @@ never cause one; the whole cohort is dropped, not the bad line, since dropping a
 could shorten the reference and match a configuration that never ran. On today's ledger: 9 cohorts,
 5 configurations.
 
+**Only configurations the gate would accept are used (amended after review).** `research` passes
+what `configurations_run` recovers through `vocabulary.offerable`, which runs each key through
+`validate` with the sprint's universe. So off-vocabulary or date-shaped ledger text can never reach
+a prompt, and configurations the gate now refuses anyway are not shown: on today's ledger 1 of the 5
+remains, the three h66 ones (R230) and sprint 1's collinear one (R225) being dropped. A test ties the
+parser to lines written by the child's own `Evaluation.trials()` and `append_agent_trials`, so
+renaming a ledger key fails it rather than leaving the rule silently refusing nothing.
+
 **The rule.** `research` computes the set once, from the same view as the trial count, and
 checkpoints it, so prompt and gate rest on one read and a resume replays both. In the gate step the
 order is: canary check, then `already_run`, then R227's `repeated_proposal`. `already_run` is a
@@ -1564,6 +1582,8 @@ already run, as sorted canonical JSON, **without cohort names**, which carry run
 date-shaped route reaches a prompt and the prompt still cannot depend on the canary's placement.
 The R214 inventory and the R208 sentence in the package docstring are updated.
 
-**Not covered.** A cohort counts as run whenever it has ledger lines, including one whose every
-origin was refused (sprint 1's singular fits); a coverage-refused proposal writes no lines and stays
-re-proposable. The already-run line has no cap and grows with every configuration; it may need one.
+**Not covered.** A coverage-refused proposal writes no lines and stays re-proposable. Sprint 1's
+singular-fit configuration no longer counts as run, since `offerable` drops it, but the gate refuses
+it as collinear before `already_run` applies, so nothing can rerun it. The already-run line has no cap and grows with every configuration; it may need one. A
+sprint resumed from a `research` checkpoint written before this ruling has no already-run set, so
+it resumes with no cross-sprint refusals: the fail-open direction, which never touches a canary.
