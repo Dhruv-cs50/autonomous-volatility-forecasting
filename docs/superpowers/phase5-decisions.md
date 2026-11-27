@@ -1605,3 +1605,22 @@ that a horizon no run of the sprint used is still invented.
 **On the fourth sprint** (`2026-11-25T211720Z`, all three runs SPY h1) the flagged list goes from
 `500, 30, 24, 1, 5, 22` to `500, 30, 24, 5, 22`: the run line clears `1`; `5` and `22` were horizons
 the report discussed but no run used, and stay flagged, as do the three non-horizon figures.
+
+## R233 — the rehearsal store plants a signal, so a real evaluation reaches the approval path
+
+After R228 the rehearsal's one real evaluation ended in the tie refusal, so only stubs exercised
+`awaiting_approval`. P5-L14 plants a leakage-free signal in the synthetic store: VVIX's close is
+drawn independently each session from its own seed, and the variance of the next session's SPY
+return is linear in it, so `vvix` at `as_of` t informs r²(t+1) and nothing earlier. The draw takes
+no return; a test checks it is prefix-stable and that moving it changes only later returns.
+
+**One sprint now witnesses both R228 branches on real evaluations.** `harx+vvix` is the only member
+of the 10% qlike MCS (`har_levels` p 0.0, DM p 0.0005) and reaches `awaiting_approval`, with its
+evidence recomputed from the agent-ledger lines the child wrote; `harx+dgs10` (noise) ties
+(`har_levels` 1.0, candidate 0.54) and gets no approval. Setting the coupling to zero turns the
+signal run into a tie and fails the test.
+
+**A fixture-realism trade, stated.** The shocks are light-tailed (random sign × sqrt(chi2_40/40)),
+because with Gaussian shocks the same 19x signal still tied at 35 origins (`har_levels` p 0.14).
+That describes this toy window's power, not the real one's. The rehearsal takes about 10s, up from
+6.5s. Nothing here says any regressor beats `har_levels` on real development data.
