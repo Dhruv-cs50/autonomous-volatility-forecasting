@@ -286,6 +286,14 @@ def render_figures(state: Mapping[str, Any]) -> str:
 
     Rendered by the harness from the sprint's state, not by a model. The report's digits are
     checked against exactly this text.
+
+    Each run line states its proposal's symbol and horizon, read from the *gated* proposal in
+    state (never from a model's text or the child's summary), so a report may name a run's horizon
+    in prose (``22-session``, ``h=1``) and still validate (R232). A refused proposal has no run, so
+    its horizon reaches no line. The offered horizons are deliberately *not* a figure: the digit
+    check reads no context, so listing them would make ``1``, ``5`` and ``22`` quotable anywhere in
+    every report (``5bp``, a list marker ``1.``), which is the weakening R229 refused. A horizon no
+    run of this sprint used is therefore still invented.
     """
     gated = state.get("gated", [])
     real = [g for g in gated if not g["canary"]]
@@ -304,7 +312,12 @@ def render_figures(state: Mapping[str, Any]) -> str:
         summary = state.get("runs", {}).get(entry["proposal_id"])
         if summary is None:
             continue
-        membership = _mcs_membership(summary, entry["proposal"]) if entry["proposal"] else None
+        proposal = entry["proposal"]
+        membership = _mcs_membership(summary, proposal) if proposal else None
+        # The gated proposal, not the summary: the harness decided what ran (R232).
+        what = (
+            f"{proposal['symbol']} at horizon {proposal['horizon']} sessions, " if proposal else ""
+        )
         if membership is None:
             said = "not reported"
         elif not membership[0]:
@@ -314,7 +327,7 @@ def render_figures(state: Mapping[str, Any]) -> str:
         else:
             said = f"member, {_PROMOTION_BASELINE} not a member"
         lines.append(
-            f"run {entry['proposal_id']} (volab.candidate): {summary['verdict']}; "
+            f"run {entry['proposal_id']} (volab.candidate): {what}{summary['verdict']}; "
             f"cohort {summary['cohort']}; qlike MCS at 10%: {said}"
         )
     return "\n".join(lines)

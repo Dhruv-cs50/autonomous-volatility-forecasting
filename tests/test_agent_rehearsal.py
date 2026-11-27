@@ -3,7 +3,7 @@
 The framework's criterion is *"one full weekly sprint runs end to end without touching the
 holdout"*, and this module is the evidence for it. It runs ``volab.agent.run_sprint`` with a
 scripted ``FakeCompleter``, a ``FileCheckpointer``, the sprint log, and an injected ``submit`` that
-launches ``tests/isolated_candidate.py`` in a **fresh interpreter**; that shim calls
+launches ``tests/isolated_candidate.py`` in a **fresh interpreter** per proposal; that shim calls
 ``volab.candidate.evaluate_proposal`` over a **synthetic store** and logs every ``load_panel`` call
 it makes.
 
@@ -28,6 +28,10 @@ logged bad ``end`` is what the witness catches -- not the exception.
 * It runs on a *synthetic* store of one symbol over about 190 sessions. It proves the machinery
   runs end to end and never asks for a date past ``dev_end``. It does **not** show that real
   development data yields a sensible candidate; that run is held on a user decision (R194).
+* The store plants a signal (P5-L14): ``VVIX`` leads the variance of the next return, and the
+  shocks are light-tailed so 35 origins can show it. That is why one real evaluation reaches
+  ``awaiting_approval`` (it beats ``har_levels``, R228) while a second, naming a noise series, only
+  ties. It says nothing about whether any regressor beats ``har_levels`` on real data.
 * It exercises ``evaluate_proposal`` through the shim, **not** the child's ``__main__``, so the
   real entry point's argument parsing and exit-code mapping are not covered here. They are covered
   by ``tests/test_candidate_cli.py`` and ``tests/test_agent_runner.py``. The proposal check and the
@@ -63,11 +67,17 @@ from isolated_candidate import names_bound_to
 from test_agent_sprint import script
 
 import volab.store as store
-from volab.agent import PROPOSALS_PER_SPRINT, SprintResult, canary_placement, run_sprint
+from volab.agent import (
+    PROPOSALS_PER_SPRINT,
+    SprintResult,
+    canary_placement,
+    evidence_hash,
+    run_sprint,
+)
 from volab.agent._llm import FakeCompleter
 from volab.agent._runner import ChildRun
 from volab.agent.memory import FileCheckpointer
-from volab.agent.sprintlog import events
+from volab.agent.sprintlog import events, fingerprint_of
 from volab.agent.vocabulary import Proposal
 from volab.candidate import FEATURE_SET
 from volab.config import Settings, Splits, load_settings
@@ -92,9 +102,11 @@ FIRST_ORIGIN = dt.date(2023, 6, 1)
 MINIMUM_TRAINING = 20
 STRIDE = 2
 HORIZON = 1
-EXTRA = "vvix"
+EXTRA = "vvix"  # the planted signal: the proposal naming it must beat ``har_levels``
+NOISE = "dgs10"  # seeded noise: the proposal naming it must tie with ``har_levels``
 
-VIX_FAMILY = ("VIX", "VIX9D", "VIX1D", "VVIX")
+VIX_FAMILY = ("VIX", "VIX9D", "VIX1D")
+PLANTED = "VVIX"
 FRED_NAMES = ("BAA10Y", "DGS10", "T10Y2Y")
 INGESTED = pd.Timestamp("2023-10-02T00:00:00Z")
 
@@ -109,6 +121,89 @@ EXPECTED_DATASETS = {
     targets_dataset(HORIZON),
     FEATURE_SET,
 }
+
+
+# ---------------------------------------------------------------------------
+# The planted signal (P5-L14).
+# ---------------------------------------------------------------------------
+
+# ``VVIX`` (the ``vvix`` feature) leads the variance of SPY's next return. Its level is drawn
+# independently each session from a generator of its own, and the variance of the return *into*
+# session ``i`` is linear in its level at session ``i - 1``. A levels HAR-X naming ``vvix`` can fit
+# that relationship exactly in expectation; ``har_levels`` cannot, because the draws are
+# independent, so past squared returns say nothing about the next one. ``COUPLING`` is the one
+# knob: at 0 the returns are i.i.d. and the store is noise again (the mutation check).
+SIGNAL_SEED = 20261126
+VVIX_CENTER = 95.0
+VVIX_SPREAD = 30.0
+COUPLING = 0.9
+DRIFT = 0.0003
+BASE_VARIANCE = 0.011**2
+SHOCK_DEGREES = 40
+
+
+def planted_vvix(count: int) -> np.ndarray:
+    """``VVIX``'s level at each of ``count`` sessions, uniform on ``VVIX_CENTER +/- VVIX_SPREAD``.
+
+    A function of the session count and its own seed only: it takes no return, so it cannot carry
+    a future one. Its value at session ``t`` is the ``t``-th draw of its generator, so the series
+    for fewer sessions is a prefix of the series for more (``test_the_planted_signal_...``).
+    """
+    rng = np.random.default_rng(SIGNAL_SEED)
+    return np.round(VVIX_CENTER + VVIX_SPREAD * rng.uniform(-1.0, 1.0, count), 4)
+
+
+def returns_led_by(vvix: np.ndarray, shocks: np.ndarray, coupling: float = COUPLING) -> np.ndarray:
+    """Daily log returns whose variance at session ``i`` is set by ``vvix`` at session ``i - 1``.
+
+    The first session has no predecessor and takes the centre. ``1 + coupling * u`` with ``u`` in
+    ``[-1, 1]`` stays positive for ``coupling < 1``; at 0.9 the variance ranges over 19x.
+    """
+    lagged = np.concatenate(([VVIX_CENTER], vvix[:-1]))
+    variance = BASE_VARIANCE * (1.0 + coupling * (lagged - VVIX_CENTER) / VVIX_SPREAD)
+    return DRIFT + np.sqrt(variance) * shocks
+
+
+def light_tailed_shocks(rng: np.random.Generator, count: int) -> np.ndarray:
+    """Unit-variance shocks of random sign and size ``sqrt(chi2_k / k)``, ``k = SHOCK_DEGREES``.
+
+    A Gaussian shock would make a day's squared return ``sigma**2 * chi2_1``, and noise that heavy
+    buries a 19x variance signal over the 35 origins the toy window holds. MEASURED on this
+    harness (2026-11-26): with Gaussian shocks the planted candidate still tied, ``har_levels``'
+    MCS p-value 0.14; at ``k = 40``, where a squared return is within about 22% (one sd) of the
+    variance ``VVIX`` set, it is 0.0, and 1.0 again with ``COUPLING = 0`` (a tie). The shocks are
+    drawn independently of ``VVIX``, so they carry no signal of their own.
+    """
+    signs = np.where(rng.uniform(0.0, 1.0, count) < 0.5, -1.0, 1.0)
+    return signs * np.sqrt(rng.gamma(SHOCK_DEGREES / 2, 2 / SHOCK_DEGREES, count))
+
+
+def test_the_planted_signal_is_point_in_time_and_leads_the_returns() -> None:
+    """The regressor at ``t`` uses only draws up to ``t``, and moves returns after ``t`` only.
+
+    The store writes ``planted_vvix`` as the ``VVIX`` close with ``as_of`` the session itself, and
+    the feature engine joins on ``as_of``; nothing here shifts it. So the leakage question is
+    whether the value at ``t`` can depend on a return after ``t``. It cannot: it is a prefix-stable
+    draw that takes no return, and the causal arrow runs the other way, one session later.
+    """
+    count, cut = 120, 70
+    vvix = planted_vvix(count)
+    for prefix in (1, cut, count - 1):
+        assert np.array_equal(planted_vvix(prefix), vvix[:prefix])
+    assert float(vvix.min()) >= VVIX_CENTER - VVIX_SPREAD
+    assert float(vvix.max()) <= VVIX_CENTER + VVIX_SPREAD
+
+    shocks = np.random.default_rng(1).normal(0.0, 1.0, count)
+    returns = returns_led_by(vvix, shocks)
+    # Moving the regressor at ``cut`` moves the return into ``cut + 1`` and nothing up to ``cut``.
+    moved = vvix.copy()
+    moved[cut] += 10.0
+    shifted = returns_led_by(moved, shocks)
+    assert np.array_equal(shifted[: cut + 1], returns[: cut + 1])
+    assert shifted[cut + 1] != returns[cut + 1]
+    assert np.array_equal(shifted[cut + 2 :], returns[cut + 2 :])
+    # With no coupling the regressor moves nothing at all.
+    assert np.array_equal(returns_led_by(moved, shocks, 0.0), returns_led_by(vvix, shocks, 0.0))
 
 
 # ---------------------------------------------------------------------------
@@ -146,11 +241,18 @@ def build_store(settings: Settings) -> None:
     Two details carry over from ``test_truncation_equivalence``: an exogenous row's ``ts`` is a
     day behind its ``as_of`` (a join on the wrong one is otherwise byte-invisible), and one
     session has no bar, so the session index has a hole in it.
+
+    ``VVIX`` is the planted signal (``planted_vvix``), written as its close with ``as_of`` the
+    session of the draw; the returns are built from it with a one-session lag (``returns_led_by``).
+    Every other exogenous series is seeded noise.
     """
     calendar = get_calendar(settings)
     sessions = sessions_between(calendar, FIRST_SESSION, DEV_END)
     rng = np.random.default_rng(20261110)
-    closes = 100.0 * np.exp(np.cumsum(rng.normal(0.0003, 0.011, len(sessions))))
+    vvix = planted_vvix(len(sessions))
+    closes = 100.0 * np.exp(
+        np.cumsum(returns_led_by(vvix, light_tailed_shocks(rng, len(sessions))))
+    )
 
     hole = sessions[len(sessions) // 2]
     keep = [i for i, day in enumerate(sessions) if day != hole]
@@ -167,20 +269,25 @@ def build_store(settings: Settings) -> None:
     )
     _write_partitions(bars, BARS_DATASET, "SPY", settings)
 
-    def series(name: str, column: str, base: float) -> pd.DataFrame:
-        noise = rng.normal(0.0, 0.4, len(sessions))
+    def frame(name: str, column: str, values: np.ndarray) -> pd.DataFrame:
         return pd.DataFrame(
             {
                 "symbol": name,
                 "ts": [pd.Timestamp(session_close_utc(d)) - pd.Timedelta(days=1) for d in sessions],
                 "as_of": sessions,
                 "ingested_at": INGESTED,
-                column: np.round(base + noise + 0.05 * np.arange(len(sessions)) % 3, 4),
+                column: values,
             }
         )
 
+    def series(name: str, column: str, base: float) -> pd.DataFrame:
+        noise = rng.normal(0.0, 0.4, len(sessions))
+        return frame(name, column, np.round(base + noise + 0.05 * np.arange(len(sessions)) % 3, 4))
+
     for offset, name in enumerate(VIX_FAMILY):
         _write_partitions(series(name, "close", 12.0 + 6.0 * offset), VIX_DATASET, name, settings)
+    # The planted signal, value at ``as_of == t`` being the draw that sets the return into t + 1.
+    _write_partitions(frame(PLANTED, "close", vvix), VIX_DATASET, PLANTED, settings)
     for offset, name in enumerate(FRED_NAMES):
         _write_partitions(series(name, "value", 1.5 + offset), FRED_DATASET, name, settings)
 
@@ -330,32 +437,41 @@ def _reported_ledgers() -> dict[str, str | None]:
     return {name: _hash(REPO / "data" / name) for name in names}
 
 
-def _scripted_replies() -> list[str]:
-    """One valid proposal in a slot that is not the canary's; every other slot is refused."""
-    canary_slot, _ = canary_placement(SPRINT, PROPOSALS_PER_SPRINT)
-    valid_slot = (canary_slot + 1) % PROPOSALS_PER_SPRINT
-    valid = json.dumps(
+def _harx(extra: str) -> str:
+    return json.dumps(
         {
             "family": "harx",
-            "extra_regressors": [EXTRA],
+            "extra_regressors": [extra],
             "symbol": "SPY",
             "horizon": HORIZON,
             "reference": ["har_levels", "random_walk"],
         }
     )
+
+
+def _scripted_replies() -> list[str]:
+    """Two valid proposals in the two slots after the canary's; the remaining slot is refused.
+
+    The first names the planted signal and the second a noise series, so one sprint witnesses
+    both branches of R228 on real evaluations: a candidate that beats ``har_levels`` and one that
+    only ties with it.
+    """
+    canary_slot, _ = canary_placement(SPRINT, PROPOSALS_PER_SPRINT)
+    valid = {
+        (canary_slot + 1) % PROPOSALS_PER_SPRINT: _harx(EXTRA),
+        (canary_slot + 2) % PROPOSALS_PER_SPRINT: _harx(NOISE),
+    }
     refused = json.dumps({"family": "not-a-family"})
-    return script(
-        configurator=[valid if slot == valid_slot else refused for slot in range(4)],
-    )
+    return script(configurator=[valid.get(slot, refused) for slot in range(4)])
 
 
 def _run_rehearsal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """One sprint, run once, with everything the checks below look at.
 
     A function and not a fixture, and the checks are one test and not five: a sprint costs about
-    ten seconds (a fresh interpreter, a store read, an evaluation), and a function-scoped fixture
-    would pay it once per check. A wider-scoped fixture is not an option, since
-    ``tests/conftest.py`` refuses any store read during a wider-scoped setup.
+    ten seconds (two fresh interpreters, each a store read and an evaluation), and a
+    function-scoped fixture would pay it once per check. A wider-scoped fixture is not an option,
+    since ``tests/conftest.py`` refuses any store read during a wider-scoped setup.
     """
     settings = _settings(tmp_path)
     build_store(settings)
@@ -412,62 +528,139 @@ def _check_a_full_weekly_sprint_runs_end_to_end_without_reading_past_dev_end(
 
     # Non-vacuity, first and explicitly. A witness over zero calls is true of anything.
     installs = [r for r in records if r["kind"] == "installed"]
-    assert len(installs) == 1, "one evaluation ran, so the recorder was installed once"
-    assert installs[0]["rebound"] >= 1, "the identity sweep rebound no name; nothing is recorded"
-    assert installs[0]["dev_end"] == settings.splits.dev_end.isoformat()
-    # The names the read path actually calls through, not just the store's own.
-    assert {"volab.store.load_panel", "volab.panel.load_panel"} <= set(installs[0]["names"])
-    assert any(name.startswith("volab.walkforward.") for name in installs[0]["names"])
-    # ``volab.candidate._persisted`` is the only ``load_panel`` call whose ``end`` Phase 5 chooses.
-    # If the sweep did not rebind its module's name, that read would be invisible to the recorder
-    # and the sealed-reads check below would be true without having looked at it (R214).
-    assert "volab.candidate.load_panel" in installs[0]["names"]
-    assert len(calls) >= 1, "the recorder logged no load_panel call; the witness would be vacuous"
-    assert {call["dataset"] for call in calls} >= EXPECTED_DATASETS, (
-        "the real read path did not run against the synthetic store"
-    )
+    assert len(installs) == 2, "two evaluations ran, so the recorder was installed twice"
+    for install in installs:
+        assert install["rebound"] >= 1, "the identity sweep rebound no name; nothing is recorded"
+        assert install["dev_end"] == settings.splits.dev_end.isoformat()
+        # The names the read path actually calls through, not just the store's own.
+        assert {"volab.store.load_panel", "volab.panel.load_panel"} <= set(install["names"])
+        assert any(name.startswith("volab.walkforward.") for name in install["names"])
+        # ``volab.candidate._persisted`` is the only ``load_panel`` call whose ``end`` Phase 5
+        # chooses. If the sweep did not rebind its module's name, that read would be invisible to
+        # the recorder and the sealed-reads check below would be true without having looked at it
+        # (R214).
+        assert "volab.candidate.load_panel" in install["names"]
+        # Per evaluation, so one child's reads cannot stand in for the other's.
+        mine = [call for call in calls if call["pid"] == install["pid"]]
+        assert mine, "the recorder logged no load_panel call; the witness would be vacuous"
+        assert {call["dataset"] for call in mine} >= EXPECTED_DATASETS, (
+            "the real read path did not run against the synthetic store"
+        )
 
     # The witness. The counts are printed so a run's evidence is visible with ``-rP``.
-    print(f"load_panel calls recorded: {len(calls)}; names rebound: {installs[0]['rebound']}")
+    rebound = [install["rebound"] for install in installs]
+    print(f"load_panel calls recorded: {len(calls)}; names rebound per evaluation: {rebound}")
     assert unsealed_reads(calls, settings.splits.dev_end) == []
     assert {call["end"] for call in calls} == {settings.splits.dev_end.isoformat()}
 
-    # Everything the recorder saw was seen by the grandchild, not by the sprint process.
-    assert {call["pid"] for call in calls} == {installs[0]["pid"]}
-    assert installs[0]["pid"] != os.getpid()
+    # Everything the recorder saw was seen by a grandchild, not by the sprint process.
+    assert {call["pid"] for call in calls} == {install["pid"] for install in installs}
+    assert os.getpid() not in {install["pid"] for install in installs}
 
 
-def _check_the_sprint_reached_a_pinned_outcome_after_one_real_evaluation(
+def _qlike_record(summary: dict[str, Any]) -> dict[str, Any]:
+    """The child's one qlike comparison record: the one R228's promotion rule reads."""
+    records = [c for c in summary["comparisons"] if c["loss"] == "qlike"]
+    assert len(records) == 1, [c["loss"] for c in summary["comparisons"]]
+    assert records[0]["refusal"] is None, records[0]["refusal"]
+    return records[0]
+
+
+def _the_candidate(record: dict[str, Any]) -> str:
+    """The one contestant that is not a reference contestant."""
+    names = [c for c in record["contestants"] if c not in ("har_levels", "random_walk")]
+    assert len(names) == 1, record["contestants"]
+    return names[0]
+
+
+def _mcs_at_ten_percent(run: ChildRun) -> tuple[str, list[str], dict[str, float]]:
+    """``(candidate, members, p-values)`` of a run's qlike MCS, printed for ``-rP``."""
+    assert run.verdict == "evaluated", run.output_tail
+    assert run.result is not None
+    assert run.result["status"] == "ok"
+    assert run.result["trials_written"] > 0
+    qlike = _qlike_record(run.result)
+    assert qlike["cohort"] == run.result["cohort"]
+    candidate = _the_candidate(qlike)
+    members = qlike["mcs"]["sizes"]["0.1"]["members"]
+    pvalues = qlike["mcs"]["pvalues"]
+    dm = [p for p in qlike["dm"] if {p["left"], p["right"]} == {candidate, "har_levels"}]
+    print(
+        f"{run.proposal_id} {candidate}: {qlike['origins']} origins, n_eff {qlike['n_eff']}; "
+        f"qlike MCS at 10% {members}; MCS p-values {pvalues}; DM against har_levels "
+        f"{[(p['left'], p['right'], p['mean_difference'], p['headline']['p_value']) for p in dm]}"
+    )
+    return candidate, members, pvalues
+
+
+def _check_the_sprint_reached_a_pinned_outcome_after_two_real_evaluations(
     rehearsal: dict[str, Any],
 ) -> None:
     result: SprintResult = rehearsal["result"]
     submit: ShimSubmit = rehearsal["submit"]
     tmp_path: Path = rehearsal["tmp_path"]
 
-    # Pinned, not derived from the output: one proposal reached the gate and ran, two were refused,
-    # and the canary (the fourth slot) was refused.
-    assert (result.proposals, result.accepted, result.refused) == (3, 1, 2)
+    # Pinned, not derived from the output: two proposals reached the gate and ran, one was
+    # refused, and the canary was refused.
+    assert (result.proposals, result.accepted, result.refused) == (3, 2, 1)
     assert result.canary_refused is True
-    assert len(submit.runs) == 1
-    run = submit.runs[0]
-    assert run.verdict == "evaluated", run.output_tail
-    assert run.result is not None
-    assert run.result["status"] == "ok"
-    assert run.result["trials_written"] > 0
-    # The store is noise, so the real qlike MCS at 10% keeps ``har_levels`` beside the candidate:
-    # a tie, which R228 refuses. Pinned to that refusal, and to the proposal that actually ran.
-    # (Before R228 this pinned ``awaiting_approval``; no real evaluation reaches that path now.)
-    assert result.outcome == "no_candidate", result.reason
-    assert result.pending is None
-    ran = f"{SPRINT}-{int(run.proposal_id.rsplit('-', 1)[1]):02d}"
-    assert result.reason.startswith(f"{ran}: "), result.reason
-    assert "tied with har_levels" in result.reason
+    assert len(submit.runs) == 2
+    signal, noise = submit.runs
+    signal_cohort = signal.result["cohort"] if signal.result else None
+    noise_cohort = noise.result["cohort"] if noise.result else None
 
-    kinds = [e["kind"] for e in events(tmp_path / "data" / "agent_sprints.jsonl", SPRINT)]
+    # The comparison records R228 reads, asserted on directly and not only through the outcome.
+    # The candidate naming the planted signal beats ``har_levels``: it is in the real qlike MCS at
+    # 10% and ``har_levels`` is not (``build_store``).
+    candidate, members, pvalues = _mcs_at_ten_percent(signal)
+    assert candidate == f"harx+{EXTRA}"
+    assert candidate in members
+    assert "har_levels" not in members
+    assert pvalues["har_levels"] < 0.1 <= pvalues[candidate]
+    # The candidate naming a noise series only ties with it: both are in the set, which R228
+    # refuses. Its refusal reason is not in ``result.reason`` (the sprint reports only the
+    # promotable candidates when there is one), so the tie is pinned on its record and on the
+    # absence of an approval for it below.
+    tied, members, pvalues = _mcs_at_ten_percent(noise)
+    assert tied == f"harx+{NOISE}"
+    assert {tied, "har_levels"} <= set(members)
+    assert pvalues["har_levels"] >= 0.1 and pvalues[tied] >= 0.1
+
+    # So the sprint reaches the approval path on a real evaluation, for the signal's proposal only.
+    assert result.outcome == "awaiting_approval", result.reason
+    pending = result.pending
+    assert pending is not None
+    assert pending.proposal_id == signal.proposal_id
+    assert pending.cohort == signal_cohort
+    assert (
+        result.reason
+        == f"1 candidate(s) await approval in a separate process: {signal.proposal_id}"
+    )
+
+    # The evidence is the real agent-ledger lines the child wrote, recomputed here from the file
+    # itself rather than from anything the sprint returned; the tie's lines are beside them in the
+    # same file and are not part of it.
+    lines = _records(tmp_path / "data" / "agent_trials.jsonl")
+    evidence = [evidence_hash(line) for line in lines if line["cohort"] == pending.cohort]
+    assert signal.result is not None
+    assert len(evidence) == signal.result["trials_written"]
+    tie_lines = [line for line in lines if line["cohort"] == noise_cohort]
+    assert tie_lines and noise_cohort != pending.cohort
+    assert len(lines) == len(evidence) + len(tie_lines)
+    assert sorted(pending.evidence) == sorted(evidence)
+    assert pending.fingerprint == fingerprint_of(pending.proposal, evidence)
+
+    log = events(tmp_path / "data" / "agent_sprints.jsonl", SPRINT)
+    kinds = [e["kind"] for e in log]
     assert kinds[0] == "start"
-    assert kinds.count("proposal") == 1
-    assert kinds.count("awaiting_approval") == 0
+    assert kinds.count("proposal") == 2
     assert kinds[-1] == "complete"
+    approvals = [e for e in log if e["kind"] == "awaiting_approval"]
+    assert len(approvals) == 1
+    assert approvals[0]["proposal_id"] == pending.proposal_id
+    assert approvals[0]["cohort"] == pending.cohort
+    assert approvals[0]["fingerprint"] == pending.fingerprint
+    assert sorted(approvals[0]["evidence"]) == sorted(evidence)
 
 
 def _check_each_evaluation_ran_in_a_fresh_interpreter(rehearsal: dict[str, Any]) -> None:
@@ -508,7 +701,7 @@ def test_one_full_weekly_sprint_runs_end_to_end_without_touching_the_sealed_wind
     """The exit criterion, as one sprint and the five things that must be true of it."""
     rehearsal = _run_rehearsal(tmp_path, monkeypatch)
     _check_a_full_weekly_sprint_runs_end_to_end_without_reading_past_dev_end(rehearsal)
-    _check_the_sprint_reached_a_pinned_outcome_after_one_real_evaluation(rehearsal)
+    _check_the_sprint_reached_a_pinned_outcome_after_two_real_evaluations(rehearsal)
     _check_each_evaluation_ran_in_a_fresh_interpreter(rehearsal)
     _check_the_sprint_process_never_called_load_panel(rehearsal)
     _check_the_reported_ledgers_were_not_touched_and_the_agent_ledgers_are_under_tmp_path(rehearsal)
