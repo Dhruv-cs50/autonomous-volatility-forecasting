@@ -148,6 +148,7 @@ Branch `agent/first-real-sprint`, cut from `main` at `60da98f` (PR #25's merge, 
 | P5-L10 | Decide whether "in the 10% MCS" alone makes a candidate promotable | the user; implementer | — | a ruling in the decisions log | done (R228): promotable only if the candidate is in the 10% qlike MCS and `har_levels` is not |
 | P5-L14 | Plant a signal in the rehearsal store so a real evaluation reaches `awaiting_approval` | — | L10 | the rehearsal's real evaluation beats `har_levels` and its fingerprint path runs on real ledger lines | todo (follow-up, R228) |
 | P5-L15 | Put each proposal's horizon in the Reporter's figures | — | L7 | a report that names its horizons in prose validates | todo (follow-up, R229): sprints 2 and 3 still fail on `22-session`, `h=66` |
+| P5-L16 | Fourth live sprint, on L7/L10/L11/L13 | orchestrator | PR #32 merged, the user's go | sprint completes; real ledgers byte-identical | done (`02e8c07`): `2026-11-25T211720Z` on `7b4be8f`, `no_candidate`; three distinct `vvix` proposals at h1 on SPY, none at h66 and none already run; two tied with `har_levels` and were refused under R228, one was not in the MCS; canary refused; real ledgers byte-identical; 12 agent trials, 6 comparisons. The report still flags `1`, `5`, `22` (horizons in prose, P5-L15) and `500` ("S&P 500"), `30` (outside fact), `24` (a count not in the figures), all correctly |
 
 ## What the fences actually caught, recorded because a guard with no demonstrated bite is not evidence
 
