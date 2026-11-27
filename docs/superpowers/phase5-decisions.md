@@ -1587,3 +1587,21 @@ singular-fit configuration no longer counts as run, since `offerable` drops it, 
 it as collinear before `already_run` applies, so nothing can rerun it. The already-run line has no cap and grows with every configuration; it may need one. A
 sprint resumed from a `research` checkpoint written before this ruling has no already-run set, so
 it resumes with no cross-sprint refusals: the fail-open direction, which never touches a canary.
+
+## R232 — the Reporter's figures state each run's symbol and horizon
+
+All four real reports failed partly on horizons written in prose (`22-session`, `h=66`, `1- and
+5-session`), because no figure gave a proposal's horizon. `render_figures` now writes each run line
+as `run <id> (volab.candidate): SPY at horizon 22 sessions, evaluated; ...`, taking symbol and
+horizon from the gated proposal in state, never from model text or the child's summary. A refused
+proposal has no run line, so its horizon appears nowhere. The R228 wording and the report-side
+filter (R229) are unchanged.
+
+**Rejected: a line listing the offered horizons.** It was built and removed before merge. The digit
+check reads no context, so `horizons offered: 1, 5, 22` would make those three numbers quotable
+anywhere in every report (`5bp`, a list marker `1.`), the weakening R229 refused. A test now pins
+that a horizon no run of the sprint used is still invented.
+
+**On the fourth sprint** (`2026-11-25T211720Z`, all three runs SPY h1) the flagged list goes from
+`500, 30, 24, 1, 5, 22` to `500, 30, 24, 5, 22`: the run line clears `1`; `5` and `22` were horizons
+the report discussed but no run used, and stay flagged, as do the three non-horizon figures.

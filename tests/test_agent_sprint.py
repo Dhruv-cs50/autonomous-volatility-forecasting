@@ -601,6 +601,95 @@ def test_the_reporters_figures_say_whether_har_levels_is_in_the_mcs(
     runs = [line for line in report["figures"].splitlines() if line.startswith("run ")]
     assert len(runs) == PROPOSALS_PER_SPRINT - 1
     assert all(line.endswith(f"qlike MCS at 10%: {said}") for line in runs), runs
+    # R232: every run line also names its proposal's symbol and horizon (``valid_reply``: SPY, 5)
+    assert all(
+        " (volab.candidate): SPY at horizon 5 sessions, evaluated; cohort " in line for line in runs
+    ), runs
+
+
+def _figures_state(*proposals: tuple[str, int]) -> dict[str, Any]:
+    """A reporting-time state with one evaluated run per ``(symbol, horizon)`` and a canary."""
+    gated: list[dict[str, Any]] = []
+    runs: dict[str, Any] = {}
+    for index, (symbol, horizon) in enumerate(proposals):
+        proposal_id = f"{SPRINT}-{index:02d}"
+        proposal = {
+            "proposal_id": proposal_id,
+            "family": "harx",
+            "extra_regressors": ["vvix"],
+            "symbol": symbol,
+            "horizon": horizon,
+            "reference": ["har_levels"],
+        }
+        gated.append(
+            {"proposal_id": proposal_id, "accepted": True, "canary": False, "proposal": proposal}
+        )
+        runs[proposal_id] = {"verdict": "evaluated", "cohort": f"agent-c-{index:02d}"}
+    gated.append(
+        {
+            "proposal_id": f"{SPRINT}-{len(proposals):02d}",
+            "accepted": False,
+            "canary": True,
+            "proposal": None,
+        }
+    )
+    return {"sprint_id": SPRINT, "ledger": {"agent_trials": 12}, "gated": gated, "runs": runs}
+
+
+def test_the_reporters_figures_state_each_runs_symbol_and_horizon() -> None:
+    """R232: a report may name a run's horizon in prose (``22-session``), because the figures now
+    state it, taken from the gated proposal; a horizon no proposal had and the harness did not
+    offer (66) is still an invented number."""
+    figures = agent.render_figures(_figures_state(("SPY", 22), ("IWM", 1)))
+    runs = [line for line in figures.splitlines() if line.startswith("run ")]
+    assert runs == [
+        f"run {SPRINT}-00 (volab.candidate): SPY at horizon 22 sessions, evaluated; "
+        "cohort agent-c-00; qlike MCS at 10%: not reported",
+        f"run {SPRINT}-01 (volab.candidate): IWM at horizon 1 sessions, evaluated; "
+        "cohort agent-c-01; qlike MCS at 10%: not reported",
+    ]
+    assert invented_numbers("The 22-session horizon on SPY was evaluated.", figures) == ()
+    assert invented_numbers("IWM ran at h=1 and SPY at 22 sessions.", figures) == ()
+    assert invented_numbers("A 66-session run would need h=66.", figures) == ("66",)
+
+
+def test_the_offered_horizons_are_not_a_figure_so_an_unrun_horizon_stays_invented() -> None:
+    """R232: only run lines carry a horizon. Listing every offered horizon would make 1, 5 and 22
+    quotable anywhere (``5bp``, ``1.``), the weakening R229 refused."""
+    figures = agent.render_figures(_figures_state(("SPY", 1)))
+    assert not any(line.startswith("horizons offered") for line in figures.splitlines())
+    assert invented_numbers("Only h=1 ran; a 22-session run would cost 5bp.", figures) == (
+        "22",
+        "5",
+    )
+
+
+def test_a_refused_proposal_gets_no_horizon_and_its_horizon_stays_invented(
+    tmp_path: Path, settings: Settings
+) -> None:
+    """R232: a proposal the gate refused has no run line, so its horizon reaches no figure; a
+    report quoting that horizon (h=66, never offered) is not validated."""
+    slot, _ = canary_placement(SPRINT, PROPOSALS_PER_SPRINT)
+    real = [i for i in range(PROPOSALS_PER_SPRINT) if i != slot]
+    replies = [valid_reply(i) for i in range(PROPOSALS_PER_SPRINT)]
+    replies[real[0]] = json.dumps({**json.loads(replies[real[0]]), "horizon": 66})
+    sprint(
+        tmp_path,
+        settings,
+        completer=FakeCompleter(
+            script(configurator=replies, report="Two runs at h=5; the h=66 one was refused.")
+        ),
+        submit=StubSubmit(tmp_path),
+    )
+    refused = [e for e in log_of(tmp_path, "refused") if not e["canary"]]
+    assert [e["code"] for e in refused] == [RefusalCode.HORIZON_NOT_CONFIGURED.value]
+    (report,) = [e for e in log_of(tmp_path, "report") if e["role"] == "reporter"]
+    runs = [line for line in report["figures"].splitlines() if line.startswith("run ")]
+    assert len(runs) == PROPOSALS_PER_SPRINT - 2
+    assert not any(line.startswith(f"run {SPRINT}-{real[0]:02d} ") for line in runs)
+    assert all("SPY at horizon 5 sessions" in line for line in runs), runs
+    assert report["validated"] is False
+    assert report["invented"] == ["66"]
 
 
 def test_the_awaiting_event_carries_the_proposal_id_and_a_fingerprint_that_recomputes(
